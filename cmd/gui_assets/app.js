@@ -1529,9 +1529,11 @@ async function handleDirectDownload(e) {
 
 async function viewAppVersions(bundleId, appId, appName) {
   switchTab('versions');
-  // Remember the app name so it can be shown in the version-history header
-  // even before /api/versions resolves it.
+  // Remember the app name and numeric ID so /api/versions and metadata batches
+  // do not need to re-run Lookup when opened from an existing app card.
   state.lastVersionsName = appName || '';
+  state.lastVersionsAppId = Number(appId) || 0;
+  state.lastVersionsInput = String(bundleId || appId || '').trim();
   const input = document.getElementById('versions-input');
   if (input) {
     input.value = bundleId || appId;
@@ -1580,14 +1582,18 @@ async function handleFetchVersions(e) {
   const rawInput = document.getElementById('versions-input').value.trim();
   if (!rawInput) return;
 
-  // Reset lastVersionsName to avoid showing name from previous search
-  state.lastVersionsName = '';
-
   const parsed = parseAppStoreUrl(rawInput);
   const isNumeric = /^\d+$/.test(parsed);
 
+  const matchedPreset = state.lastVersionsInput && (rawInput === state.lastVersionsInput || parsed === state.lastVersionsInput);
+  const presetName = matchedPreset ? (state.lastVersionsName || '') : '';
+  const presetAppId = matchedPreset ? (Number(state.lastVersionsAppId) || 0) : 0;
+  state.lastVersionsName = '';
+  state.lastVersionsAppId = 0;
+  state.lastVersionsInput = '';
+
   const bundleId = isNumeric ? '' : parsed;
-  const appId = isNumeric ? parsed : '';
+  const appId = isNumeric ? parsed : (presetAppId ? String(presetAppId) : '');
 
   const loading = document.getElementById('versions-loading');
   const container = document.getElementById('versions-container');
@@ -1610,7 +1616,8 @@ async function handleFetchVersions(e) {
     }
 
     const versions = data.externalVersionIdentifiers || [];
-    const appName = data.name || state.lastVersionsName || '';
+    const appName = data.name || presetName || '';
+    const resolvedAppId = Number(data.appID || appId) || 0;
     titleEl.textContent = appName || data.bundleID || parsed;
     bundleEl.textContent = `Bundle ID: ${data.bundleID || parsed}`;
     badgeEl.textContent = `${versions.length} версий`;
@@ -1621,7 +1628,7 @@ async function handleFetchVersions(e) {
       page: 1,
       ctx: {
         bundleId: data.bundleID || bundleId,
-        appId: Number(appId) || 0,
+        appId: resolvedAppId,
         appName: appName || data.bundleID || parsed
       }
     };
@@ -1732,30 +1739,46 @@ function buildVersionsPager(info, onPage, onSize) {
 // not exceed versionMetadataBatchLimit in cmd/gui.go.
 // `fill(vId, data|null)` writes one result into the table; `isStale()` lets
 // the caller abort when the user already moved to another page.
-const METADATA_BATCH_SIZE = 10;
+const METADATA_BATCH_SIZE = 5;
+const METADATA_CONCURRENCY = 2;
 
 async function fillVersionMetadata(ids, params, fill, isStale) {
+  const chunks = [];
   for (let i = 0; i < ids.length; i += METADATA_BATCH_SIZE) {
-    if (isStale && isStale()) return;
-    const chunk = ids.slice(i, i + METADATA_BATCH_SIZE);
-    let results = {};
-    try {
-      const res = await fetch('/api/version-metadata/batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...params, versionIds: chunk }),
-      });
-      const data = await res.json();
-      results = (data && data.results) || {};
-    } catch (err) {
-      results = {};
-    }
-    if (isStale && isStale()) return;
-    chunk.forEach(vId => {
-      const item = results[vId];
-      fill(vId, item && item.success ? item : null);
-    });
+    chunks.push(ids.slice(i, i + METADATA_BATCH_SIZE));
   }
+
+  let nextIdx = 0;
+  const worker = async () => {
+    while (nextIdx < chunks.length) {
+      if (isStale && isStale()) return;
+      const chunk = chunks[nextIdx++];
+      let results = {};
+      try {
+        const res = await fetch('/api/version-metadata/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...params, versionIds: chunk }),
+        });
+        const data = await res.json();
+        results = (data && data.results) || {};
+      } catch (err) {
+        results = {};
+      }
+      if (isStale && isStale()) return;
+      chunk.forEach(vId => {
+        const item = results[vId];
+        fill(vId, item && item.success ? item : null);
+      });
+    }
+  };
+
+  const workers = [];
+  const workerCount = Math.min(METADATA_CONCURRENCY, chunks.length);
+  for (let w = 0; w < workerCount; w++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
 }
 
 // Renders the current page of the Version History tab.

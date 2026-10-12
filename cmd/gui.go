@@ -1153,8 +1153,8 @@ func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	app := appstore.App{ID: appID}
-	if bundleID != "" {
+	app := appstore.App{ID: appID, BundleID: bundleID}
+	if appID == 0 && bundleID != "" {
 		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: bundleID})
 		if err != nil {
 			jsonError(w, http.StatusBadRequest, fmt.Sprintf("lookup failed: %v", err))
@@ -1174,6 +1174,7 @@ func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success":                    true,
+		"appID":                      app.ID,
 		"name":                       app.Name,
 		"bundleID":                   app.BundleID,
 		"externalVersionIdentifiers": out.ExternalVersionIdentifiers,
@@ -1249,7 +1250,8 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 		req.VersionIDs = req.VersionIDs[:versionMetadataBatchLimit]
 	}
 
-	// Resolve the bundle ID once for the whole batch instead of per build.
+	// Resolve account and bundle ID once for the whole batch instead of per build.
+	var account *appstore.Account
 	appID := req.AppID
 	if appID == 0 && req.BundleID != "" {
 		info, err := dependencies.AppStore.AccountInfo()
@@ -1257,30 +1259,67 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, http.StatusUnauthorized, "not authenticated")
 			return
 		}
+		account = &info.Account
 		if lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: req.BundleID}); err == nil {
 			appID = lookupResult.App.ID
 		}
 	}
 
 	results := make(map[string]interface{}, len(req.VersionIDs))
+	uncached := make([]string, 0, len(req.VersionIDs))
+
+	if appID != 0 {
+		versionMetaCache.RLock()
+		appCache := versionMetaCache.m[appIDKey(appID)]
+		for _, versionID := range req.VersionIDs {
+			if versionID == "" {
+				continue
+			}
+			if entry, ok := appCache[versionID]; ok {
+				results[versionID] = map[string]interface{}{
+					"success":          true,
+					"displayVersion":   entry.DisplayVersion,
+					"releaseDate":      entry.ReleaseDate,
+					"minimumOSVersion": entry.MinimumOSVersion,
+					"cached":           true,
+				}
+			} else {
+				uncached = append(uncached, versionID)
+			}
+		}
+		versionMetaCache.RUnlock()
+	} else {
+		for _, versionID := range req.VersionIDs {
+			if versionID != "" {
+				uncached = append(uncached, versionID)
+			}
+		}
+	}
+
+	if len(uncached) > 0 && account == nil {
+		info, err := dependencies.AppStore.AccountInfo()
+		if err != nil {
+			jsonError(w, http.StatusUnauthorized, "not authenticated")
+			return
+		}
+		account = &info.Account
+	}
+
 	var (
 		mu sync.Mutex
 		wg sync.WaitGroup
 	)
 
 	started := time.Now()
-	for _, versionID := range req.VersionIDs {
-		if versionID == "" {
-			continue
-		}
+	for _, versionID := range uncached {
 		wg.Add(1)
 		go func(versionID string) {
 			defer wg.Done()
-			result, err := lookupVersionMetadata(req.BundleID, appID, versionID)
+			result, err := lookupVersionMetadataWithAccount(account, req.BundleID, appID, versionID)
 			if err != nil && isTransientAppleError(err) {
 				// One retry for gateway-style failures (502/503/504) that
 				// Apple emits under load; a second attempt usually succeeds.
-				result, err = lookupVersionMetadata(req.BundleID, appID, versionID)
+				result, err = lookupVersionMetadataWithAccount(account, req.BundleID, appID, versionID)
 			}
 			if err != nil {
 				result = map[string]interface{}{"success": false, "message": err.Error()}
@@ -1316,6 +1355,10 @@ func isTransientAppleError(err error) bool {
 // lookupVersionMetadata returns the JSON payload for one build, served from
 // versionMetaCache when possible and fetched from Apple otherwise.
 func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[string]interface{}, error) {
+	return lookupVersionMetadataWithAccount(nil, bundleID, appID, versionID)
+}
+
+func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string, appID int64, versionID string) (map[string]interface{}, error) {
 	// Serve from cache when available (keyed by appID:versionID).
 	if appID != 0 {
 		versionMetaCache.RLock()
@@ -1332,16 +1375,22 @@ func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[
 		}
 	}
 
-	info, err := dependencies.AppStore.AccountInfo()
-	if err != nil {
-		return nil, errNotAuthenticated
+	var acc appstore.Account
+	if account != nil {
+		acc = *account
+	} else {
+		info, err := dependencies.AppStore.AccountInfo()
+		if err != nil {
+			return nil, errNotAuthenticated
+		}
+		acc = info.Account
 	}
 
-	app := appstore.App{ID: appID}
+	app := appstore.App{ID: appID, BundleID: bundleID}
 	// Only resolve the bundle ID into an app ID when the caller did not already
 	// supply an app ID; this avoids an extra lookup for every build.
 	if bundleID != "" && appID == 0 {
-		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: bundleID})
+		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: acc, BundleID: bundleID})
 		if err == nil {
 			app = lookupResult.App
 			appID = app.ID
@@ -1352,7 +1401,7 @@ func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[
 	// slow rendering when investigating "history loads slowly" reports.
 	started := time.Now()
 	out, err := dependencies.AppStore.GetVersionMetadata(appstore.GetVersionMetadataInput{
-		Account:   info.Account,
+		Account:   acc,
 		App:       app,
 		VersionID: versionID,
 	})

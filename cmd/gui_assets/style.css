@@ -827,14 +827,14 @@ body {
 }
 
 /* Keep the three official App Store actions inside the card at narrow widths. */
-.app-card:not(.removed-app-card) .app-actions {
+.app-card:not(.removed-app-card):not(.batch-app-card) .app-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   min-width: 0;
 }
 
-.app-card:not(.removed-app-card) .app-actions .btn {
+.app-card:not(.removed-app-card):not(.batch-app-card) .app-actions .btn {
   min-width: 0;
   padding-left: 6px;
   padding-right: 6px;
@@ -1444,9 +1444,12 @@ body {
 .batch-versions-details summary {
   cursor: pointer;
   list-style: none;
-  display: inline-flex;
+  display: flex;
+  width: 100%;
+  justify-content: center;
   align-items: center;
   gap: 6px;
+  padding: 8px 14px;
 }
 .batch-versions-details summary::-webkit-details-marker { display: none; }
 .batch-versions-box {
@@ -1456,7 +1459,9 @@ body {
   padding: 8px;
   background: var(--bg-card);
   overflow-x: auto;
+  width: 100%;
   max-width: 100%;
+  box-sizing: border-box;
 }
 .batch-versions-table { width: 100%; }
 .batch-versions-table td, .batch-versions-table th { padding: 8px 12px; }
@@ -1470,13 +1475,15 @@ body {
 
 /* Keep the version-history block from pushing past the app card edges when the
    Действие/Action column is expanded. */
-.batch-app-card .app-actions {
+.app-card.batch-app-card .app-actions {
+  display: flex;
   flex-direction: column;
   align-items: stretch;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
 }
-.batch-app-card .app-actions .btn { flex: initial; }
+.app-card.batch-app-card .app-actions .btn { flex: initial; }
 
 .batch-filtered-row {
   display: flex;
