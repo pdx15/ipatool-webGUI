@@ -39,11 +39,7 @@ The graphical user interface (GUI) for **ipatool** enables any user without tech
    - Live download percentage, speed, and status.
    - "Show in Explorer" button opens the downloaded `.ipa` location immediately.
 
-6. **Session Portability:**
-   - Export session token to `account-session.json` to reuse without passwords or 2FA codes.
-   - Import session token on any device.
-
-7. **Install `.IPA` on a connected iOS device:**
+6. **Install `.IPA` on a connected iOS device:**
    - Automatically detects connected iPhone/iPad devices with `libimobiledevice`.
    - Upload (or reuse) a downloaded `.IPA` and install it with `ideviceinstaller`.
    - Requires `ideviceinstaller` (macOS: `brew install libimobiledevice`, Windows: install a libimobiledevice / iDevice Suite build and put its `bin` on PATH, or extract the build and copy its `.exe`/`.dll` files into the `tools\` folder next to `ipatool.exe` — the GUI detects them automatically). You can also set `IPATOOL_IDEVICEINSTALLER`, `IPATOOL_IDEVICE_ID` and `IPATOOL_IDEVICEDEVICEINFO` to the exact paths.
@@ -71,15 +67,8 @@ consistently rejected by Apple on Windows with a machine-provisioning error
 
 If login fails because `sapsigner.exe` was not found, make sure the `tools\` bundle is
 in place next to `ipatool.exe` or set `IPATOOL_SAPSIGNER`. (Anisette/iCloud errors are
-no longer expected on Windows, since the GSA path is not used.) As a fallback, you can
-import a session created on a Mac:
-
-1. **Log in once on a Mac** (Terminal): `ipatool auth login --email "you@example.com"` (enter your 2FA code if asked).
-2. **Export the session:** `ipatool auth export --output account-session.json` (no password is stored in the file, only App Store tokens).
-3. **Copy `account-session.json`** to the Windows PC and **import** it via **"Import Session File"** on the **"Account"** tab.
-
-After importing, search, license acquisition, and `.IPA` downloads all work on Windows
-**without a password or 2FA code**.
+no longer expected on Windows, since the GSA path is not used.) If the account session
+expires, log in again through the **Account** tab.
 
 ---
 

@@ -133,7 +133,6 @@ const i18n = {
     info_dsid: 'DSID:',
     info_keychain: 'Хранилище сессии:',
     info_keychain_ok: 'Системное хранилище Windows',
-    export_session_btn: 'Экспорт сессии (JSON)',
     logout_btn: 'Выйти из аккаунта',
     login_prompt_title: 'Вход в Apple ID',
     login_prompt_desc: 'Авторизация необходима для получения лицензий и зашифрованных установочных файлов из App Store.',
@@ -143,13 +142,6 @@ const i18n = {
     login_btn: 'Войти в Apple ID',
     login_test_btn: 'Войти в Apple ID SKIP',
     login_test_hint: 'Если при авторизации через «Войти в Apple ID» возникают ошибки (HTTP 403, «An unknown error has occurred», ошибки GSA/SRP или проблемы с 2FA), используйте альтернативный метод авторизации через «Войти в Apple ID SKIP».',
-    session_mgmt_title: 'Сессии и Перенос',
-    session_mgmt_desc: 'Импортируйте сессию, созданную на другом устройстве, чтобы не вводить пароль и 2FA повторно',
-    import_session_title: '📥 Импорт файла сессии',
-    import_session_desc: 'Выберите ранее сохраненный файл account-session.json:',
-    dropzone_text: 'Нажмите, чтобы выбрать .json файл сессии',
-    paste_json_label: 'Или вставьте JSON сессии напрямую:',
-    import_text_btn: 'Импортировать из текста',
     anisette_card_title: '⚙️ Проверка iCloud для Windows',
     anisette_card_desc: 'Проверьте, установлена ли нужная версия iCloud на этом компьютере',
     anisette_alert_title: 'Для Windows-версии ipatool:',
@@ -391,7 +383,6 @@ const i18n = {
     info_dsid: 'DSID:',
     info_keychain: 'Session Storage:',
     info_keychain_ok: 'Windows Credential Storage',
-    export_session_btn: 'Export Session (JSON)',
     logout_btn: 'Log Out (Revoke)',
     login_prompt_title: 'Sign in with Apple ID',
     login_prompt_desc: 'Authentication is required to obtain license signatures and encrypted packages from the App Store.',
@@ -401,13 +392,6 @@ const i18n = {
     login_btn: 'Sign In',
     login_test_btn: 'Sign In Apple ID SKIP',
     login_test_hint: 'If you get errors while signing in via "Sign In" (e.g. HTTP 403, "An unknown error has occurred", GSA/SRP login failures, or 2FA code issues), use the alternative method "Sign In Apple ID SKIP".',
-    session_mgmt_title: 'Sessions & Portability',
-    session_mgmt_desc: 'Import a session generated on another machine to skip typing passwords and 2FA codes',
-    import_session_title: '📥 Import Session File',
-    import_session_desc: 'Choose a previously saved account-session.json file:',
-    dropzone_text: 'Click or drop .json session file here',
-    paste_json_label: 'Or paste session JSON text directly:',
-    import_text_btn: 'Import from text',
     anisette_card_title: '⚙️ iCloud Check for Windows',
     anisette_card_desc: 'Verify that the required iCloud version is installed on this computer',
     anisette_alert_title: 'For Windows users of ipatool:',
@@ -974,76 +958,6 @@ async function confirmLogout() {
     }
   } catch (err) {
     showToast('Ошибка запроса выхода', 'error');
-  }
-}
-
-// Handle Export Session
-async function exportSession() {
-  try {
-    const res = await fetch('/api/auth/export');
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.message || 'Не удалось экспортировать');
-    }
-    const blob = await res.blob();
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `account-session-${state.account ? state.account.email : 'apple'}.json`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    showToast('Файл сессии успешно скачан', 'success');
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-}
-
-// Handle Import Session from File
-async function handleSessionFileUpload(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = async (event) => {
-    try {
-      const json = event.target.result;
-      await submitImportSession(json);
-    } catch (err) {
-      showToast('Неверный формат JSON файла', 'error');
-    }
-  };
-  reader.readAsText(file);
-}
-
-// Handle Import Session from Text
-async function importSessionFromText() {
-  const text = document.getElementById('session-json-textarea').value.trim();
-  if (!text) {
-    showToast('Вставьте JSON сессии в текстовое поле', 'error');
-    return;
-  }
-  await submitImportSession(text);
-}
-
-async function submitImportSession(jsonString) {
-  try {
-    const parsed = JSON.parse(jsonString);
-    const res = await fetch('/api/auth/import', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(parsed)
-    });
-    const data = await res.json();
-
-    if (data.success) {
-      showToast('Сессия успешно импортирована!', 'success');
-      await fetchStatus();
-    } else {
-      showToast(data.message || 'Ошибка импорта сессии', 'error');
-    }
-  } catch (err) {
-    showToast('Ошибка структуры JSON сессии', 'error');
   }
 }
 
@@ -1901,7 +1815,7 @@ function scrollVersionsTableIntoView() {
 // ==========================================
 
 // Called whenever the authenticated account may have changed (startup status
-// check, login, session import, logout). Loads the purchase list once per
+// startup check, login or logout). Loads the purchase list once per
 // account; explicit refreshes go through refreshPurchases(true).
 function onAuthStateChanged() {
   const p = state.purchases;

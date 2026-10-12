@@ -835,7 +835,7 @@
       </div>
     </section>
 
-    <!-- TAB 5: Account & Sessions -->
+    <!-- TAB 5: Account -->
     <section id="tab-account" class="tab-content">
       <div class="account-grid">
 
@@ -875,9 +875,6 @@
             </div>
 
             <div class="account-actions">
-              <button class="btn btn-outline" onclick="exportSession()">
-                📤 <span data-i18n="export_session_btn">Экспорт сессии (JSON)</span>
-              </button>
               <button class="btn btn-danger" onclick="confirmLogout()">
                 🚪 <span data-i18n="logout_btn">Выйти из аккаунта</span>
               </button>
@@ -937,37 +934,6 @@
                 <small class="form-hint" id="login-test-hint" style="display:none" data-i18n="login_test_hint">Если при авторизации через «Войти в Apple ID» возникают ошибки (HTTP 403, «An unknown error has occurred», ошибки GSA/SRP или проблемы с 2FA), используйте альтернативный метод авторизации через «Войти в Apple ID SKIP».</small>
               </div>
             </form>
-          </div>
-        </div>
-
-        <!-- Session Import / Export Card -->
-        <div class="card">
-          <div class="card-header">
-            <h3 data-i18n="session_mgmt_title">Сессии и Перенос</h3>
-            <p class="text-secondary" data-i18n="session_mgmt_desc">Импортируйте сессию, созданную на другом устройстве, чтобы не вводить пароль и 2FA повторно</p>
-          </div>
-
-          <div class="session-tools">
-            <div class="tool-box">
-              <h4 data-i18n="import_session_title">📥 Импорт файла сессии</h4>
-              <p class="text-secondary" data-i18n="import_session_desc">Выберите ранее сохраненный файл <code>account-session.json</code>:</p>
-              
-              <div class="file-dropzone" onclick="document.getElementById('session-file-input').click()">
-                <input type="file" id="session-file-input" accept=".json" style="display:none" onchange="handleSessionFileUpload(event)">
-                <div class="dropzone-content">
-                  <span class="dropzone-icon">📄</span>
-                  <span data-i18n="dropzone_text">Нажмите, чтобы выбрать .json файл сессии</span>
-                </div>
-              </div>
-
-              <div class="paste-json-box">
-                <label for="session-json-textarea" data-i18n="paste_json_label">Или вставьте JSON сессии напрямую:</label>
-                <textarea id="session-json-textarea" class="textarea-control" rows="3" placeholder='{"email":"...","passwordToken":"..."}'></textarea>
-                <button class="btn btn-outline btn-sm" onclick="importSessionFromText()">
-                  <span data-i18n="import_text_btn">Импортировать из текста</span>
-                </button>
-              </div>
-            </div>
           </div>
         </div>
 
