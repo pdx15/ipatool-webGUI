@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"strings"
 
 	"github.com/majd/ipatool/v2/pkg/appstore"
+	"github.com/schollz/progressbar/v3"
 )
 
-// downloadTaskInput carries the GUI-specific progress hooks alongside the
-// values needed by the App Store download API.
+// downloadTaskInput carries the values needed by the App Store download API
+// together with the ipatool progress bar the GUI samples for its job status.
 type downloadTaskInput struct {
 	Context           context.Context
 	Account           appstore.Account
@@ -18,9 +19,11 @@ type downloadTaskInput struct {
 	OutputPath        string
 	ExternalVersionID string
 	Platform          appstore.Platform
-	ProgressWriter    io.Writer
-	OnTotalBytes      func(int64)
-	AcquireLicense    bool
+	// Progress is the *progressbar.ProgressBar ipatool feeds the downloaded
+	// bytes into. The GUI builds it with a discarding writer and reads its
+	// state for percentage, size and speed.
+	Progress       *progressbar.ProgressBar
+	AcquireLicense bool
 }
 
 // refreshAccount retries authentication with the stored password when Apple
@@ -80,8 +83,9 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 	refreshed := false
 	licenseAttempted := false
 	licenseAcquired := false
+	progress := input.Progress
 
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := 0; attempt < 4; attempt++ {
 		output, err := dependencies.AppStore.Download(appstore.DownloadInput{
 			Context:           ctx,
 			Account:           account,
@@ -89,11 +93,18 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 			OutputPath:        input.OutputPath,
 			ExternalVersionID: input.ExternalVersionID,
 			Platform:          input.Platform,
-			ProgressWriter:    input.ProgressWriter,
-			OnTotalBytes:      input.OnTotalBytes,
+			Progress:          progress,
 		})
 		if err == nil {
 			return account, output, licenseAcquired, nil
+		}
+
+		if progress != nil && isProgressBarSetupError(err) {
+			// The server did not report a content length, so ipatool cannot
+			// size the progress bar and aborts before writing any package data.
+			// Downloading without live progress beats not downloading at all.
+			progress = nil
+			continue
 		}
 
 		if errors.Is(err, appstore.ErrPasswordTokenExpired) && !refreshed {
@@ -123,20 +134,17 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 	return account, appstore.DownloadOutput{}, licenseAcquired, errors.New("download failed after retrying authentication and license acquisition")
 }
 
-// checkDownloadWithRetry performs the same license probe used by the App Store
-// direct-download path without transferring the package. CheckDownload is an
-// optional extension implemented by the concrete App Store backend used by the
-// GUI; keeping it optional avoids widening ipatool's public AppStore interface.
-func checkDownloadWithRetry(account appstore.Account, app appstore.App, platform appstore.Platform) (appstore.Account, appstore.CheckDownloadOutput, error) {
-	checker, ok := dependencies.AppStore.(interface {
-		CheckDownload(appstore.CheckDownloadInput) (appstore.CheckDownloadOutput, error)
-	})
-	if !ok {
-		return account, appstore.CheckDownloadOutput{}, errors.New("the App Store backend does not support download checks")
-	}
-
+// listVersionsWithRetry performs the license probe behind the GUI's batch
+// check. ipatool's ListVersions sends the same App Store direct-download
+// request as a real download and stops before any package is transferred, so
+// it answers both questions the batch needs: which builds the account may
+// download (external version identifiers) and whether a license is missing
+// (ErrLicenseRequired). The session is refreshed once when Apple reports an
+// expired password token.
+func listVersionsWithRetry(account appstore.Account, app appstore.App, platform appstore.Platform) (appstore.Account, appstore.ListVersionsOutput, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		output, err := checker.CheckDownload(appstore.CheckDownloadInput{
+		output, err := dependencies.AppStore.ListVersions(appstore.ListVersionsInput{
+			Context:  context.Background(),
 			Account:  account,
 			App:      app,
 			Platform: platform,
@@ -147,10 +155,34 @@ func checkDownloadWithRetry(account appstore.Account, app appstore.App, platform
 
 		updated, refreshErr := refreshAccount(account)
 		if refreshErr != nil {
-			return account, appstore.CheckDownloadOutput{}, refreshErr
+			return account, appstore.ListVersionsOutput{}, refreshErr
 		}
 		account = updated
 	}
 
-	return account, appstore.CheckDownloadOutput{}, errors.New("download check failed after refreshing the account session")
+	return account, appstore.ListVersionsOutput{}, errors.New("the license check failed after refreshing the account session")
+}
+
+// isProgressBarSetupError reports whether a download failed because ipatool
+// could not hand the package size to the progress bar it was given. That
+// happens when the App Store response carries no content length, which the bar
+// cannot represent; the download itself is fine and is retried without one.
+func isProgressBarSetupError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "can not set bar progress")
+}
+
+// catalogVersion resolves the version string shown next to a batch result.
+// ListVersions reports build identifiers, not version numbers, so the value
+// comes from the catalog lookup; delisted apps simply report no version.
+func catalogVersion(account appstore.Account, app appstore.App, platform appstore.Platform) string {
+	output, err := dependencies.AppStore.Lookup(appstore.LookupInput{
+		Account:  account,
+		AppID:    app.ID,
+		Platform: platform,
+	})
+	if err != nil {
+		return ""
+	}
+
+	return output.App.Version
 }

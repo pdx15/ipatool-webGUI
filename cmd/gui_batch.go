@@ -215,9 +215,13 @@ func handleAPIBatchCheck(w http.ResponseWriter, r *http.Request) {
 // account to keep using for the following apps.
 type batchCheckResult struct {
 	acc         appstore.Account
-	out         appstore.CheckDownloadOutput
+	out         appstore.ListVersionsOutput
 	purchaseErr error
 	checkErr    error
+	// version is the catalog version string for display. ListVersions returns
+	// build identifiers only, so it is resolved separately and stays empty when
+	// the app has no catalog entry (delisted apps).
+	version string
 	// skipped is set when the probe never answered within its time budget.
 	skipped bool
 }
@@ -250,9 +254,15 @@ func runBatchCheckItem(
 			res.purchaseErr = purchaseErr
 		}
 
-		_, out, checkErr := checkDownloadWithRetry(res.acc, app, platform)
+		_, out, checkErr := listVersionsWithRetry(res.acc, app, platform)
 		res.out = out
 		res.checkErr = checkErr
+
+		if checkErr == nil {
+			// Only apps the account may download get the extra catalog lookup
+			// that supplies the version string for the result list.
+			res.version = catalogVersion(res.acc, app, platform)
+		}
 
 		resCh <- res
 	}()
@@ -329,7 +339,7 @@ func executeBatchCheckJob(
 			item.Error = errText
 
 			if status == batchItemAvailable {
-				item.Version = res.out.Version
+				item.Version = res.version
 				item.ExternalVersionIdentifiers = res.out.ExternalVersionIdentifiers
 				item.LatestExternalVersionID = res.out.LatestExternalVersionID
 			}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/majd/ipatool/v2/pkg/appstore"
 	"github.com/majd/ipatool/v2/resources"
+	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 )
 
@@ -42,6 +44,9 @@ type DownloadJob struct {
 	Warning    string  `json:"warning,omitempty"` // non-fatal issue, job still completed
 	OutputPath string  `json:"outputPath,omitempty"`
 	CreatedAt  int64   `json:"createdAt"`
+	// progress is the ipatool progress bar feeding this job. It is sampled
+	// whenever the job is serialized for a status response and never exposed.
+	progress *downloadProgress `json:"-"`
 }
 
 // noSinfWarning is shown when Apple served the package without DRM
@@ -67,9 +72,8 @@ type versionMetadataCache struct {
 }
 
 type versionMetaEntry struct {
-	DisplayVersion   string
-	ReleaseDate      string
-	MinimumOSVersion string
+	DisplayVersion string
+	ReleaseDate    string
 }
 
 var versionMetaCache = &versionMetadataCache{
@@ -77,11 +81,14 @@ var versionMetaCache = &versionMetadataCache{
 }
 
 func (jt *jobTracker) get(id string) (*DownloadJob, bool) {
-	jt.RLock()
-	defer jt.RUnlock()
+	jt.Lock()
+	defer jt.Unlock()
 	j, exists := jt.jobs[id]
 	if !exists {
 		return nil, false
+	}
+	if j.progress != nil {
+		j.progress.sample(j)
 	}
 	// return copy
 	copyJob := *j
@@ -105,74 +112,80 @@ func (jt *jobTracker) update(id string, fn func(*DownloadJob)) {
 	}
 }
 
-// progressWriter implements io.Writer to track bytes written during download.
-type progressWriter struct {
-	jobID        string
-	totalBytes   int64
-	bytesRead    int64
-	startTime    time.Time
-	lastUpdate   time.Time
-	lastBytes    int64
-	currentSpeed string
-	mu           sync.Mutex
+// downloadProgress adapts ipatool's download progress bar to the GUI job
+// status. ipatool feeds every downloaded byte into the bar it is given, so the
+// GUI only has to sample that bar to report size, percentage and speed. The bar
+// itself renders nothing: progress reaches the browser through /api/download.
+type downloadProgress struct {
+	bar        *progressbar.ProgressBar
+	lastSample time.Time
+	lastBytes  int64
+	speed      string
+	mu         sync.Mutex
 }
 
-// setTotal records the total package size once it becomes known so the
-// progress percentage and weight can be computed.
-func (pw *progressWriter) setTotal(total int64) {
-	pw.mu.Lock()
-	defer pw.mu.Unlock()
-	if total > 0 {
-		pw.totalBytes = total
-		if activeJobs != nil {
-			activeJobs.Lock()
-			if j, ok := activeJobs.jobs[pw.jobID]; ok {
-				j.TotalBytes = total
-			}
-			activeJobs.Unlock()
-		}
+// progressBarUnsetMax is the max the bar starts with: ipatool's CLI creates its
+// download bar the same way and replaces the value with the real size once the
+// response headers arrive. Until then the size is unknown, which the sample
+// below recognises by a max that cannot be a real package size.
+const progressBarUnsetMax = 1
+
+// newDownloadProgress creates the progress bar ipatool updates during a
+// download. Output is discarded because the GUI reports progress over HTTP
+// instead of rendering a terminal bar, and rendering is throttled because the
+// sampled state is at most a few hundred milliseconds old anyway.
+func newDownloadProgress() *downloadProgress {
+	return &downloadProgress{
+		bar: progressbar.NewOptions64(progressBarUnsetMax,
+			progressbar.OptionSetWriter(io.Discard),
+			progressbar.OptionThrottle(500*time.Millisecond),
+			progressbar.OptionSetElapsedTime(false),
+			progressbar.OptionSetPredictTime(false),
+		),
+		lastSample: time.Now(),
 	}
 }
 
-func (pw *progressWriter) Write(p []byte) (int, error) {
-	n := len(p)
-	pw.mu.Lock()
-	pw.bytesRead += int64(n)
+// sample copies the current bar state into the job. It runs whenever a status
+// endpoint reads a job, so the reported values are always fresh.
+func (dp *downloadProgress) sample(job *DownloadJob) {
+	dp.mu.Lock()
+	defer dp.mu.Unlock()
+
+	// ipatool counts every byte it writes into the bar and calls ChangeMax64
+	// with the package size as soon as the response reports it.
+	bytesRead := int64(dp.bar.State().CurrentBytes)
+	total := dp.bar.GetMax64()
 
 	now := time.Now()
-	if now.Sub(pw.lastUpdate) >= 300*time.Millisecond {
-		diffBytes := pw.bytesRead - pw.lastBytes
-		duration := now.Sub(pw.lastUpdate).Seconds()
-		if duration > 0 {
-			speedBps := float64(diffBytes) / duration
-			if speedBps > 1024*1024 {
-				pw.currentSpeed = fmt.Sprintf("%.2f MB/s", speedBps/(1024*1024))
-			} else if speedBps > 1024 {
-				pw.currentSpeed = fmt.Sprintf("%.1f KB/s", speedBps/1024)
-			} else {
-				pw.currentSpeed = fmt.Sprintf("%d B/s", int64(speedBps))
-			}
+	if elapsed := now.Sub(dp.lastSample).Seconds(); elapsed >= 0.3 {
+		if delta := bytesRead - dp.lastBytes; delta >= 0 {
+			dp.speed = formatTransferSpeed(float64(delta) / elapsed)
 		}
-		pw.lastUpdate = now
-		pw.lastBytes = pw.bytesRead
-
-		if activeJobs != nil {
-			activeJobs.Lock()
-			if j, ok := activeJobs.jobs[pw.jobID]; ok {
-				j.BytesRead = pw.bytesRead
-				if pw.totalBytes > 0 {
-					j.TotalBytes = pw.totalBytes
-					j.Progress = (float64(pw.bytesRead) / float64(pw.totalBytes)) * 100.0
-				}
-				j.Speed = pw.currentSpeed
-				j.Status = "downloading"
-			}
-			activeJobs.Unlock()
-		}
+		dp.lastSample = now
+		dp.lastBytes = bytesRead
 	}
-	pw.mu.Unlock()
 
-	return n, nil
+	job.BytesRead = bytesRead
+	if total > progressBarUnsetMax {
+		job.TotalBytes = total
+		job.Progress = float64(bytesRead) / float64(total) * 100.0
+	}
+	if dp.speed != "" {
+		job.Speed = dp.speed
+	}
+}
+
+// formatTransferSpeed renders a byte-per-second rate the way the GUI shows it.
+func formatTransferSpeed(bytesPerSecond float64) string {
+	switch {
+	case bytesPerSecond > 1024*1024:
+		return fmt.Sprintf("%.2f MB/s", bytesPerSecond/(1024*1024))
+	case bytesPerSecond > 1024:
+		return fmt.Sprintf("%.1f KB/s", bytesPerSecond/1024)
+	default:
+		return fmt.Sprintf("%d B/s", int64(bytesPerSecond))
+	}
 }
 
 func guiCmd() *cobra.Command {
@@ -531,7 +544,7 @@ func handleAPISearch(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"count":   out.Count,
-		"results": out.Results,
+		"results": appCards(out.Results),
 	})
 }
 
@@ -568,14 +581,14 @@ func handleAPISearchAll(w http.ResponseWriter, r *http.Request) {
 
 	official := map[string]interface{}{
 		"count":   out.Count,
-		"results": out.Results,
+		"results": appCards(out.Results),
 	}
 
 	if searchErr != nil {
 		// Still show the removed apps found locally, but tell the UI why the
 		// official half of the results is missing.
 		official["count"] = 0
-		official["results"] = []appstore.App{}
+		official["results"] = []appCard{}
 		official["error"] = searchErr.Error()
 	}
 
@@ -727,9 +740,13 @@ func appsIDListDirs() []string {
 	return dirs
 }
 
-// loadRemovedApps reads and parses Apps_ID_List.txt from disk. It returns an
-// empty slice when the file cannot be found so the rest of the GUI keeps
-// working (search simply shows no removed apps).
+// loadRemovedApps resolves the removed-apps catalog. An Apps_ID_List.txt on
+// disk — in the working directory or next to the running binary — wins, so the
+// catalog can be replaced without rebuilding. Otherwise the copy compiled into
+// the binary is used, which is what makes single-file builds (the macOS
+// releases) ship the removed-apps search. A missing or unparsable catalog is
+// not an error: the rest of the GUI keeps working and the search simply shows
+// no removed apps.
 func loadRemovedApps() []removedAppEntry {
 	for _, dir := range appsIDListDirs() {
 		data, err := os.ReadFile(filepath.Join(dir, "Apps_ID_List.txt"))
@@ -740,6 +757,11 @@ func loadRemovedApps() []removedAppEntry {
 			return entries
 		}
 	}
+
+	if entries := parseAppsIDList(resources.AppsIDList); len(entries) > 0 {
+		return entries
+	}
+
 	return []removedAppEntry{}
 }
 
@@ -961,11 +983,9 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 	job.Status = "downloading"
 	activeJobs.set(job)
 
-	pw := &progressWriter{
-		jobID:      job.ID,
-		startTime:  time.Now(),
-		lastUpdate: time.Now(),
-	}
+	progress := newDownloadProgress()
+	job.progress = progress
+	activeJobs.set(job)
 
 	refreshed, out, _, err := downloadWithRetry(downloadTaskInput{
 		Account:           acc,
@@ -973,8 +993,7 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 		OutputPath:        req.OutputPath,
 		ExternalVersionID: req.ExternalVersionID,
 		Platform:          platform,
-		ProgressWriter:    pw,
-		OnTotalBytes:      pw.setTotal,
+		Progress:          progress.bar,
 		AcquireLicense:    req.Purchase,
 	})
 
@@ -986,7 +1005,15 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 	}
 	acc = refreshed
 
-	// Step 3: Replicate SINF signatures
+	// The bar carries the exact byte counts of the finished transfer.
+	progress.sample(job)
+
+	// Step 3: Replicate SINF signatures.
+	//
+	// Apple sometimes serves a package with no DRM signatures at all. Recent
+	// ipatool versions treat that as a successful, unmodified rewrite instead
+	// of returning an error, so detect it from the download output and surface
+	// the warning ourselves.
 	job.Status = "patching"
 	activeJobs.set(job)
 
@@ -995,10 +1022,9 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 		PackagePath: out.DestinationPath,
 	})
 
-	if errors.Is(err, appstore.ErrNoSinfs) {
+	if err == nil && len(out.Sinfs) == 0 {
 		// Keep the downloaded file: it is a valid, complete package.
 		job.Warning = noSinfWarning
-		err = nil
 	}
 
 	if err != nil {
@@ -1042,15 +1068,18 @@ func handleAPIActiveDownloads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	activeJobs.RLock()
+	activeJobs.Lock()
 	jobs := make([]*DownloadJob, 0, len(activeJobs.jobs))
 	for _, job := range activeJobs.jobs {
 		if job.Status == "queued" || job.Status == "purchasing" || job.Status == "downloading" || job.Status == "patching" {
+			if job.progress != nil {
+				job.progress.sample(job)
+			}
 			copyJob := *job
 			jobs = append(jobs, &copyJob)
 		}
 	}
-	activeJobs.RUnlock()
+	activeJobs.Unlock()
 
 	sort.Slice(jobs, func(i, j int) bool {
 		return jobs[i].CreatedAt > jobs[j].CreatedAt
@@ -1272,11 +1301,10 @@ func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[
 		versionMetaCache.RUnlock()
 		if ok {
 			return map[string]interface{}{
-				"success":          true,
-				"displayVersion":   entry.DisplayVersion,
-				"releaseDate":      entry.ReleaseDate,
-				"minimumOSVersion": entry.MinimumOSVersion,
-				"cached":           true,
+				"success":        true,
+				"displayVersion": entry.DisplayVersion,
+				"releaseDate":    entry.ReleaseDate,
+				"cached":         true,
 			}, nil
 		}
 	}
@@ -1318,19 +1346,17 @@ func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[
 			versionMetaCache.m[appIDKey(appID)] = map[string]versionMetaEntry{}
 		}
 		versionMetaCache.m[appIDKey(appID)][versionID] = versionMetaEntry{
-			DisplayVersion:   out.DisplayVersion,
-			ReleaseDate:      releaseDate,
-			MinimumOSVersion: out.MinimumOSVersion,
+			DisplayVersion: out.DisplayVersion,
+			ReleaseDate:    releaseDate,
 		}
 		versionMetaCache.Unlock()
 	}
 
 	return map[string]interface{}{
-		"success":          true,
-		"displayVersion":   out.DisplayVersion,
-		"releaseDate":      releaseDate,
-		"minimumOSVersion": out.MinimumOSVersion,
-		"appleMs":          elapsedMs,
+		"success":        true,
+		"displayVersion": out.DisplayVersion,
+		"releaseDate":    releaseDate,
+		"appleMs":        elapsedMs,
 	}, nil
 }
 

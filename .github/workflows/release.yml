@@ -79,19 +79,43 @@ jobs:
           git clone --depth 1 --branch "$UPSTREAM_TAG" https://github.com/majd/ipatool.git ipatool || \
           git clone --depth 1 https://github.com/majd/ipatool.git ipatool
 
-      - name: Apply WebGUI overlay and patch
+      - name: Add the WebGUI sources to the upstream tree
         run: |
           cd ipatool
-          if [ ! -f ../webgui/patches/overlay.patch ]; then
-            echo "WebGUI overlay patch is missing" >&2
+          PATCH="../webgui/patches/register-gui.patch"
+          UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
+
+          # The GUI builds against ipatool's public API only - the appstore,
+          # keychain and http packages are used exactly as upstream ships them.
+          # The single upstream change is the one-line registration of the gui
+          # subcommand; without it the binary would not expose it.
+          if [ ! -f "$PATCH" ]; then
+            echo "::error::Command registration patch is missing at $PATCH"
             exit 1
           fi
-          git apply --check ../webgui/patches/overlay.patch
-          git apply ../webgui/patches/overlay.patch
+
+          if ! git apply --check "$PATCH"; then
+            echo "::error::$PATCH does not apply to ipatool $UPSTREAM_TAG - cmd/root.go changed upstream; regenerate the one-line guiCmd() registration patch against that tag."
+            exit 1
+          fi
+
+          git apply "$PATCH"
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
           mkdir -p ./resources
           cp -r ../webgui/resources/* ./resources/ 2>/dev/null || true
+
+      - name: Verify the GUI builds against unmodified ipatool sources
+        run: |
+          cd ipatool
+          # The GUI must not require anything the upstream packages do not
+          # expose: fail fast with the diff if an adapted API crept back in.
+          if ! git diff --quiet -- pkg/; then
+            echo "::error::The GUI depends on modified pkg/ sources; it must use ipatool's public API instead."
+            git diff --stat -- pkg/
+            exit 1
+          fi
+          go build ./...
 
       - name: Build macOS Apple Silicon (ARM64)
         run: |
@@ -178,7 +202,9 @@ jobs:
           cp webgui/ipatool-gui.py "$DIST/"
           cp webgui/ipatool-gui.bat "$DIST/"
           cp webgui/ipatool-gui.ps1 "$DIST/"
-          cp webgui/Apps_ID_List.txt "$DIST/"
+          # The Go build embeds the removed-apps catalog, but the Python
+          # launcher reads it from disk, so it ships next to the program.
+          cp webgui/resources/Apps_ID_List.txt "$DIST/"
           cp webgui/README.md "$DIST/"
           cp webgui/WINDOWS_GUI_GUIDE.md "$DIST/"
           cp webgui/ИНСТРУКЦИЯ_GUI.md "$DIST/"

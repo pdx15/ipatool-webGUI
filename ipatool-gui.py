@@ -689,12 +689,21 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
         entries = []
         seen = set()
-        list_path = os.path.join(SCRIPT_DIR, "Apps_ID_List.txt")
-        try:
-            with open(list_path, "r", encoding="utf-8") as f:
-                lines = f.read().splitlines()
-        except OSError:
-            lines = []
+        # The catalog sits next to the program in the Windows distribution and
+        # in resources/ in a source checkout; the Go build embeds it, but this
+        # Python launcher reads it from disk.
+        lines = []
+        for list_path in (
+            os.path.join(SCRIPT_DIR, "Apps_ID_List.txt"),
+            os.path.join(SCRIPT_DIR, "resources", "Apps_ID_List.txt"),
+        ):
+            try:
+                with open(list_path, "r", encoding="utf-8") as f:
+                    lines = f.read().splitlines()
+            except OSError:
+                continue
+            if lines:
+                break
 
         for line in lines:
             line = line.strip()
