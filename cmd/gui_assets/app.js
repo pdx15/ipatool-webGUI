@@ -25,6 +25,7 @@ const state = {
     loading: false,
     error: '',
     fetchedAt: null,
+    fromCache: false,
     loadedFor: null      // dsid the list belongs to
   }
 };
@@ -116,6 +117,7 @@ const i18n = {
     version_col_date: 'Дата выхода',
     version_col_action: 'Действие',
     version_col_select: 'Выбрать',
+    min_ios_badge_title: 'Минимальная поддерживаемая версия iOS',
     batch_version_pick_hint: 'Отметьте версию, чтобы скачать именно её вместо последней (по кнопке «Скачать выбранные» вверху). Отметка снимает галочку с карточки.',
     active_downloads_title: 'Активные загрузки',
     active_downloads_desc: 'Текущие процессы скачивания и обработки пакетов',
@@ -224,6 +226,7 @@ const i18n = {
     pager_per_page: 'На странице:',
     pager_all: 'Все',
     no_sinf_warning: 'Apple отдала пакет без DRM-подписей (sinf). Файл .ipa сохранён полностью — его можно расшифровать или изучить, но на устройство он не установится. Попробуйте скачать позже или выберите другую версию.',
+    filename_warning: 'Не удалось прочитать имя и версию из Info.plist; имя файла не изменено.',
     no_sinf_short: 'без sinf',
     batch_select_hint: 'Отметьте приложения и нажмите «Скачать выбранные»:',
     batch_download_progress_title: 'Массовое скачивание выбранных приложений...',
@@ -365,6 +368,7 @@ const i18n = {
     version_col_date: 'Release Date',
     version_col_action: 'Action',
     version_col_select: 'Select',
+    min_ios_badge_title: 'Minimum supported iOS version',
     batch_version_pick_hint: 'Tick a version to download it instead of the latest (via the "Download selected" button above). Ticking it clears the card checkbox.',
     active_downloads_title: 'Active Downloads',
     active_downloads_desc: 'Current download and package signing processes',
@@ -473,6 +477,7 @@ const i18n = {
     pager_per_page: 'Per page:',
     pager_all: 'All',
     no_sinf_warning: 'Apple served the package without DRM signatures (sinf). The .ipa was saved completely — it can be decrypted or inspected, but it will not install on a device. Try again later or pick a different version.',
+    filename_warning: 'Could not read the app name and version from Info.plist; the downloaded filename was left unchanged.',
     no_sinf_short: 'no sinf',
     batch_select_hint: 'Check the apps and press "Download selected":',
     batch_download_progress_title: 'Mass downloading selected apps...',
@@ -1343,8 +1348,11 @@ function openDownloadModal(title, subtitle, iconUrl) {
 // Maps a server-side job warning to the localised text shown in the UI.
 function localizeJobWarning(warning) {
   if (!warning) return '';
-  if (/sinf/i.test(warning)) return batchText('no_sinf_warning');
-  return warning;
+  return String(warning).split(/\n+/).filter(Boolean).map((item) => {
+    if (item === 'ipatool-gui-filename-fallback') return batchText('filename_warning');
+    if (/sinf/i.test(item)) return batchText('no_sinf_warning');
+    return item;
+  }).join(' ');
 }
 
 function updateDownloadModalWarning(warning) {
@@ -1458,7 +1466,6 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl) {
         renderActiveDownloadsTab();
         if (job.warning) {
           updateDownloadModalWarning(job.warning);
-          if (subEl) subEl.textContent = `Пакет .IPA сохранён (${batchText('no_sinf_short')})`;
           showToast(localizeJobWarning(job.warning), 'warning');
         } else {
           showToast(`Файл сохранен: ${job.outputPath}`, 'success');
@@ -1543,7 +1550,7 @@ async function fetchVersionMetadata(bundleId, appId, versionId) {
     if (!dispEl && !dateEl) return;
 
     if (data.success) {
-      if (dispEl) dispEl.innerHTML = renderDisplayVersionCell(data.displayVersion);
+      if (dispEl) dispEl.innerHTML = renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion);
       if (dateEl) dateEl.textContent = data.releaseDate || '—';
     } else {
       if (dispEl) dispEl.textContent = '—';
@@ -1557,11 +1564,15 @@ async function fetchVersionMetadata(bundleId, appId, versionId) {
   }
 }
 
-// Builds the inner HTML of a "Display Version" table cell. ipatool reports the
-// display version and the release date of a build, but not the minimum OS
-// version the package requires, so the cell carries the version alone.
-function renderDisplayVersionCell(displayVersion) {
-  return batchEscapeHtml(displayVersion || '—');
+// Builds the inner HTML of a "Display Version" table cell: the app version and,
+// when known, a small iOS badge showing the minimum supported OS version from
+// the selected build's IPA Info.plist.
+function renderDisplayVersionCell(displayVersion, minimumOSVersion) {
+  const version = batchEscapeHtml(displayVersion || '—');
+  const minOS = String(minimumOSVersion || '').trim();
+  if (!minOS) return version;
+  const title = batchText('min_ios_badge_title');
+  return `${version} <span class="badge badge-ios" title="${batchEscapeHtml(title)}">iOS ${batchEscapeHtml(minOS)}</span>`;
 }
 
 async function handleFetchVersions(e) {
@@ -1710,8 +1721,8 @@ function buildVersionsPager(info, onPage, onSize) {
   return pager;
 }
 
-// Fetches display version / release date for the given builds. The visible
-// page is sent to the server in chunks (POST /api/version-metadata/batch)
+// Fetches display version / release date / minimum OS for the given builds.
+// The visible page is sent to the server in chunks (POST /api/version-metadata/batch)
 // and the server fans the Apple calls of each chunk out in parallel. Doing it
 // client-side with one fetch per build never got past the browser's
 // ~6-connections-per-host cap, while Apple answers each metadata request in
@@ -1792,7 +1803,7 @@ function renderVersionsPage() {
     (vId, data) => {
       const dispEl = document.getElementById(`disp-ver-${vId}`);
       const dateEl = document.getElementById(`date-ver-${vId}`);
-      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion) : '—';
+      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion) : '—';
       if (dateEl) dateEl.textContent = data ? (data.releaseDate || '—') : '—';
     },
     () => ps.renderToken !== token
@@ -1821,6 +1832,7 @@ function onAuthStateChanged() {
     p.loading = false;
     p.error = '';
     p.fetchedAt = null;
+    p.fromCache = false;
     p.loadedFor = null;
     renderPurchases();
     return;
@@ -1831,6 +1843,7 @@ function onAuthStateChanged() {
     p.loaded = false;
     p.error = '';
     p.fetchedAt = null;
+    p.fromCache = false;
     p.loadedFor = dsid;
     refreshPurchases(false);
   }
@@ -1865,9 +1878,12 @@ async function refreshPurchases(force) {
       return;
     }
 
-    p.apps = Array.isArray(data.apps) ? data.apps : [];
+    // Current GUI servers return `items` with a Unix-seconds timestamp;
+    // accept the older `apps`/ISO timestamp shape as well.
+    const rawItems = Array.isArray(data.items) ? data.items : (Array.isArray(data.apps) ? data.apps : []);
+    p.apps = rawItems.map(normalizePurchaseItem);
     p.loaded = true;
-    p.fetchedAt = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
+    p.fetchedAt = parsePurchaseDate(data.fetchedAt) || new Date();
     p.fromCache = !!data.cached;
 
     if (force) {
@@ -1882,10 +1898,44 @@ async function refreshPurchases(force) {
   }
 }
 
-function formatPurchaseDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '—';
+function normalizePurchaseItem(item) {
+  if (!item || typeof item !== 'object') return {};
+  return {
+    ...item,
+    appId: item.appId ?? item.trackId ?? item.id ?? 0,
+    bundleId: item.bundleId ?? item.bundleID ?? item.bundleIdentifier ?? '',
+    name: item.name ?? item.trackName ?? '',
+    version: item.version ?? item.displayVersion ?? '',
+    purchaseDate: item.purchaseDate ?? item.date ?? ''
+  };
+}
+
+// Go sends fetchedAt as Unix seconds and purchaseDate as `YYYY-MM-DD HH:mm:ss`;
+// normalize both, while continuing to accept ISO strings from older/demo APIs.
+function parsePurchaseDate(value) {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (value === null || value === undefined || value === '') return null;
+
+  if (typeof value === 'number' || (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim()))) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    const milliseconds = Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric;
+    const date = new Date(milliseconds);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  let text = String(value).trim();
+  if (!text) return null;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) {
+    text = text.replace(' ', 'T');
+  }
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatPurchaseDate(value) {
+  const d = parsePurchaseDate(value);
+  if (!d) return '—';
   return d.toLocaleString(state.lang === 'ru' ? 'ru-RU' : 'en-US', {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit'
@@ -2688,7 +2738,7 @@ function renderBatchVersionsPage(container, item, reversed, pageState) {
       // Only the display version is filled in: unlike the version history on
       // its own tab, the batch table has no release-date column.
       const dispEl = document.getElementById(`batch-disp-${item.appId}-${vId}`);
-      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion) : '—';
+      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion) : '—';
     },
     () => pageState.renderToken !== token
   );

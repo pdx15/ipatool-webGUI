@@ -82,36 +82,40 @@ jobs:
       - name: Add the WebGUI sources to the upstream tree
         run: |
           cd ipatool
-          PATCH="../webgui/patches/register-gui.patch"
+          GUI_PATCH="../webgui/patches/register-gui.patch"
+          METADATA_PATCH="../webgui/patches/minimum-os-version.patch"
           UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
 
-          # The GUI builds against ipatool's public API only - the appstore,
-          # keychain and http packages are used exactly as upstream ships them.
-          # The single upstream change is the one-line registration of the gui
-          # subcommand; without it the binary would not expose it.
-          if [ ! -f "$PATCH" ]; then
-            echo "::error::Command registration patch is missing at $PATCH"
-            exit 1
-          fi
+          # Keep the upstream integration narrow and explicit: register the GUI
+          # command, and expose MinimumOSVersion from the Info.plist that
+          # ipatool already range-reads to build version metadata.
+          for PATCH in "$GUI_PATCH" "$METADATA_PATCH"; do
+            if [ ! -f "$PATCH" ]; then
+              echo "::error::Required upstream patch is missing: $PATCH"
+              exit 1
+            fi
+            if ! git apply --check "$PATCH"; then
+              echo "::error::$PATCH does not apply to ipatool $UPSTREAM_TAG; refresh the integration patch for that upstream tag."
+              exit 1
+            fi
+          done
 
-          if ! git apply --check "$PATCH"; then
-            echo "::error::$PATCH does not apply to ipatool $UPSTREAM_TAG - cmd/root.go changed upstream; regenerate the one-line guiCmd() registration patch against that tag."
-            exit 1
-          fi
-
-          git apply "$PATCH"
+          git apply "$GUI_PATCH"
+          git apply "$METADATA_PATCH"
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
           mkdir -p ./resources
           cp -r ../webgui/resources/* ./resources/ 2>/dev/null || true
 
-      - name: Verify the GUI builds against unmodified ipatool sources
+      - name: Verify the GUI builds with the minimal upstream metadata extension
         run: |
           cd ipatool
-          # The GUI must not require anything the upstream packages do not
-          # expose: fail fast with the diff if an adapted API crept back in.
-          if ! git diff --quiet -- pkg/; then
-            echo "::error::The GUI depends on modified pkg/ sources; it must use ipatool's public API instead."
+          # The only permitted package changes are the metadata implementation
+          # and its test, exposing MinimumOSVersion from the IPA Info.plist.
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip)\.go$' || true)
+          if [ -n "$unexpected_pkg_changes" ]; then
+            echo "::error::Unexpected changes to upstream package sources:"
+            echo "$unexpected_pkg_changes"
             git diff --stat -- pkg/
             exit 1
           fi
@@ -185,34 +189,38 @@ jobs:
       - name: Add the WebGUI sources to the upstream tree
         run: |
           cd ipatool
-          PATCH="../webgui/patches/register-gui.patch"
+          GUI_PATCH="../webgui/patches/register-gui.patch"
+          METADATA_PATCH="../webgui/patches/minimum-os-version.patch"
           UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
 
-          # The GUI builds against ipatool's public API only - the appstore,
-          # keychain and http packages are used exactly as upstream ships them.
-          # The single upstream change is the one-line registration of the gui
-          # subcommand; without it the binary would not expose it.
-          if [ ! -f "$PATCH" ]; then
-            echo "::error::Command registration patch is missing at $PATCH"
-            exit 1
-          fi
+          # Keep the upstream integration narrow and explicit: register the GUI
+          # command, and expose MinimumOSVersion from the Info.plist that
+          # ipatool already range-reads to build version metadata.
+          for PATCH in "$GUI_PATCH" "$METADATA_PATCH"; do
+            if [ ! -f "$PATCH" ]; then
+              echo "::error::Required upstream patch is missing: $PATCH"
+              exit 1
+            fi
+            if ! git apply --check "$PATCH"; then
+              echo "::error::$PATCH does not apply to ipatool $UPSTREAM_TAG; refresh the integration patch for that upstream tag."
+              exit 1
+            fi
+          done
 
-          if ! git apply --check "$PATCH"; then
-            echo "::error::$PATCH does not apply to ipatool $UPSTREAM_TAG - cmd/root.go changed upstream; regenerate the one-line guiCmd() registration patch against that tag."
-            exit 1
-          fi
-
-          git apply "$PATCH"
+          git apply "$GUI_PATCH"
+          git apply "$METADATA_PATCH"
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
           mkdir -p ./resources
           cp -r ../webgui/resources/* ./resources/ 2>/dev/null || true
 
-      - name: Verify the GUI builds against unmodified ipatool sources
+      - name: Verify the GUI builds with the minimal upstream metadata extension
         run: |
           cd ipatool
-          if ! git diff --quiet -- pkg/; then
-            echo "::error::The GUI depends on modified pkg/ sources; it must use ipatool's public API instead."
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip)\.go$' || true)
+          if [ -n "$unexpected_pkg_changes" ]; then
+            echo "::error::Unexpected changes to upstream package sources:"
+            echo "$unexpected_pkg_changes"
             git diff --stat -- pkg/
             exit 1
           fi

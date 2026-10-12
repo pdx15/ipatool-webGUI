@@ -44,10 +44,11 @@ func TestBundledAppsIDListIsUsable(t *testing.T) {
 // Every other method is a stub: a test that needs one can assign the matching
 // function field.
 type fakeAppStore struct {
-	login        func(appstore.LoginInput) (appstore.LoginOutput, error)
-	lookup       func(appstore.LookupInput) (appstore.LookupOutput, error)
-	listVersions func(appstore.ListVersionsInput) (appstore.ListVersionsOutput, error)
-	download     func(appstore.DownloadInput) (appstore.DownloadOutput, error)
+	login              func(appstore.LoginInput) (appstore.LoginOutput, error)
+	lookup             func(appstore.LookupInput) (appstore.LookupOutput, error)
+	listVersions       func(appstore.ListVersionsInput) (appstore.ListVersionsOutput, error)
+	download           func(appstore.DownloadInput) (appstore.DownloadOutput, error)
+	getVersionMetadata func(appstore.GetVersionMetadataInput) (appstore.GetVersionMetadataOutput, error)
 }
 
 func (f *fakeAppStore) Login(input appstore.LoginInput) (appstore.LoginOutput, error) {
@@ -100,8 +101,12 @@ func (f *fakeAppStore) ListVersions(input appstore.ListVersionsInput) (appstore.
 	return f.listVersions(input)
 }
 
-func (f *fakeAppStore) GetVersionMetadata(appstore.GetVersionMetadataInput) (appstore.GetVersionMetadataOutput, error) {
-	return appstore.GetVersionMetadataOutput{}, errors.New("getVersionMetadata is not stubbed")
+func (f *fakeAppStore) GetVersionMetadata(input appstore.GetVersionMetadataInput) (appstore.GetVersionMetadataOutput, error) {
+	if f.getVersionMetadata == nil {
+		return appstore.GetVersionMetadataOutput{}, errors.New("getVersionMetadata is not stubbed")
+	}
+
+	return f.getVersionMetadata(input)
 }
 
 func (f *fakeAppStore) Bag(appstore.BagInput) (appstore.BagOutput, error) {
@@ -223,6 +228,59 @@ func TestCatalogVersionFallsBackToEmpty(t *testing.T) {
 
 	if got := catalogVersion(appstore.Account{}, appstore.App{ID: 12345}, appstore.PlatformIPhone); got != "" {
 		t.Fatalf("expected no version for a delisted app, got %q", got)
+	}
+}
+
+func TestLookupVersionMetadataReturnsAndCachesMinimumOSVersion(t *testing.T) {
+	const testAppID = int64(987654321)
+	versionID := "test-version-minimum-os"
+	appKey := appIDKey(testAppID)
+
+	versionMetaCache.Lock()
+	previous, hadPrevious := versionMetaCache.m[appKey]
+	delete(versionMetaCache.m, appKey)
+	versionMetaCache.Unlock()
+	t.Cleanup(func() {
+		versionMetaCache.Lock()
+		defer versionMetaCache.Unlock()
+		if hadPrevious {
+			versionMetaCache.m[appKey] = previous
+		} else {
+			delete(versionMetaCache.m, appKey)
+		}
+	})
+
+	calls := 0
+	withFakeAppStore(t, &fakeAppStore{
+		getVersionMetadata: func(input appstore.GetVersionMetadataInput) (appstore.GetVersionMetadataOutput, error) {
+			calls++
+			if input.App.ID != testAppID || input.VersionID != versionID {
+				t.Errorf("metadata lookup used app %d, version %q", input.App.ID, input.VersionID)
+			}
+			return appstore.GetVersionMetadataOutput{
+				DisplayVersion:   "4.2.1",
+				MinimumOSVersion: "15.0",
+			}, nil
+		},
+	})
+
+	result, err := lookupVersionMetadata("", testAppID, versionID)
+	if err != nil {
+		t.Fatalf("metadata lookup failed: %v", err)
+	}
+	if got := result["minimumOSVersion"]; got != "15.0" {
+		t.Fatalf("minimumOSVersion = %v, want 15.0", got)
+	}
+
+	cached, err := lookupVersionMetadata("", testAppID, versionID)
+	if err != nil {
+		t.Fatalf("cached metadata lookup failed: %v", err)
+	}
+	if got := cached["minimumOSVersion"]; got != "15.0" {
+		t.Fatalf("cached minimumOSVersion = %v, want 15.0", got)
+	}
+	if calls != 1 {
+		t.Fatalf("expected one App Store metadata request, got %d", calls)
 	}
 }
 

@@ -22,7 +22,10 @@ upstream `ipatool` maintainers.
   ID (`Apps_ID_List.txt`, compiled into the binary). The two result groups are
   shown separately, with the removed apps listed first (`/api/search/all`
   answers with both groups in that order, best matches on top).
-- **One-click download** of encrypted `.ipa` packages tied to your Apple ID.
+- **One-click download** of encrypted `.ipa` packages tied to your Apple ID. When
+  the GUI chooses the filename, it reads the app name, marketing version, minimum
+  OS and platform from the downloaded IPA, then appends the Apple ID name before
+  `@` (for example `Pinterest_14.39_iOS16.0_spdx15.ipa`).
 - **Mass check & download** from a `.txt` list (`Name: AppID` format). Apps your
   account never owned are filtered out, and the remaining list can be saved back
   to a text file.
@@ -30,6 +33,12 @@ upstream `ipatool` maintainers.
 - **Install to device** through `libimobiledevice` (`ideviceinstaller`).
 - Built-in **Apple ID login** with 2FA support and an alternative macOS login
   path (`Sign In Apple ID SKIP`).
+- The GUI automatically creates and reuses ipatool's local keychain passphrase,
+  so file-backed storage does not prompt in the terminal. The passphrase stays
+  in the per-user ipatool state directory and is never sent to Apple or the
+  browser; its at-rest protection relies on the operating system's file
+  permissions. A file-backed session encrypted earlier with a different,
+  manually entered passphrase may need one new Apple ID login.
 - Russian and English interface, dark and light themes.
 
 ## Install

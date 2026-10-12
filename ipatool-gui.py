@@ -13,11 +13,14 @@ import tempfile
 import urllib.request
 import urllib.parse
 import subprocess
+import secrets
 import threading
 import time
 import webbrowser
 import email
 import email.message
+import plistlib
+import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 54321
@@ -41,6 +44,170 @@ def find_ipatool_binary():
         elif c and os.path.isfile(c) and sys.platform == "win32":
             return c
     return None
+
+
+def ipatool_state_directory():
+    """Match ipatool's per-user state location for the keychain sidecar."""
+    home = os.path.expanduser("~")
+    legacy = os.path.join(home, ".ipatool")
+    state_dir = legacy
+    for variable in ("XDG_STATE_HOME", "XDG_DATA_HOME"):
+        base = os.environ.get(variable, "")
+        if base and os.path.isabs(base):
+            state_dir = os.path.join(base, "ipatool")
+            break
+
+    # ipatool keeps using its legacy directory if one already exists and the
+    # XDG destination also exists (or cannot be migrated to). Put the passphrase
+    # there so the next CLI invocation can reuse it regardless of migration.
+    if state_dir != legacy and os.path.exists(legacy):
+        return legacy
+    return state_dir
+
+
+def gui_keychain_passphrase():
+    """Load or create the stable passphrase used by GUI-launched ipatool calls."""
+    override = os.environ.get("IPATOOL_KEYCHAIN_PASSPHRASE", "")
+    if override:
+        return override
+
+    state_dir = ipatool_state_directory()
+    os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    path = os.path.join(state_dir, "webgui-keychain-passphrase")
+
+    for _ in range(10):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                passphrase = f.read().strip()
+            if passphrase:
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass  # Windows permissions are enforced by the directory ACL.
+                return passphrase
+            time.sleep(0.01)  # another GUI process may still be writing it
+        except FileNotFoundError:
+            pass
+
+        passphrase = secrets.token_urlsafe(32)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(passphrase)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return passphrase
+
+    raise RuntimeError("could not read or create the GUI keychain passphrase")
+
+
+def ipatool_command(bin_path, args):
+    """Build an ipatool command that always receives the GUI keychain key."""
+    return [bin_path, "--keychain-passphrase", gui_keychain_passphrase()] + list(args)
+
+
+DOWNLOAD_FILENAME_FALLBACK_WARNING = "ipatool-gui-filename-fallback"
+
+
+def safe_filename_part(value):
+    value = str(value or "").strip()
+    value = "".join("_" if ord(char) < 32 or char in '<>:\"/\\\\|?*' else char for char in value)
+    return value.strip(" .")
+
+
+def account_username(email_address):
+    email_address = str(email_address or "").strip()
+    return safe_filename_part(email_address.split("@", 1)[0])
+
+
+def platform_filename_label(info):
+    platforms = info.get("CFBundleSupportedPlatforms", [])
+    if isinstance(platforms, str):
+        platforms = [platforms]
+    mapping = {
+        "iphoneos": "iOS",
+        "ios": "iOS",
+        "appletvos": "tvOS",
+        "tvos": "tvOS",
+        "watchos": "watchOS",
+        "xros": "visionOS",
+        "visionos": "visionOS",
+        "macosx": "macOS",
+        "macos": "macOS",
+    }
+    for platform in platforms:
+        label = mapping.get(str(platform).strip().lower())
+        if label:
+            return label
+    return ""
+
+
+def ipa_filename_from_info(info, email_address, fallback_app_name=""):
+    app_name = info.get("CFBundleDisplayName") or info.get("CFBundleName") or fallback_app_name
+    version = safe_filename_part(info.get("CFBundleShortVersionString"))
+    app_name = safe_filename_part(app_name)
+    if not app_name or not version:
+        return "", app_name, version
+
+    parts = [app_name, version]
+    minimum_os = safe_filename_part(info.get("MinimumOSVersion"))
+    if minimum_os:
+        platform_label = platform_filename_label(info) or "iOS"
+        parts.append(platform_label + minimum_os)
+    username = account_username(email_address)
+    if username:
+        parts.append(username)
+    return "_".join(parts) + ".ipa", app_name, version
+
+
+def read_downloaded_ipa_info(path):
+    with zipfile.ZipFile(path, "r") as archive:
+        for member in archive.namelist():
+            parts = member.split("/")
+            if len(parts) != 3 or parts[0] != "Payload" or not parts[1].endswith(".app") or parts[2] != "Info.plist":
+                continue
+            return plistlib.loads(archive.read(member))
+    raise ValueError("main app Info.plist was not found")
+
+
+def rename_downloaded_ipa(path, email_address, fallback_app_name=""):
+    info = read_downloaded_ipa_info(path)
+    file_name, app_name, version = ipa_filename_from_info(info, email_address, fallback_app_name)
+    if not file_name:
+        raise ValueError("Info.plist does not contain a usable app name and version")
+
+    directory = os.path.dirname(path)
+    destination = os.path.join(directory, file_name)
+    base, extension = os.path.splitext(destination)
+    suffix = 2
+    while os.path.exists(destination) and os.path.abspath(destination) != os.path.abspath(path):
+        destination = f"{base}_{suffix}{extension}"
+        suffix += 1
+    if os.path.abspath(destination) != os.path.abspath(path):
+        os.rename(path, destination)
+    return destination, app_name, version
+
+
+def ipatool_account_email(bin_path):
+    try:
+        result = subprocess.run(
+            ipatool_command(bin_path, ["auth", "info", "--format", "json"]),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout).get("email", "")
+    except Exception:
+        pass
+    return ""
+
 
 # Active background jobs for download tracking
 ACTIVE_JOBS = {}
@@ -409,7 +576,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
         bin_path = find_ipatool_binary()
         if bin_path:
             try:
-                res = subprocess.run([bin_path, "auth", "info", "--format", "json"],
+                res = subprocess.run(ipatool_command(bin_path, ["auth", "info", "--format", "json"]),
                                      capture_output=True, text=True, timeout=5)
                 if res.returncode == 0:
                     data = json.loads(res.stdout)
@@ -474,7 +641,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
         bin_path = find_ipatool_binary()
         if bin_path:
-            cmd = [bin_path, "auth", "login", "--email", email, "--password", password, "--non-interactive", "--format", "json"]
+            cmd = ipatool_command(bin_path, ["auth", "login", "--email", email, "--password", password, "--non-interactive", "--format", "json"])
             if mzfinance:
                 cmd.append("--mzfinance")
             if auth_code:
@@ -528,7 +695,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
     def handle_api_revoke(self):
         bin_path = find_ipatool_binary()
         if bin_path:
-            subprocess.run([bin_path, "auth", "revoke", "--non-interactive"], capture_output=True)
+            subprocess.run(ipatool_command(bin_path, ["auth", "revoke", "--non-interactive"]), capture_output=True)
 
         home = os.path.expanduser("~")
         session_file = os.path.join(home, ".ipatool", "session.json")
@@ -602,7 +769,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
             bin_path = find_ipatool_binary()
             if bin_path:
                 try:
-                    res = subprocess.run([bin_path, "search", term, "--limit", limit, "--format", "json"],
+                    res = subprocess.run(ipatool_command(bin_path, ["search", term, "--limit", limit, "--format", "json"]),
                                          capture_output=True, text=True, timeout=10)
                     if res.returncode == 0:
                         data = json.loads(res.stdout)
@@ -833,7 +1000,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
         bin_path = find_ipatool_binary()
         if bin_path:
-            res = subprocess.run([bin_path, "purchase", "--bundle-identifier", bundle_id, "--format", "json"],
+            res = subprocess.run(ipatool_command(bin_path, ["purchase", "--bundle-identifier", bundle_id, "--format", "json"]),
                                  capture_output=True, text=True, timeout=30)
             if res.returncode == 0:
                 return self.send_json({"success": True, "alreadyOwned": "already owned" in (res.stdout + res.stderr).lower()})
@@ -857,13 +1024,15 @@ class RequestHandler(SimpleHTTPRequestHandler):
             "id": job_id,
             "bundleId": bundle_id,
             "appId": app_id,
-            "appName": bundle_id or str(app_id),
+            "appName": payload.get("appName") or bundle_id or str(app_id),
             "progress": 0.0,
             "bytesRead": 0,
             "totalBytes": 1024 * 1024 * 50, # default estimate
             "speed": "—",
             "status": "queued",
             "error": None,
+            "warning": "",
+            "version": "",
             "outputPath": output_path or os.path.join(os.getcwd(), f"{bundle_id or app_id}.ipa"),
             "createdAt": int(time.time())
         }
@@ -888,16 +1057,23 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
         bin_path = find_ipatool_binary()
         if bin_path:
+            auto_name = (not output_path or os.path.isdir(output_path)) and str(platform).lower() not in ("macos", "mac")
+            target_directory = os.path.abspath(output_path if output_path and os.path.isdir(output_path) else os.getcwd())
+            download_path = output_path
+            if auto_name:
+                download_path = os.path.join(target_directory, f"ipatool-download-{job_id}-{secrets.token_hex(4)}.ipa")
+            account_email = ipatool_account_email(bin_path) if auto_name else ""
+
             with JOBS_LOCK:
                 ACTIVE_JOBS[job_id]["status"] = "purchasing" if purchase else "downloading"
 
-            cmd = [bin_path, "download"]
+            cmd = ipatool_command(bin_path, ["download"])
             if bundle_id:
                 cmd.extend(["--bundle-identifier", bundle_id])
             elif app_id:
                 cmd.extend(["--app-id", str(app_id)])
-            if output_path:
-                cmd.extend(["--output", output_path])
+            if download_path:
+                cmd.extend(["--output", download_path])
             if version_id:
                 cmd.extend(["--external-version-id", version_id])
             if platform:
@@ -911,11 +1087,31 @@ class RequestHandler(SimpleHTTPRequestHandler):
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = proc.communicate()
 
+            final_path = download_path or ACTIVE_JOBS[job_id].get("outputPath", "")
+            app_name = payload.get("appName") or bundle_id or str(app_id)
+            version = ""
+            warning = ""
+            if proc.returncode == 0 and auto_name:
+                try:
+                    final_path, app_name, version = rename_downloaded_ipa(download_path, account_email, app_name)
+                except Exception:
+                    warning = DOWNLOAD_FILENAME_FALLBACK_WARNING
+
             with JOBS_LOCK:
                 if proc.returncode == 0:
-                    ACTIVE_JOBS[job_id]["status"] = "completed"
-                    ACTIVE_JOBS[job_id]["progress"] = 100.0
+                    job = ACTIVE_JOBS[job_id]
+                    job["status"] = "completed"
+                    job["progress"] = 100.0
+                    job["outputPath"] = final_path
+                    job["appName"] = app_name
+                    job["version"] = version
+                    job["warning"] = warning
                 else:
+                    if auto_name and os.path.isfile(download_path):
+                        try:
+                            os.remove(download_path)
+                        except OSError:
+                            pass
                     ACTIVE_JOBS[job_id]["status"] = "error"
                     ACTIVE_JOBS[job_id]["error"] = stderr or stdout or "Download process failed"
             return
@@ -951,7 +1147,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
         bin_path = find_ipatool_binary()
         if bin_path:
-            cmd = [bin_path, "list-versions", "--format", "json"]
+            cmd = ipatool_command(bin_path, ["list-versions", "--format", "json"])
             if bundle_id:
                 cmd.extend(["--bundle-identifier", bundle_id])
             elif app_id:

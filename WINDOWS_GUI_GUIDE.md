@@ -19,6 +19,7 @@ The graphical user interface (GUI) for **ipatool** enables any user without tech
    - Simple visual login dialog.
    - Interactive modal prompt for 6-digit two-factor verification codes.
    - Safe and direct communication with Apple servers over SRP-6a / GSA protocol.
+   - The GUI automatically creates and reuses ipatool's local keychain passphrase, so no terminal prompt is needed; this is separate from your Apple ID password. An existing session encrypted with a different, manually entered passphrase may require one new Apple ID login.
 
 2. **App Store Search & Discovery:**
    - Search by app name or paste an App Store URL.
@@ -38,6 +39,7 @@ The graphical user interface (GUI) for **ipatool** enables any user without tech
 5. **Download Manager & Windows Explorer Integration:**
    - Live download percentage, speed, and status.
    - "Show in Explorer" button opens the downloaded `.ipa` location immediately.
+   - Automatically named files use the app name, version, minimum OS and Apple ID name before `@` from the downloaded IPA/session (for example `Pinterest_14.39_iOS16.0_spdx15.ipa`). A filename entered explicitly is preserved.
 
 6. **Install `.IPA` on a connected iOS device:**
    - Automatically detects connected iPhone/iPad devices with `libimobiledevice`.
