@@ -75,7 +75,7 @@ func ownedAppsWithRetry(acc appstore.Account) (appstore.Account, []appstore.App,
 
 		if errors.Is(err, appstore.ErrPasswordTokenExpired) && !refreshed {
 			if acc.Password == "" {
-				return acc, nil, errors.New("password token is expired and no password is stored; log in again or import a fresh account session")
+				return acc, nil, errors.New("password token is expired and no password is stored; log in again to refresh the session")
 			}
 
 			refreshedAcc, refreshErr := refreshAccount(acc)

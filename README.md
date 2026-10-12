@@ -28,8 +28,8 @@ upstream `ipatool` maintainers.
   to a text file.
 - **Version history** for downloading older builds of an app.
 - **Install to device** through `libimobiledevice` (`ideviceinstaller`).
-- Built-in **Apple ID login** with 2FA support, session import/export, and an
-  alternative macOS login path (`Sign In Apple ID SKIP`).
+- Built-in **Apple ID login** with 2FA support and an alternative macOS login
+  path (`Sign In Apple ID SKIP`).
 - Russian and English interface, dark and light themes.
 
 ## Install

@@ -82,9 +82,12 @@ jobs:
       - name: Apply WebGUI overlay and patch
         run: |
           cd ipatool
-          if [ -f ../webgui/patches/overlay.patch ]; then
-            git apply ../webgui/patches/overlay.patch || patch -p1 < ../webgui/patches/overlay.patch || true
+          if [ ! -f ../webgui/patches/overlay.patch ]; then
+            echo "WebGUI overlay patch is missing" >&2
+            exit 1
           fi
+          git apply --check ../webgui/patches/overlay.patch
+          git apply ../webgui/patches/overlay.patch
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
           mkdir -p ./resources

@@ -252,8 +252,6 @@ func runGUIServer(host string, port int, noBrowser bool) error {
 	mux.HandleFunc("/api/auth/login", handleAPILogin)
 	mux.HandleFunc("/api/auth/login/mzfinance", handleAPILoginMZFinance)
 	mux.HandleFunc("/api/auth/revoke", handleAPIRevoke)
-	mux.HandleFunc("/api/auth/export", handleAPIExport)
-	mux.HandleFunc("/api/auth/import", handleAPIImport)
 	mux.HandleFunc("/api/search", handleAPISearch)
 	mux.HandleFunc("/api/search/all", handleAPISearchAll)
 	mux.HandleFunc("/api/removed-apps", handleAPIRemovedApps)
@@ -468,52 +466,6 @@ func handleAPIRevoke(w http.ResponseWriter, r *http.Request) {
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success": true,
-	})
-}
-
-func handleAPIExport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	info, err := dependencies.AppStore.AccountInfo()
-	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "not authenticated")
-		return
-	}
-
-	acc := info.Account
-	acc.Password = ""
-
-	w.Header().Set("Content-Disposition", "attachment; filename=account-session.json")
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(acc)
-}
-
-func handleAPIImport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	var acc appstore.Account
-	if err := json.NewDecoder(r.Body).Decode(&acc); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid account session JSON")
-		return
-	}
-
-	out, err := dependencies.AppStore.ImportAccount(appstore.ImportAccountInput{
-		Account: acc,
-	})
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"email":   out.Account.Email,
 	})
 }
 

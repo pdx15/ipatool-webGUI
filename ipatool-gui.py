@@ -343,8 +343,6 @@ class RequestHandler(SimpleHTTPRequestHandler):
             return self.handle_api_versions(query)
         elif path == "/api/version-metadata":
             return self.handle_api_version_metadata(query)
-        elif path == "/api/auth/export":
-            return self.handle_api_export()
         elif path == "/api/install/devices":
             return self.handle_api_install_devices()
         elif path == "/api/install/status":
@@ -376,8 +374,6 @@ class RequestHandler(SimpleHTTPRequestHandler):
             return self.handle_api_login_mzfinance(payload)
         elif path == "/api/auth/revoke":
             return self.handle_api_revoke()
-        elif path == "/api/auth/import":
-            return self.handle_api_import(payload)
         elif path == "/api/purchase":
             return self.handle_api_purchase(payload)
         elif path == "/api/download":
@@ -543,34 +539,6 @@ class RequestHandler(SimpleHTTPRequestHandler):
                 pass
 
         self.send_json({"success": True})
-
-    def handle_api_export(self):
-        home = os.path.expanduser("~")
-        session_file = os.path.join(home, ".ipatool", "session.json")
-        session_data = {"email": "user@example.com", "storeFront": "143441-1,29"}
-        if os.path.isfile(session_file):
-            try:
-                with open(session_file, "r") as f:
-                    session_data = json.load(f)
-            except Exception:
-                pass
-
-        session_data.pop("password", None)
-        body = json.dumps(session_data, indent=2).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Disposition", "attachment; filename=account-session.json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def handle_api_import(self, payload):
-        home = os.path.expanduser("~")
-        os.makedirs(os.path.join(home, ".ipatool"), exist_ok=True)
-        session_file = os.path.join(home, ".ipatool", "session.json")
-        with open(session_file, "w") as f:
-            json.dump(payload, f, indent=2)
-        self.send_json({"success": True, "email": payload.get("email", "")})
 
     def _respond(self, payload, send=True, status_code=200):
         """Sends payload as a JSON response, or returns it when send is False so
