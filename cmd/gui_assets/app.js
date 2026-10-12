@@ -141,8 +141,6 @@ const i18n = {
     login_password_label: 'Пароль Apple ID:',
     login_security_hint: 'Пароль передается напрямую на защищенные серверы Apple (SRP-6a/GSA) и не сохраняется третьими лицами.',
     login_btn: 'Войти в Apple ID',
-    login_test_btn: 'Войти в Apple ID SKIP',
-    login_test_hint: 'Если при авторизации через «Войти в Apple ID» возникают ошибки (HTTP 403, «An unknown error has occurred», ошибки GSA/SRP или проблемы с 2FA), используйте альтернативный метод авторизации через «Войти в Apple ID SKIP».',
     anisette_card_title: '⚙️ Проверка iCloud для Windows',
     anisette_card_desc: 'Проверьте, установлена ли нужная версия iCloud на этом компьютере',
     anisette_alert_title: 'Для Windows-версии ipatool:',
@@ -392,8 +390,6 @@ const i18n = {
     login_password_label: 'Apple ID Password:',
     login_security_hint: 'Your password is sent directly to Apple secure servers (SRP-6a/GSA) over HTTPS and is never stored unencrypted.',
     login_btn: 'Sign In',
-    login_test_btn: 'Sign In Apple ID SKIP',
-    login_test_hint: 'If you get errors while signing in via "Sign In" (e.g. HTTP 403, "An unknown error has occurred", GSA/SRP login failures, or 2FA code issues), use the alternative method "Sign In Apple ID SKIP".',
     anisette_card_title: '⚙️ iCloud Check for Windows',
     anisette_card_desc: 'Verify that the required iCloud version is installed on this computer',
     anisette_alert_title: 'For Windows users of ipatool:',
@@ -694,18 +690,12 @@ function togglePasswordVisibility(inputId) {
 // ==========================================
 
 // Shows/hides platform-specific pieces of the UI once the server-reported OS
-// is known. The iCloud-for-Windows card is hidden on macOS, and the alternative
-// "Войти в Apple ID SKIP" (GSA -> MZFinance) button is shown only on macOS.
+// is known. The iCloud-for-Windows card is hidden on macOS.
 function applyPlatformVisibility() {
   const isMac = state.os === 'darwin';
 
   const icloudCard = document.getElementById('icloud-presence-card');
   if (icloudCard) icloudCard.style.display = isMac ? 'none' : '';
-
-  const testBtn = document.getElementById('login-test-btn');
-  const testHint = document.getElementById('login-test-hint');
-  if (testBtn) testBtn.style.display = isMac ? 'inline-flex' : 'none';
-  if (testHint) testHint.style.display = isMac ? '' : 'none';
 }
 
 async function checkICloudStatus() {
@@ -810,7 +800,7 @@ function updateAccountUI() {
   }
 }
 
-// Handle Login (standard path: GSA -> native/fast -> MZFinance)
+// Handle Login
 async function handleLogin(e) {
   e.preventDefault();
   const email = document.getElementById('login-email').value.trim();
@@ -829,28 +819,7 @@ async function handleLogin(e) {
   await submitLogin('/api/auth/login', email, password, '', submitBtn, originalHtml);
 }
 
-// Handle Test Login (macOS-only diagnostic: GSA -> MZFinance directly)
-async function handleTestLogin(e) {
-  e.preventDefault();
-  const email = document.getElementById('login-email').value.trim();
-  const password = document.getElementById('login-password').value;
-  const submitBtn = document.getElementById('login-test-btn');
-
-  if (!email || !password) {
-    showToast('Заполните Email и Пароль', 'error');
-    return;
-  }
-
-  const originalHtml = submitBtn.innerHTML;
-  submitBtn.disabled = true;
-  submitBtn.textContent = 'Авторизация (MZFinance)...';
-
-  await submitLogin('/api/auth/login/mzfinance', email, password, '', submitBtn, originalHtml);
-}
-
-// Shared login submission for both the standard and the test (MZFinance) paths.
-// Remembering the endpoint in lastPendingLogin lets the 2FA retry reuse the
-// exact same flow that was in progress.
+// Login submission helper (reused for 2FA retry).
 async function submitLogin(endpoint, email, password, authCode, submitBtn, originalHtml) {
   try {
     const res = await fetch(endpoint, {
