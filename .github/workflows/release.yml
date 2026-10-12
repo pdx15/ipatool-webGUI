@@ -121,34 +121,42 @@ jobs:
         run: |
           cd ipatool
           VERSION="${{ needs.get_version.outputs.release_version }}"
+          BIN_NAME="ipatool-${VERSION}-arm64-macOS"
           CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
             CGO_CFLAGS="-mmacosx-version-min=10.15" \
             CGO_LDFLAGS="-mmacosx-version-min=10.15" \
             go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
-            -o "../ipatool-${VERSION}-arm64-macOS" .
+            -o "../${BIN_NAME}" .
+          cd ..
+          chmod +x "${BIN_NAME}"
+          zip "${BIN_NAME}.zip" "${BIN_NAME}"
 
       - name: Build macOS Intel (AMD64)
         run: |
           cd ipatool
           VERSION="${{ needs.get_version.outputs.release_version }}"
+          BIN_NAME="ipatool-${VERSION}-amd64-macOS"
           CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
             CGO_CFLAGS="-mmacosx-version-min=10.15" \
             CGO_LDFLAGS="-mmacosx-version-min=10.15" \
             go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
-            -o "../ipatool-${VERSION}-amd64-macOS" .
+            -o "../${BIN_NAME}" .
+          cd ..
+          chmod +x "${BIN_NAME}"
+          zip "${BIN_NAME}.zip" "${BIN_NAME}"
 
       - name: Upload macOS ARM64 binary
         uses: actions/upload-artifact@v4
         with:
-          name: ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS
-          path: ipatool-*-arm64-macOS
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS.zip
+          path: ipatool-*-arm64-macOS.zip
           if-no-files-found: error
 
       - name: Upload macOS AMD64 binary
         uses: actions/upload-artifact@v4
         with:
-          name: ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS
-          path: ipatool-*-amd64-macOS
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS.zip
+          path: ipatool-*-amd64-macOS.zip
           if-no-files-found: error
 
   build_windows:
@@ -161,16 +169,62 @@ jobs:
         with:
           path: webgui
 
-      - name: Download official Windows ipatool binary
-        run: |
-          UPSTREAM_VER="${{ needs.get_version.outputs.raw_version }}"
-          UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
-          mkdir -p ipatool-win-bin
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache: false
 
-          URL="https://github.com/majd/ipatool/releases/download/${UPSTREAM_TAG}/ipatool-${UPSTREAM_VER}-windows-amd64.tar.gz"
-          echo "Downloading $URL"
-          curl -fsSL -o ipatool-win.tar.gz "$URL"
-          tar -xzf ipatool-win.tar.gz -C ipatool-win-bin
+      - name: Clone upstream majd/ipatool
+        run: |
+          UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
+          echo "Cloning majd/ipatool @ $UPSTREAM_TAG"
+          git clone --depth 1 --branch "$UPSTREAM_TAG" https://github.com/majd/ipatool.git ipatool || \
+          git clone --depth 1 https://github.com/majd/ipatool.git ipatool
+
+      - name: Add the WebGUI sources to the upstream tree
+        run: |
+          cd ipatool
+          PATCH="../webgui/patches/register-gui.patch"
+          UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
+
+          # The GUI builds against ipatool's public API only - the appstore,
+          # keychain and http packages are used exactly as upstream ships them.
+          # The single upstream change is the one-line registration of the gui
+          # subcommand; without it the binary would not expose it.
+          if [ ! -f "$PATCH" ]; then
+            echo "::error::Command registration patch is missing at $PATCH"
+            exit 1
+          fi
+
+          if ! git apply --check "$PATCH"; then
+            echo "::error::$PATCH does not apply to ipatool $UPSTREAM_TAG - cmd/root.go changed upstream; regenerate the one-line guiCmd() registration patch against that tag."
+            exit 1
+          fi
+
+          git apply "$PATCH"
+          cp -r ../webgui/cmd/gui* ./cmd/
+          cp -r ../webgui/cmd/gui_assets ./cmd/
+          mkdir -p ./resources
+          cp -r ../webgui/resources/* ./resources/ 2>/dev/null || true
+
+      - name: Verify the GUI builds against unmodified ipatool sources
+        run: |
+          cd ipatool
+          if ! git diff --quiet -- pkg/; then
+            echo "::error::The GUI depends on modified pkg/ sources; it must use ipatool's public API instead."
+            git diff --stat -- pkg/
+            exit 1
+          fi
+          GOOS=windows go build ./...
+
+      - name: Build Windows binary (AMD64)
+        run: |
+          cd ipatool
+          VERSION="${{ needs.get_version.outputs.release_version }}"
+          GOOS=windows GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
+            -o "../ipatool.exe" .
 
       - name: Download and extract libimobiledevice suite for Windows
         run: |
@@ -192,24 +246,15 @@ jobs:
           DIST="ipatool-${{ needs.get_version.outputs.release_version }}-windows"
           mkdir -p "$DIST"
 
-          # 1. Official ipatool executable
-          find ipatool-win-bin/ -type f -name "ipatool*.exe" -exec cp {} "$DIST/ipatool.exe" \;
+          # 1. Compiled ipatool executable with WebGUI
+          cp ipatool.exe "$DIST/ipatool.exe"
 
           # 2. Tools directory (ideviceinstaller, idevice_id, dlls)
           cp -r tools "$DIST/"
 
           # 3. WebGUI files and scripts
-          cp webgui/ipatool-gui.py "$DIST/"
           cp webgui/ipatool-gui.bat "$DIST/"
-          cp webgui/ipatool-gui.ps1 "$DIST/"
-          # The Go build embeds the removed-apps catalog, but the Python
-          # launcher reads it from disk, so it ships next to the program.
           cp webgui/resources/Apps_ID_List.txt "$DIST/"
-          cp webgui/README.md "$DIST/"
-          cp webgui/WINDOWS_GUI_GUIDE.md "$DIST/"
-          cp webgui/ИНСТРУКЦИЯ_GUI.md "$DIST/"
-          mkdir -p "$DIST/cmd"
-          cp -r webgui/cmd/gui_assets "$DIST/cmd/"
 
           # 4. Create ZIP archive
           zip -r "${DIST}.zip" "$DIST"
@@ -229,13 +274,13 @@ jobs:
       - name: Download macOS ARM64 binary
         uses: actions/download-artifact@v4
         with:
-          name: ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS.zip
           path: ./dist
 
       - name: Download macOS AMD64 binary
         uses: actions/download-artifact@v4
         with:
-          name: ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS.zip
           path: ./dist
 
       - name: Download Windows zip package
@@ -246,7 +291,6 @@ jobs:
 
       - name: List release assets
         run: |
-          chmod +x ./dist/ipatool-*-macOS || true
           ls -la ./dist/
 
       - name: Create GitHub Release
@@ -258,6 +302,6 @@ jobs:
           prerelease: false
           generate_release_notes: true
           files: |
-            ./dist/ipatool-*-arm64-macOS
-            ./dist/ipatool-*-amd64-macOS
+            ./dist/ipatool-*-arm64-macOS.zip
+            ./dist/ipatool-*-amd64-macOS.zip
             ./dist/ipatool-*-windows.zip

@@ -43,22 +43,24 @@ if %ERRORLEVEL% equ 0 (
     goto :exit
 )
 
-where python >nul 2>nul
-if %ERRORLEVEL% equ 0 (
-    echo Starting Python GUI Server...
-    python ipatool-gui.py --port 54321
-    goto :exit
+if exist "ipatool-gui.py" (
+    where python >nul 2>nul
+    if %ERRORLEVEL% equ 0 (
+        echo Starting Python GUI Server...
+        python ipatool-gui.py --port 54321
+        goto :exit
+    )
+
+    where py >nul 2>nul
+    if %ERRORLEVEL% equ 0 (
+        echo Starting Python GUI Server...
+        py ipatool-gui.py --port 54321
+        goto :exit
+    )
 )
 
-where py >nul 2>nul
-if %ERRORLEVEL% equ 0 (
-    echo Starting Python GUI Server...
-    py ipatool-gui.py --port 54321
-    goto :exit
-)
-
-echo [ERROR] Neither ipatool.exe nor Python was found.
-echo Please place ipatool.exe in this folder or install Python.
+echo [ERROR] ipatool.exe was not found.
+echo Please place ipatool.exe in this folder.
 
 :exit
 echo.
