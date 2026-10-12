@@ -757,16 +757,6 @@ body {
   color: var(--accent-primary);
 }
 
-/* Minimum supported iOS version badge shown next to the display version. */
-.badge-ios {
-  background: rgba(139, 92, 246, 0.15);
-  color: #a78bfa;
-  font-size: 0.68rem;
-  padding: 1px 6px;
-  white-space: nowrap;
-  vertical-align: middle;
-  cursor: help;
-}
 
 .badge-success {
   background: var(--success-bg);

@@ -116,7 +116,6 @@ const i18n = {
     version_col_date: 'Дата выхода',
     version_col_action: 'Действие',
     version_col_select: 'Выбрать',
-    min_ios_badge_title: 'Минимальная поддерживаемая версия iOS',
     batch_version_pick_hint: 'Отметьте версию, чтобы скачать именно её вместо последней (по кнопке «Скачать выбранные» вверху). Отметка снимает галочку с карточки.',
     active_downloads_title: 'Активные загрузки',
     active_downloads_desc: 'Текущие процессы скачивания и обработки пакетов',
@@ -366,7 +365,6 @@ const i18n = {
     version_col_date: 'Release Date',
     version_col_action: 'Action',
     version_col_select: 'Select',
-    min_ios_badge_title: 'Minimum supported iOS version',
     batch_version_pick_hint: 'Tick a version to download it instead of the latest (via the "Download selected" button above). Ticking it clears the card checkbox.',
     active_downloads_title: 'Active Downloads',
     active_downloads_desc: 'Current download and package signing processes',
@@ -1545,7 +1543,7 @@ async function fetchVersionMetadata(bundleId, appId, versionId) {
     if (!dispEl && !dateEl) return;
 
     if (data.success) {
-      if (dispEl) dispEl.innerHTML = renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion);
+      if (dispEl) dispEl.innerHTML = renderDisplayVersionCell(data.displayVersion);
       if (dateEl) dateEl.textContent = data.releaseDate || '—';
     } else {
       if (dispEl) dispEl.textContent = '—';
@@ -1559,15 +1557,11 @@ async function fetchVersionMetadata(bundleId, appId, versionId) {
   }
 }
 
-// Builds the inner HTML of a "Display Version" table cell: the app version and,
-// when known, a small "iOS x.y" badge showing the minimum supported iOS
-// version (read from the IPA Info.plist MinimumOSVersion key).
-function renderDisplayVersionCell(displayVersion, minimumOSVersion) {
-  const version = batchEscapeHtml(displayVersion || '—');
-  const minOS = (minimumOSVersion || '').trim();
-  if (!minOS) return version;
-  const title = batchText('min_ios_badge_title');
-  return `${version} <span class="badge badge-ios" title="${batchEscapeHtml(title)}">iOS ${batchEscapeHtml(minOS)}</span>`;
+// Builds the inner HTML of a "Display Version" table cell. ipatool reports the
+// display version and the release date of a build, but not the minimum OS
+// version the package requires, so the cell carries the version alone.
+function renderDisplayVersionCell(displayVersion) {
+  return batchEscapeHtml(displayVersion || '—');
 }
 
 async function handleFetchVersions(e) {
@@ -1798,7 +1792,7 @@ function renderVersionsPage() {
     (vId, data) => {
       const dispEl = document.getElementById(`disp-ver-${vId}`);
       const dateEl = document.getElementById(`date-ver-${vId}`);
-      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion) : '—';
+      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion) : '—';
       if (dateEl) dateEl.textContent = data ? (data.releaseDate || '—') : '—';
     },
     () => ps.renderToken !== token
@@ -2694,7 +2688,7 @@ function renderBatchVersionsPage(container, item, reversed, pageState) {
       // Only the display version is filled in: unlike the version history on
       // its own tab, the batch table has no release-date column.
       const dispEl = document.getElementById(`batch-disp-${item.appId}-${vId}`);
-      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion) : '—';
+      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion) : '—';
     },
     () => pageState.renderToken !== token
   );
