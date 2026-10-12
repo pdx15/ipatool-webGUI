@@ -84,12 +84,14 @@ jobs:
           cd ipatool
           GUI_PATCH="../webgui/patches/register-gui.patch"
           METADATA_PATCH="../webgui/patches/minimum-os-version.patch"
+          PRIORITY_PATCH="../webgui/patches/download-product-priority.patch"
           UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
 
           # Keep the upstream integration narrow and explicit: register the GUI
-          # command, and expose MinimumOSVersion from the Info.plist that
-          # ipatool already range-reads to build version metadata.
-          for PATCH in "$GUI_PATCH" "$METADATA_PATCH"; do
+          # command, expose MinimumOSVersion from the Info.plist that ipatool
+          # already range-reads to build version metadata, and prioritize the
+          # direct volumeStore download request ahead of the kbsync fallback.
+          for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH"; do
             if [ ! -f "$PATCH" ]; then
               echo "::error::Required upstream patch is missing: $PATCH"
               exit 1
@@ -102,6 +104,7 @@ jobs:
 
           git apply "$GUI_PATCH"
           git apply "$METADATA_PATCH"
+          git apply "$PRIORITY_PATCH"
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
           mkdir -p ./resources
@@ -110,9 +113,10 @@ jobs:
       - name: Verify the GUI builds with the minimal upstream metadata extension
         run: |
           cd ipatool
-          # The only permitted package changes are the metadata implementation
-          # and its test, exposing MinimumOSVersion from the IPA Info.plist.
-          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip)\.go$' || true)
+          # The only permitted package changes are the metadata implementation,
+          # its test, exposing MinimumOSVersion from the IPA Info.plist, and the
+          # volumeStore priority patch.
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip|download_product)\.go$' || true)
           if [ -n "$unexpected_pkg_changes" ]; then
             echo "::error::Unexpected changes to upstream package sources:"
             echo "$unexpected_pkg_changes"
@@ -191,12 +195,14 @@ jobs:
           cd ipatool
           GUI_PATCH="../webgui/patches/register-gui.patch"
           METADATA_PATCH="../webgui/patches/minimum-os-version.patch"
+          PRIORITY_PATCH="../webgui/patches/download-product-priority.patch"
           UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
 
           # Keep the upstream integration narrow and explicit: register the GUI
-          # command, and expose MinimumOSVersion from the Info.plist that
-          # ipatool already range-reads to build version metadata.
-          for PATCH in "$GUI_PATCH" "$METADATA_PATCH"; do
+          # command, expose MinimumOSVersion from the Info.plist that ipatool
+          # already range-reads to build version metadata, and prioritize the
+          # direct volumeStore download request ahead of the kbsync fallback.
+          for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH"; do
             if [ ! -f "$PATCH" ]; then
               echo "::error::Required upstream patch is missing: $PATCH"
               exit 1
@@ -209,6 +215,7 @@ jobs:
 
           git apply "$GUI_PATCH"
           git apply "$METADATA_PATCH"
+          git apply "$PRIORITY_PATCH"
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
           mkdir -p ./resources
@@ -217,7 +224,7 @@ jobs:
       - name: Verify the GUI builds with the minimal upstream metadata extension
         run: |
           cd ipatool
-          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip)\.go$' || true)
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip|download_product)\.go$' || true)
           if [ -n "$unexpected_pkg_changes" ]; then
             echo "::error::Unexpected changes to upstream package sources:"
             echo "$unexpected_pkg_changes"

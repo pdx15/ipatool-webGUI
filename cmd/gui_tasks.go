@@ -24,6 +24,8 @@ type downloadTaskInput struct {
 	// state for percentage, size and speed.
 	Progress       *progressbar.ProgressBar
 	AcquireLicense bool
+	OnPurchase     func()
+	OnDownload     func()
 }
 
 // refreshAccount retries authentication with the stored password when Apple
@@ -119,12 +121,18 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 
 		if errors.Is(err, appstore.ErrLicenseRequired) && input.AcquireLicense && !licenseAttempted {
 			licenseAttempted = true
+			if input.OnPurchase != nil {
+				input.OnPurchase()
+			}
 			updated, alreadyOwned, purchaseErr := purchaseWithRetry(account, input.App)
 			if purchaseErr != nil {
 				return updated, appstore.DownloadOutput{}, licenseAcquired, purchaseErr
 			}
 			account = updated
 			licenseAcquired = !alreadyOwned
+			if input.OnDownload != nil {
+				input.OnDownload()
+			}
 			continue
 		}
 

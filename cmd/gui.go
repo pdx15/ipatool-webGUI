@@ -972,24 +972,12 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 		app.Name = req.AppName
 	}
 
-	// Step 1: Auto purchase if requested (with automatic session refresh when
-	// Apple reports that the cached password token expired).
-	if req.Purchase {
-		job.Status = "purchasing"
-		activeJobs.set(job)
-
-		// Keep the last known account; a successful refresh is persisted in the
-		// keychain even if the purchase call itself reports another error. The
-		// download step below retries and surfaces a precise error if needed.
-		refreshed, _, _ := purchaseWithRetry(acc, app)
-		acc = refreshed
-	}
-
-	// Step 2: Download
-	job.Status = "downloading"
-	activeJobs.set(job)
-
+	// Download first and only acquire a license when Apple reports
+	// ErrLicenseRequired (handled inside downloadWithRetry when AcquireLicense
+	// is true). This avoids an extra Purchase round-trip for apps the account
+	// already owns or delisted apps that cannot be purchased again.
 	progress := newDownloadProgress()
+	job.Status = "downloading"
 	job.progress = progress
 	activeJobs.set(job)
 
@@ -1001,7 +989,18 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 		Platform:          platform,
 		Progress:          progress.bar,
 		AcquireLicense:    req.Purchase,
+		OnPurchase: func() {
+			activeJobs.update(job.ID, func(j *DownloadJob) {
+				j.Status = "purchasing"
+			})
+		},
+		OnDownload: func() {
+			activeJobs.update(job.ID, func(j *DownloadJob) {
+				j.Status = "downloading"
+			})
+		},
 	})
+	acc = refreshed
 
 	if err != nil {
 		job.Status = "error"
@@ -1009,7 +1008,6 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 		activeJobs.set(job)
 		return acc
 	}
-	acc = refreshed
 
 	// The bar carries the exact byte counts of the finished transfer.
 	progress.sample(job)
