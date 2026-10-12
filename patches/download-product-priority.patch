@@ -1,5 +1,5 @@
 diff --git a/pkg/appstore/appstore_download_product.go b/pkg/appstore/appstore_download_product.go
-index 72b83ff..a8e0990 100644
+index 72b83ff..6337412 100644
 --- a/pkg/appstore/appstore_download_product.go
 +++ b/pkg/appstore/appstore_download_product.go
 @@ -44,28 +44,6 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
@@ -31,34 +31,55 @@ index 72b83ff..a8e0990 100644
  	volumeStore := t.volumeStoreEndpoint(acc)
  
  	res, err := t.downloadClient.Send(t.downloadProductRequest(volumeStore, acc, app, guid, externalVersionID))
-@@ -77,15 +55,23 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
- 		return res, platform, nil
- 	}
+@@ -79,17 +57,23 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  
--	// Try redownload when volumeStore returns no items, either silently or
--	// with the message-only "No Longer Available" response.
+ 	// Try redownload when volumeStore returns no items, either silently or
+ 	// with the message-only "No Longer Available" response.
 -	if bag == nil {
 -		fetched, err := t.fetchURLBag(guid)
 -		if err != nil {
 -			return res, platform, fmt.Errorf("failed to get bag for redownload fallback: %w", err)
-+	// Try the bag endpoints (ent/download, then redownload/updateProduct) when
-+	// volumeStore returns no items, either silently or with the message-only
-+	// "No Longer Available" response.
 +	bag, err := t.fetchURLBag(guid)
 +	if err != nil {
 +		return res, platform, fmt.Errorf("failed to get bag for redownload fallback: %w", err)
 +	}
 +
-+	if t.kbsyncGenerator != nil && bag.EntDownloadEndpoint != "" {
-+		entRes, resolvedPlatform, entErr := t.sendPreferredDownload(ctx, bag.EntDownloadEndpoint, acc, app, guid, externalVersionID, platform)
-+		if entErr == nil {
-+			return entRes, resolvedPlatform, nil
++	tryEntDownload := func(fallbackRes http.Result[downloadResult], fallbackPlatform Platform, fallbackErr error) (http.Result[downloadResult], Platform, error) {
++		if t.kbsyncGenerator != nil && bag.EntDownloadEndpoint != "" {
++			if entRes, resolvedPlatform, entErr := t.sendPreferredDownload(ctx, bag.EntDownloadEndpoint, acc, app, guid, externalVersionID, fallbackPlatform); entErr == nil {
++				return entRes, resolvedPlatform, nil
++			}
  		}
  
 -		bag = &fetched
-+		if err := ctx.Err(); err != nil {
-+			return http.Result[downloadResult]{}, platform, fmt.Errorf("download request canceled: %w", err)
-+		}
++		return fallbackRes, fallbackPlatform, fallbackErr
  	}
  
  	if bag.RedownloadEndpoint == "" {
+-		return res, platform, nil
++		return tryEntDownload(res, platform, nil)
+ 	}
+ 
+ 	redownload, err := newDownloadEndpoint(bag.RedownloadEndpoint, redownloadProductPath)
+@@ -120,6 +104,10 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+ 			platform = PlatformIPhone
+ 		}
+ 
++		if updateErr != nil && (isEmptyDownloadProductResponse(updateRes) || isUnavailableDownloadProductResponse(updateRes)) {
++			return tryEntDownload(updateRes, platform, updateErr)
++		}
++
+ 		return updateRes, platform, updateErr
+ 	}
+ 
+@@ -127,6 +115,10 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+ 		return redownloadRes, platform, fmt.Errorf("failed to send redownload request: %w", err)
+ 	}
+ 
++	if isEmptyDownloadProductResponse(redownloadRes) || isUnavailableDownloadProductResponse(redownloadRes) {
++		return tryEntDownload(redownloadRes, platform, nil)
++	}
++
+ 	return redownloadRes, platform, nil
+ }
+ 

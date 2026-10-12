@@ -47,12 +47,25 @@ index cb71e17..056bab7 100644
  			Expect(atomic.LoadInt64(servedBytes)).To(BeNumerically("<", int64(len(ipa)/2)))
  		},
 diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
-index d824c43..a8a5333 100644
+index d824c43..e188e51 100644
 --- a/pkg/appstore/appstore_partial_zip.go
 +++ b/pkg/appstore/appstore_partial_zip.go
-@@ -27,8 +27,9 @@ var infoPlistDisplayVersionKeys = []string{
+@@ -26,9 +26,22 @@ var infoPlistDisplayVersionKeys = []string{
+ 	"bundleShortVersionString",
  }
  
++var infoPlistMinimumOSVersionKeys = []string{
++	"MinimumOSVersion",
++	"minimumOSVersion",
++	"LSMinimumSystemVersion",
++}
++
++const (
++	zipTailPrefetchSize int64 = 512 * 1024
++	zipReadAheadSize    int64 = 64 * 1024
++	zipEOCDSearchWindow int64 = 65557
++)
++
  type versionMetadata struct {
 -	DisplayVersion string
 -	ReleaseDate    time.Time
@@ -62,7 +75,147 @@ index d824c43..a8a5333 100644
  }
  
  type httpRangeReaderAt struct {
-@@ -230,12 +231,29 @@ func readVersionMetadataFromInfoPlist(file *zip.File) (versionMetadata, error) {
+@@ -37,6 +50,118 @@ type httpRangeReaderAt struct {
+ 	size   int64
+ }
+ 
++type bufferedRangeReaderAt struct {
++	source   io.ReaderAt
++	size     int64
++	bufStart int64
++	buf      []byte
++}
++
++func newBufferedRangeReaderAt(source io.ReaderAt, size int64) *bufferedRangeReaderAt {
++	return &bufferedRangeReaderAt{
++		source:   source,
++		size:     size,
++		bufStart: -1,
++	}
++}
++
++func (b *bufferedRangeReaderAt) ReadAt(p []byte, off int64) (int, error) {
++	if len(p) == 0 {
++		return 0, nil
++	}
++
++	if off < 0 {
++		return 0, errors.New("offset is negative")
++	}
++
++	if off >= b.size {
++		return 0, io.EOF
++	}
++
++	want := int64(len(p))
++	reachingEOF := false
++	if off+want >= b.size {
++		want = b.size - off
++		reachingEOF = true
++	}
++
++	if want > zipTailPrefetchSize {
++		return b.source.ReadAt(p, off)
++	}
++
++	if b.bufStart >= 0 && off >= b.bufStart && off+want <= b.bufStart+int64(len(b.buf)) {
++		start := int(off - b.bufStart)
++		n := copy(p[:int(want)], b.buf[start:start+int(want)])
++		if reachingEOF {
++			return n, io.EOF
++		}
++
++		return n, nil
++	}
++
++	var fetchStart, fetchEnd int64
++	if off >= b.size-zipEOCDSearchWindow {
++		tailWindow := zipTailPrefetchSize
++		if b.size > 0 && tailWindow > b.size/4 {
++			tailWindow = b.size / 4
++		}
++		if tailWindow < b.size-off {
++			tailWindow = b.size - off
++		}
++		if tailWindow > b.size {
++			tailWindow = b.size
++		}
++		fetchStart = b.size - tailWindow
++		fetchEnd = b.size
++	} else {
++		window := zipReadAheadSize
++		if b.bufStart > off && b.bufStart-off <= 4*1024*1024 {
++			window = zipTailPrefetchSize
++		}
++		if b.size > 0 && window > b.size/4 {
++			window = b.size / 4
++		}
++		if window < want {
++			window = want
++		}
++		fetchStart = off
++		fetchEnd = off + window
++		if b.bufStart > off && fetchEnd > b.bufStart && fetchEnd < b.size {
++			fetchEnd = b.bufStart
++		}
++		if fetchEnd > b.size {
++			fetchEnd = b.size
++		}
++	}
++
++	buf := make([]byte, int(fetchEnd-fetchStart))
++	n, err := b.source.ReadAt(buf, fetchStart)
++	if err != nil && !errors.Is(err, io.EOF) {
++		return 0, err
++	}
++
++	b.bufStart = fetchStart
++	b.buf = buf[:n]
++
++	if off < b.bufStart || off >= b.bufStart+int64(len(b.buf)) {
++		return 0, io.ErrUnexpectedEOF
++	}
++
++	start := int(off - b.bufStart)
++	avail := len(b.buf) - start
++	toCopy := int(want)
++	if toCopy > avail {
++		toCopy = avail
++	}
++
++	copied := copy(p[:toCopy], b.buf[start:start+toCopy])
++	if copied < int(want) || reachingEOF {
++		return copied, io.EOF
++	}
++
++	return copied, nil
++}
++
+ func newHTTPRangeReaderAt(client apphttp.Client[interface{}], url string) (*httpRangeReaderAt, int64, error) {
+ 	if url == "" {
+ 		return nil, 0, errors.New("url is empty")
+@@ -69,7 +194,10 @@ func remoteFileSize(client apphttp.Client[interface{}], url string) (int64, erro
+ 	}
+ 
+ 	if res != nil && res.Body != nil {
+-		defer res.Body.Close()
++		defer func() {
++			_, _ = io.Copy(io.Discard, res.Body)
++			_ = res.Body.Close()
++		}()
+ 	}
+ 
+ 	if res.StatusCode != http.StatusPartialContent {
+@@ -172,7 +300,7 @@ func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, erro
+ 		return versionMetadata{}, err
+ 	}
+ 
+-	zipReader, err := zip.NewReader(reader, size)
++	zipReader, err := zip.NewReader(newBufferedRangeReaderAt(reader, size), size)
+ 	if err != nil {
+ 		return versionMetadata{}, fmt.Errorf("failed to open zip reader: %w", err)
+ 	}
+@@ -230,12 +358,33 @@ func readVersionMetadataFromInfoPlist(file *zip.File) (versionMetadata, error) {
  		return versionMetadata{}, err
  	}
  
@@ -78,17 +231,21 @@ index d824c43..a8a5333 100644
  }
  
 +func readMinimumOSVersionFromInfoPlist(metadata map[string]interface{}) string {
-+	value, ok := metadata["MinimumOSVersion"]
-+	if !ok || value == nil {
-+		return ""
++	for _, key := range infoPlistMinimumOSVersionKeys {
++		value, ok := metadata[key]
++		if !ok || value == nil {
++			continue
++		}
++
++		minimumOSVersion := strings.TrimSpace(fmt.Sprintf("%v", value))
++		if minimumOSVersion == "" || minimumOSVersion == "<nil>" {
++			continue
++		}
++
++		return minimumOSVersion
 +	}
 +
-+	minimumOSVersion := strings.TrimSpace(fmt.Sprintf("%v", value))
-+	if minimumOSVersion == "<nil>" {
-+		return ""
-+	}
-+
-+	return minimumOSVersion
++	return ""
 +}
 +
  func readDisplayVersionFromMetadata(metadata map[string]interface{}) (string, error) {
