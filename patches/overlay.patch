@@ -1,0 +1,309 @@
+diff --git a/cmd/root.go b/cmd/root.go
+index b2aa044..0937b05 100644
+--- a/cmd/root.go
++++ b/cmd/root.go
+@@ -53,6 +53,7 @@ func rootCmd() *cobra.Command {
+ 	cmd.AddCommand(ListVersionsCmd())
+ 	cmd.AddCommand(getVersionMetadataCmd())
+ 	cmd.AddCommand(mcpCmd())
++	cmd.AddCommand(guiCmd())
+ 
+ 	return cmd
+ }
+diff --git a/pkg/appstore/app.go b/pkg/appstore/app.go
+index 24fd47d..a1d481c 100644
+--- a/pkg/appstore/app.go
++++ b/pkg/appstore/app.go
+@@ -1,19 +1,64 @@
+ package appstore
+ 
+ import (
++	"encoding/json"
++	"strconv"
+ 	"time"
+ 
+ 	"github.com/rs/zerolog"
+ )
+ 
++// FlexibleInt64 accepts both a JSON number and a JSON string when decoding.
++// Apple's search/lookup responses sometimes return numeric fields (e.g.
++// fileSizeBytes) as a quoted string; this type keeps the request working
++// regardless of which form Apple returns.
++type FlexibleInt64 int64
++
++func (f *FlexibleInt64) UnmarshalJSON(data []byte) error {
++	if len(data) == 0 || string(data) == "null" {
++		*f = 0
++		return nil
++	}
++	if data[0] == '"' {
++		var s string
++		if err := json.Unmarshal(data, &s); err != nil {
++			return err
++		}
++		v, err := strconv.ParseInt(s, 10, 64)
++		if err != nil {
++			return err
++		}
++		*f = FlexibleInt64(v)
++		return nil
++	}
++	var v int64
++	if err := json.Unmarshal(data, &v); err != nil {
++		return err
++	}
++	*f = FlexibleInt64(v)
++	return nil
++}
++
+ type App struct {
+-	ID           int64      `json:"trackId,omitempty"`
+-	BundleID     string     `json:"bundleId,omitempty"`
+-	Name         string     `json:"trackName,omitempty"`
+-	Version      string     `json:"version,omitempty"`
+-	Price        float64    `json:"price,omitempty"`
+-	PurchaseDate time.Time  `json:"purchaseDate,omitzero"`
+-	Platforms    []Platform `json:"platforms,omitzero"`
++	ID             int64         `json:"trackId,omitempty"`
++	BundleID       string        `json:"bundleId,omitempty"`
++	Name           string        `json:"trackName,omitempty"`
++	Version        string        `json:"version,omitempty"`
++	FileSizeBytes  FlexibleInt64 `json:"fileSizeBytes,omitempty"`
++	Price          float64       `json:"price,omitempty"`
++	ArtworkURL60   string        `json:"artworkUrl60,omitempty"`
++	ArtworkURL100  string        `json:"artworkUrl100,omitempty"`
++	ArtworkURL512  string        `json:"artworkUrl512,omitempty"`
++	ArtistName     string        `json:"artistName,omitempty"`
++	SellerName     string        `json:"sellerName,omitempty"`
++	FormattedPrice string        `json:"formattedPrice,omitempty"`
++	Description    string        `json:"description,omitempty"`
++	AverageRating  float64       `json:"averageUserRating,omitempty"`
++	RatingCount    int64         `json:"userRatingCount,omitempty"`
++	Genres         []string      `json:"genres,omitempty"`
++	// PurchaseDate is only populated for apps returned by OwnedApps.
++	PurchaseDate   time.Time     `json:"purchaseDate,omitzero"`
++	Platforms      []Platform    `json:"platforms,omitzero"`
+ }
+ 
+ type VersionHistoryInfo struct {
+diff --git a/pkg/appstore/appstore.go b/pkg/appstore/appstore.go
+index b107915..cb6db20 100644
+--- a/pkg/appstore/appstore.go
++++ b/pkg/appstore/appstore.go
+@@ -14,6 +14,9 @@ type AppStore interface {
+ 	Login(input LoginInput) (LoginOutput, error)
+ 	// AccountInfo returns the information of the authenticated account.
+ 	AccountInfo() (AccountInfoOutput, error)
++	// ImportAccount stores an existing account session, e.g. one exported on
++	// another machine using "ipatool auth export".
++	ImportAccount(input ImportAccountInput) (ImportAccountOutput, error)
+ 	// Revoke revokes the active credentials.
+ 	Revoke() error
+ 	// Lookup looks apps up by bundle identifier or numeric app ID.
+@@ -25,6 +28,10 @@ type AppStore interface {
+ 	// Purchase acquires a license for the desired app.
+ 	// Note: only free apps are supported.
+ 	Purchase(input PurchaseInput) error
++	// CheckDownload performs the direct-download request without transferring
++	// the package, so callers can validate that the account holds a license
++	// (it returns ErrLicenseRequired otherwise).
++	CheckDownload(input CheckDownloadInput) (CheckDownloadOutput, error)
+ 	// Download downloads the app package from the App Store to the desired location.
+ 	Download(input DownloadInput) (DownloadOutput, error)
+ 	// ReplicateSinf replicates the sinf for the IPA package.
+diff --git a/pkg/appstore/appstore_download.go b/pkg/appstore/appstore_download.go
+index f1c3886..0dce72a 100644
+--- a/pkg/appstore/appstore_download.go
++++ b/pkg/appstore/appstore_download.go
+@@ -28,6 +28,14 @@ type DownloadInput struct {
+ 	Progress          *progressbar.ProgressBar
+ 	ExternalVersionID string
+ 	Platform          Platform
++	// ProgressWriter, when set, receives the raw downloaded bytes so callers
++	// (e.g. the GUI progress tracker) can show byte/percentage progress. This is
++	// separate from Progress, which is the CLI progress-bar renderer.
++	ProgressWriter io.Writer
++	// OnTotalBytes, when set, is invoked once the total size of the package
++	// (in bytes) is known so callers (e.g. the GUI progress tracker) can show
++	// a percentage and weight while the download is in progress.
++	OnTotalBytes func(total int64)
+ }
+ 
+ type DownloadOutput struct {
+@@ -35,6 +43,98 @@ type DownloadOutput struct {
+ 	Sinfs           []Sinf
+ }
+ 
++// CheckDownloadInput is the input for direct-download license probes.
++type CheckDownloadInput struct {
++	Account  Account
++	App      App
++	Platform Platform
++}
++
++type CheckDownloadOutput struct {
++	Version                    string
++	ExternalVersionIdentifiers []string
++	LatestExternalVersionID    string
++}
++
++// CheckDownload performs the same request Download sends (same endpoint, same
++// payload, same failure classification) and stops once the response has been
++// validated. It returns ErrLicenseRequired when the account has no license for
++// the app, and nil with the response metadata when the app is downloadable.
++func (t *appstore) CheckDownload(input CheckDownloadInput) (CheckDownloadOutput, error) {
++	macAddr, err := t.machine.MacAddress()
++	if err != nil {
++		return CheckDownloadOutput{}, fmt.Errorf("failed to get mac address: %w", err)
++	}
++
++	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
++
++	externalVersionID := ""
++	if input.Platform == PlatformAppleTV || input.Platform == PlatformVisionOS {
++		externalVersionID, err = t.lookupLatestExternalVersionID(input.Account, input.App, input.Platform)
++		missingTVOffer := input.Platform == PlatformAppleTV &&
++			(errors.Is(err, errPlatformAppNotFound) || errors.Is(err, errPlatformOffersNotFound))
++		if err != nil && !missingTVOffer {
++			return CheckDownloadOutput{}, fmt.Errorf("failed to resolve platform version: %w", err)
++		}
++	}
++
++	res, _, err := t.sendDownloadProduct(context.Background(), input.Account, input.App, guid, externalVersionID, input.Platform)
++	if err != nil {
++		return CheckDownloadOutput{}, err
++	}
++
++	if res.Data.FailureType == FailureTypePasswordTokenExpired ||
++		res.Data.FailureType == FailureTypeSignInRequired ||
++		res.Data.FailureType == FailureTypeDeviceVerificationFailed ||
++		res.Data.FailureType == FailureTypeLicenseAlreadyExists {
++		return CheckDownloadOutput{}, ErrPasswordTokenExpired
++	}
++
++	if res.Data.FailureType == FailureTypeLicenseNotFound {
++		return CheckDownloadOutput{}, ErrLicenseRequired
++	}
++
++	if res.Data.CustomerMessage != "" && (res.Data.FailureType != "" || len(res.Data.Items) == 0) {
++		return CheckDownloadOutput{}, NewErrorWithMetadata(fmt.Errorf("received error: %s", res.Data.CustomerMessage), res)
++	}
++
++	if res.Data.FailureType != "" {
++		return CheckDownloadOutput{}, NewErrorWithMetadata(fmt.Errorf("received error: %s", res.Data.FailureType), res)
++	}
++
++	if len(res.Data.Items) == 0 {
++		return CheckDownloadOutput{}, NewErrorWithMetadata(errors.New("invalid response"), res)
++	}
++
++	item := res.Data.Items[0]
++
++	version := "unknown"
++	if itemVersion, ok := item.Metadata["bundleShortVersionString"]; ok {
++		version = fmt.Sprintf("%v", itemVersion)
++	}
++
++	output := CheckDownloadOutput{
++		Version: version,
++	}
++
++	if item.Metadata != nil {
++		if rawVersions, ok := item.Metadata["softwareVersionExternalIdentifiers"].([]interface{}); ok {
++			var ids []string
++			for _, v := range rawVersions {
++				if idStr := fmt.Sprintf("%v", v); idStr != "" {
++					ids = append(ids, idStr)
++				}
++			}
++			output.ExternalVersionIdentifiers = ids
++			if len(ids) > 0 {
++				output.LatestExternalVersionID = ids[len(ids)-1]
++			}
++		}
++	}
++
++	return output, nil
++}
++
+ func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
+ 	macAddr, err := t.machine.MacAddress()
+ 	if err != nil {
+@@ -52,7 +152,7 @@ func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
+ 	}
+ 
+ 	externalVersionID := input.ExternalVersionID
+-	if externalVersionID == "" && (input.Platform == PlatformAppleTV || input.Platform == PlatformWatchOS || input.Platform == PlatformVisionOS) {
++	if externalVersionID == "" && (input.Platform == PlatformAppleTV || input.Platform == PlatformVisionOS) {
+ 		externalVersionID, err = t.lookupLatestExternalVersionID(input.Account, input.App, input.Platform)
+ 		// Delisted tvOS apps may have no catalog offer but still be available
+ 		// for redownload. Validate the returned package's platform below.
+@@ -116,7 +216,7 @@ func (t *appstore) Download(input DownloadInput) (DownloadOutput, error) {
+ 
+ 	tmpPath := fmt.Sprintf("%s.tmp", destination)
+ 
+-	if err := t.downloadFile(input.Context, item.URL, tmpPath, input.Progress); err != nil {
++	if err := t.downloadFile(input.Context, item.URL, tmpPath, input.Progress, input.ProgressWriter, input.OnTotalBytes); err != nil {
+ 		return DownloadOutput{}, fmt.Errorf("failed to download file: %w", err)
+ 	}
+ 
+@@ -159,8 +259,6 @@ func (*appstore) validatePackagePlatform(path string, platform Platform) error {
+ 		expectedPlatform = "iPhoneOS"
+ 	case PlatformAppleTV:
+ 		expectedPlatform = "AppleTVOS"
+-	case PlatformWatchOS:
+-		expectedPlatform = "WatchOS"
+ 	case PlatformVisionOS:
+ 		expectedPlatform = "XROS"
+ 	default:
+@@ -218,12 +316,11 @@ func isTopLevelAppInfoPlist(path string) bool {
+ }
+ 
+ type downloadItemResult struct {
+-	PreflightPackageURL string                 `plist:"preflightPackageURL,omitempty"`
+-	ArtworkURL          string                 `plist:"artworkURL,omitempty"`
+-	HashMD5             string                 `plist:"md5,omitempty"`
+-	URL                 string                 `plist:"URL,omitempty"`
+-	Sinfs               []Sinf                 `plist:"sinfs,omitempty"`
+-	Metadata            map[string]interface{} `plist:"metadata,omitempty"`
++	ArtworkURL string                 `plist:"artworkURL,omitempty"`
++	HashMD5    string                 `plist:"md5,omitempty"`
++	URL        string                 `plist:"URL,omitempty"`
++	Sinfs      []Sinf                 `plist:"sinfs,omitempty"`
++	Metadata   map[string]interface{} `plist:"metadata,omitempty"`
+ }
+ 
+ type downloadResult struct {
+@@ -233,7 +330,7 @@ type downloadResult struct {
+ }
+ 
+ //nolint:nonamedreturns // Deferred close errors must propagate to callers.
+-func (t *appstore) downloadFile(ctx context.Context, src, dst string, progress *progressbar.ProgressBar) (err error) {
++func (t *appstore) downloadFile(ctx context.Context, src, dst string, progress *progressbar.ProgressBar, progressWriter io.Writer, onTotalBytes func(int64)) (err error) {
+ 	req, err := t.httpClient.NewRequest("GET", src, nil)
+ 	if err != nil {
+ 		return fmt.Errorf("failed to create request: %w", err)
+@@ -278,6 +375,10 @@ func (t *appstore) downloadFile(ctx context.Context, src, dst string, progress *
+ 		return err
+ 	}
+ 
++	if onTotalBytes != nil && total >= 0 {
++		onTotalBytes(total)
++	}
++
+ 	if complete {
+ 		return nil
+ 	}
+@@ -301,7 +402,11 @@ func (t *appstore) downloadFile(ctx context.Context, src, dst string, progress *
+ 			return fmt.Errorf("can not set bar progress: %w", err)
+ 		}
+ 
+-		writer = io.MultiWriter(file, progress)
++		writer = io.MultiWriter(writer, progress)
++	}
++
++	if progressWriter != nil {
++		writer = io.MultiWriter(writer, progressWriter)
+ 	}
+ 
+ 	var body io.Reader = res.Body

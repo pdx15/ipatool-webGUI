@@ -4,8 +4,5 @@
 .vscode/
 .idea/
 **/*_mock.go
-exp/
-/__pycache__
-/pdx15
-ipatool.exe
-*.zip
+exp/__pycache__/
+*.pyc

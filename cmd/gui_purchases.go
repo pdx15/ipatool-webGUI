@@ -39,6 +39,27 @@ type purchaseItem struct {
 	PurchaseDate string `json:"purchaseDate,omitempty"`
 }
 
+func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, error) {
+	var allApps []appstore.App
+	page := 1
+	for {
+		out, err := dependencies.AppStore.OwnedApps(appstore.OwnedAppsInput{
+			Account: acc,
+			Page:    page,
+			Limit:   appstore.MaxOwnedAppsLimit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		allApps = append(allApps, out.Results...)
+		if len(out.Results) == 0 || len(allApps) >= out.TotalCount {
+			break
+		}
+		page++
+	}
+	return allApps, nil
+}
+
 // ownedAppsWithRetry loads the full purchase history and refreshes the stored
 // session once when Apple reports an expired password token.
 //
@@ -47,12 +68,9 @@ func ownedAppsWithRetry(acc appstore.Account) (appstore.Account, []appstore.App,
 	refreshed := false
 
 	for attempt := 0; attempt < 2; attempt++ {
-		out, err := dependencies.AppStore.OwnedApps(appstore.OwnedAppsInput{
-			Account: acc,
-			All:     true,
-		})
+		apps, err := fetchAllOwnedApps(acc)
 		if err == nil {
-			return acc, out.Results, nil
+			return acc, apps, nil
 		}
 
 		if errors.Is(err, appstore.ErrPasswordTokenExpired) && !refreshed {
@@ -124,7 +142,6 @@ func invalidatePurchasesCache() {
 	purchasesState.Unlock()
 }
 
-// handleAPIPurchases serves GET /api/purchases[?refresh=1].
 func handleAPIPurchases(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -133,7 +150,7 @@ func handleAPIPurchases(w http.ResponseWriter, r *http.Request) {
 
 	info, err := dependencies.AppStore.AccountInfo()
 	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "you must log in to view purchase history")
+		jsonError(w, http.StatusUnauthorized, "you must log in to view purchases")
 		return
 	}
 
@@ -141,33 +158,31 @@ func handleAPIPurchases(w http.ResponseWriter, r *http.Request) {
 
 	apps, fetchedAt, cached, err := loadPurchases(info.Account, force)
 	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, appstore.ErrPasswordTokenExpired) {
-			status = http.StatusUnauthorized
-		}
-		jsonError(w, status, err.Error())
+		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	items := make([]purchaseItem, 0, len(apps))
 	for _, app := range apps {
-		item := purchaseItem{
-			AppID:    app.ID,
-			BundleID: app.BundleID,
-			Name:     app.Name,
-			Version:  app.Version,
-		}
+		purchaseDate := ""
 		if !app.PurchaseDate.IsZero() {
-			item.PurchaseDate = app.PurchaseDate.UTC().Format(time.RFC3339)
+			purchaseDate = app.PurchaseDate.Format("2006-01-02 15:04:05")
 		}
-		items = append(items, item)
+
+		items = append(items, purchaseItem{
+			AppID:        app.ID,
+			BundleID:     app.BundleID,
+			Name:         app.Name,
+			Version:      app.Version,
+			PurchaseDate: purchaseDate,
+		})
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success":   true,
-		"cached":    cached,
-		"fetchedAt": fetchedAt.UTC().Format(time.RFC3339),
+		"items":     items,
 		"count":     len(items),
-		"apps":      items,
+		"cached":    cached,
+		"fetchedAt": fetchedAt.Unix(),
 	})
 }

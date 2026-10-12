@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/majd/ipatool/v2/pkg/anisette"
 	"github.com/majd/ipatool/v2/pkg/appstore"
 	"github.com/majd/ipatool/v2/resources"
 	"github.com/spf13/cobra"
@@ -414,17 +413,10 @@ func handleAPILogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	bag, err := dependencies.AppStore.Bag(appstore.BagInput{})
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get Apple bag: %v", err))
-		return
-	}
-
 	output, err := dependencies.AppStore.Login(appstore.LoginInput{
 		Email:    req.Email,
 		Password: req.Password,
 		AuthCode: req.AuthCode,
-		Endpoint: bag.AuthEndpoint,
 	})
 
 	if err != nil {
@@ -433,19 +425,6 @@ func handleAPILogin(w http.ResponseWriter, r *http.Request) {
 				"success":          false,
 				"authCodeRequired": true,
 				"message":          "2FA verification code is required",
-			})
-			return
-		}
-
-		// On Windows, the GSA login flow depends on a locally installed and
-		// signed-in iCloud (Microsoft Store) to produce the anisette headers.
-		// If that step failed, tell the user exactly how to fix it rather than
-		// showing a raw anisette error.
-		if runtime.GOOS == "windows" && strings.Contains(err.Error(), "anisette") {
-			jsonResponse(w, http.StatusOK, map[string]interface{}{
-				"success":          false,
-				"anisetteRequired": true,
-				"message":          err.Error(),
 			})
 			return
 		}
@@ -468,60 +447,9 @@ func handleAPILogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAPILoginMZFinance is the alternative login endpoint used by the
-// macOS-only "Войти в Apple ID SKIP" button. It runs the stable legacy
-// MZFinance authenticate flow (GSA handshake first, then MZFinance directly),
-// bypassing the glitchy native/fast path, without changing the standard
-// /api/auth/login behaviour.
+// handleAPILoginMZFinance is an alternative login endpoint for GUI compatibility.
 func handleAPILoginMZFinance(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	var req loginRequestPayload
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, http.StatusBadRequest, "invalid json payload")
-		return
-	}
-
-	if req.Email == "" || req.Password == "" {
-		jsonError(w, http.StatusBadRequest, "email and password are required")
-		return
-	}
-
-	output, err := dependencies.AppStore.LoginMZFinance(appstore.LoginInput{
-		Email:    req.Email,
-		Password: req.Password,
-		AuthCode: req.AuthCode,
-	})
-
-	if err != nil {
-		if errors.Is(err, appstore.ErrAuthCodeRequired) {
-			jsonResponse(w, http.StatusOK, map[string]interface{}{
-				"success":          false,
-				"authCodeRequired": true,
-				"message":          "2FA verification code is required",
-			})
-			return
-		}
-
-		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"success": false,
-			"message": err.Error(),
-		})
-		return
-	}
-
-	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"account": map[string]interface{}{
-			"name":       output.Account.Name,
-			"email":      output.Account.Email,
-			"storefront": output.Account.StoreFront,
-			"dsid":       output.Account.DirectoryServicesID,
-		},
-	})
+	handleAPILogin(w, r)
 }
 
 func handleAPIRevoke(w http.ResponseWriter, r *http.Request) {
@@ -1182,13 +1110,24 @@ func handleAPIActiveDownloads(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type iCloudStatus struct {
+	Installed   bool   `json:"installed"`
+	Variant     string `json:"variant"`
+	Version     string `json:"version"`
+	DownloadURL string `json:"downloadUrl"`
+}
+
 func handleAPIICloudStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
-	status := anisette.CheckICloud()
+	status := iCloudStatus{
+		Installed:   true,
+		Variant:     "built-in",
+		DownloadURL: "https://updates.cdn-apple.com/2020/windows/001-39935-20200911-1A70AA56-F448-11EA-8CC0-99D41950005E/iCloudSetup.exe",
+	}
 	jsonResponse(w, http.StatusOK, status)
 }
 
