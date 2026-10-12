@@ -125,7 +125,7 @@ jobs:
             CGO_CFLAGS="-mmacosx-version-min=10.15" \
             CGO_LDFLAGS="-mmacosx-version-min=10.15" \
             go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
-            -o ../ipatool-webGUI-arm64-macOS .
+            -o "../ipatool-${VERSION}-arm64-macOS" .
 
       - name: Build macOS Intel (AMD64)
         run: |
@@ -135,20 +135,20 @@ jobs:
             CGO_CFLAGS="-mmacosx-version-min=10.15" \
             CGO_LDFLAGS="-mmacosx-version-min=10.15" \
             go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
-            -o ../ipatool-webGUI-amd64-macOS .
+            -o "../ipatool-${VERSION}-amd64-macOS" .
 
       - name: Upload macOS ARM64 binary
         uses: actions/upload-artifact@v4
         with:
-          name: ipatool-webGUI-arm64-macOS
-          path: ipatool-webGUI-arm64-macOS
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS
+          path: ipatool-*-arm64-macOS
           if-no-files-found: error
 
       - name: Upload macOS AMD64 binary
         uses: actions/upload-artifact@v4
         with:
-          name: ipatool-webGUI-amd64-macOS
-          path: ipatool-webGUI-amd64-macOS
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS
+          path: ipatool-*-amd64-macOS
           if-no-files-found: error
 
   build_windows:
@@ -189,7 +189,7 @@ jobs:
 
       - name: Assemble Windows distribution zip
         run: |
-          DIST="ipatool-webGUI-${{ needs.get_version.outputs.release_version }}-windows"
+          DIST="ipatool-${{ needs.get_version.outputs.release_version }}-windows"
           mkdir -p "$DIST"
 
           # 1. Official ipatool executable
@@ -217,8 +217,8 @@ jobs:
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: ipatool-webGUI-${{ needs.get_version.outputs.release_version }}-windows.zip
-          path: ipatool-webGUI-*-windows.zip
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-windows.zip
+          path: ipatool-*-windows.zip
           if-no-files-found: error
 
   release:
@@ -229,35 +229,35 @@ jobs:
       - name: Download macOS ARM64 binary
         uses: actions/download-artifact@v4
         with:
-          name: ipatool-webGUI-arm64-macOS
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS
           path: ./dist
 
       - name: Download macOS AMD64 binary
         uses: actions/download-artifact@v4
         with:
-          name: ipatool-webGUI-amd64-macOS
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS
           path: ./dist
 
       - name: Download Windows zip package
         uses: actions/download-artifact@v4
         with:
-          name: ipatool-webGUI-${{ needs.get_version.outputs.release_version }}-windows.zip
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-windows.zip
           path: ./dist
 
       - name: List release assets
         run: |
-          chmod +x ./dist/ipatool-webGUI-*-macOS || true
+          chmod +x ./dist/ipatool-*-macOS || true
           ls -la ./dist/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.get_version.outputs.release_tag }}
-          name: "ipatool WebGUI ${{ needs.get_version.outputs.release_version }}"
+          name: "ipatool webGUI ${{ needs.get_version.outputs.raw_version }}"
           draft: false
           prerelease: false
           generate_release_notes: true
           files: |
-            ./dist/ipatool-webGUI-arm64-macOS
-            ./dist/ipatool-webGUI-amd64-macOS
-            ./dist/ipatool-webGUI-*-windows.zip
+            ./dist/ipatool-*-arm64-macOS
+            ./dist/ipatool-*-amd64-macOS
+            ./dist/ipatool-*-windows.zip
