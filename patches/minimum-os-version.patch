@@ -1,0 +1,84 @@
+diff --git a/pkg/appstore/appstore_get_version_metadata.go b/pkg/appstore/appstore_get_version_metadata.go
+index e81877e..2517c76 100644
+--- a/pkg/appstore/appstore_get_version_metadata.go
++++ b/pkg/appstore/appstore_get_version_metadata.go
+@@ -17,8 +17,9 @@ type GetVersionMetadataInput struct {
+ }
+ 
+ type GetVersionMetadataOutput struct {
+-	DisplayVersion string
+-	ReleaseDate    time.Time
++	DisplayVersion   string
++	ReleaseDate      time.Time
++	MinimumOSVersion string
+ }
+ 
+ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersionMetadataOutput, error) {
+diff --git a/pkg/appstore/appstore_get_version_metadata_test.go b/pkg/appstore/appstore_get_version_metadata_test.go
+index cb71e17..03bc269 100644
+--- a/pkg/appstore/appstore_get_version_metadata_test.go
++++ b/pkg/appstore/appstore_get_version_metadata_test.go
+@@ -47,6 +47,7 @@ func testIPA(displayVersion string, releaseDate interface{}, modified time.Time)
+ 	info := map[string]interface{}{
+ 		"CFBundleExecutable":         "Test",
+ 		"CFBundleShortVersionString": displayVersion,
++		"MinimumOSVersion":           "15.0",
+ 	}
+ 	if releaseDate != nil {
+ 		info["releaseDate"] = releaseDate
+@@ -564,6 +565,7 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
+ 			Expect(err).NotTo(HaveOccurred())
+ 			Expect(output.DisplayVersion).To(Equal(displayVersion))
+ 			Expect(output.ReleaseDate).To(Equal(releaseDate))
++			Expect(output.MinimumOSVersion).To(Equal("15.0"))
+ 			Expect(atomic.LoadInt64(wholeGetCount)).To(BeZero())
+ 			Expect(atomic.LoadInt64(servedBytes)).To(BeNumerically("<", int64(len(ipa)/2)))
+ 		},
+diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
+index d824c43..a8a5333 100644
+--- a/pkg/appstore/appstore_partial_zip.go
++++ b/pkg/appstore/appstore_partial_zip.go
+@@ -27,8 +27,9 @@ var infoPlistDisplayVersionKeys = []string{
+ }
+ 
+ type versionMetadata struct {
+-	DisplayVersion string
+-	ReleaseDate    time.Time
++	DisplayVersion   string
++	ReleaseDate      time.Time
++	MinimumOSVersion string
+ }
+ 
+ type httpRangeReaderAt struct {
+@@ -230,12 +231,29 @@ func readVersionMetadataFromInfoPlist(file *zip.File) (versionMetadata, error) {
+ 		return versionMetadata{}, err
+ 	}
+ 
++	minimumOSVersion := readMinimumOSVersionFromInfoPlist(metadata)
++
+ 	return versionMetadata{
+-		DisplayVersion: displayVersion,
+-		ReleaseDate:    releaseDate,
++		DisplayVersion:   displayVersion,
++		ReleaseDate:      releaseDate,
++		MinimumOSVersion: minimumOSVersion,
+ 	}, nil
+ }
+ 
++func readMinimumOSVersionFromInfoPlist(metadata map[string]interface{}) string {
++	value, ok := metadata["MinimumOSVersion"]
++	if !ok || value == nil {
++		return ""
++	}
++
++	minimumOSVersion := strings.TrimSpace(fmt.Sprintf("%v", value))
++	if minimumOSVersion == "<nil>" {
++		return ""
++	}
++
++	return minimumOSVersion
++}
++
+ func readDisplayVersionFromMetadata(metadata map[string]interface{}) (string, error) {
+ 	for _, key := range infoPlistDisplayVersionKeys {
+ 		value, ok := metadata[key]

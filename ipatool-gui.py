@@ -13,6 +13,7 @@ import tempfile
 import urllib.request
 import urllib.parse
 import subprocess
+import secrets
 import threading
 import time
 import webbrowser
@@ -41,6 +42,73 @@ def find_ipatool_binary():
         elif c and os.path.isfile(c) and sys.platform == "win32":
             return c
     return None
+
+
+def ipatool_state_directory():
+    """Match ipatool's per-user state location for the keychain sidecar."""
+    home = os.path.expanduser("~")
+    legacy = os.path.join(home, ".ipatool")
+    state_dir = legacy
+    for variable in ("XDG_STATE_HOME", "XDG_DATA_HOME"):
+        base = os.environ.get(variable, "")
+        if base and os.path.isabs(base):
+            state_dir = os.path.join(base, "ipatool")
+            break
+
+    # ipatool keeps using its legacy directory if one already exists and the
+    # XDG destination also exists (or cannot be migrated to). Put the passphrase
+    # there so the next CLI invocation can reuse it regardless of migration.
+    if state_dir != legacy and os.path.exists(legacy):
+        return legacy
+    return state_dir
+
+
+def gui_keychain_passphrase():
+    """Load or create the stable passphrase used by GUI-launched ipatool calls."""
+    override = os.environ.get("IPATOOL_KEYCHAIN_PASSPHRASE", "")
+    if override:
+        return override
+
+    state_dir = ipatool_state_directory()
+    os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    path = os.path.join(state_dir, "webgui-keychain-passphrase")
+
+    for _ in range(10):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                passphrase = f.read().strip()
+            if passphrase:
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass  # Windows permissions are enforced by the directory ACL.
+                return passphrase
+            time.sleep(0.01)  # another GUI process may still be writing it
+        except FileNotFoundError:
+            pass
+
+        passphrase = secrets.token_urlsafe(32)
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(passphrase)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        return passphrase
+
+    raise RuntimeError("could not read or create the GUI keychain passphrase")
+
+
+def ipatool_command(bin_path, args):
+    """Build an ipatool command that always receives the GUI keychain key."""
+    return [bin_path, "--keychain-passphrase", gui_keychain_passphrase()] + list(args)
+
 
 # Active background jobs for download tracking
 ACTIVE_JOBS = {}
@@ -409,7 +477,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
         bin_path = find_ipatool_binary()
         if bin_path:
             try:
-                res = subprocess.run([bin_path, "auth", "info", "--format", "json"],
+                res = subprocess.run(ipatool_command(bin_path, ["auth", "info", "--format", "json"]),
                                      capture_output=True, text=True, timeout=5)
                 if res.returncode == 0:
                     data = json.loads(res.stdout)
@@ -474,7 +542,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
         bin_path = find_ipatool_binary()
         if bin_path:
-            cmd = [bin_path, "auth", "login", "--email", email, "--password", password, "--non-interactive", "--format", "json"]
+            cmd = ipatool_command(bin_path, ["auth", "login", "--email", email, "--password", password, "--non-interactive", "--format", "json"])
             if mzfinance:
                 cmd.append("--mzfinance")
             if auth_code:
@@ -528,7 +596,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
     def handle_api_revoke(self):
         bin_path = find_ipatool_binary()
         if bin_path:
-            subprocess.run([bin_path, "auth", "revoke", "--non-interactive"], capture_output=True)
+            subprocess.run(ipatool_command(bin_path, ["auth", "revoke", "--non-interactive"]), capture_output=True)
 
         home = os.path.expanduser("~")
         session_file = os.path.join(home, ".ipatool", "session.json")
@@ -602,7 +670,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
             bin_path = find_ipatool_binary()
             if bin_path:
                 try:
-                    res = subprocess.run([bin_path, "search", term, "--limit", limit, "--format", "json"],
+                    res = subprocess.run(ipatool_command(bin_path, ["search", term, "--limit", limit, "--format", "json"]),
                                          capture_output=True, text=True, timeout=10)
                     if res.returncode == 0:
                         data = json.loads(res.stdout)
@@ -833,7 +901,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
         bin_path = find_ipatool_binary()
         if bin_path:
-            res = subprocess.run([bin_path, "purchase", "--bundle-identifier", bundle_id, "--format", "json"],
+            res = subprocess.run(ipatool_command(bin_path, ["purchase", "--bundle-identifier", bundle_id, "--format", "json"]),
                                  capture_output=True, text=True, timeout=30)
             if res.returncode == 0:
                 return self.send_json({"success": True, "alreadyOwned": "already owned" in (res.stdout + res.stderr).lower()})
@@ -891,7 +959,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
             with JOBS_LOCK:
                 ACTIVE_JOBS[job_id]["status"] = "purchasing" if purchase else "downloading"
 
-            cmd = [bin_path, "download"]
+            cmd = ipatool_command(bin_path, ["download"])
             if bundle_id:
                 cmd.extend(["--bundle-identifier", bundle_id])
             elif app_id:
@@ -951,7 +1019,7 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
         bin_path = find_ipatool_binary()
         if bin_path:
-            cmd = [bin_path, "list-versions", "--format", "json"]
+            cmd = ipatool_command(bin_path, ["list-versions", "--format", "json"])
             if bundle_id:
                 cmd.extend(["--bundle-identifier", bundle_id])
             elif app_id:

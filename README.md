@@ -30,6 +30,12 @@ upstream `ipatool` maintainers.
 - **Install to device** through `libimobiledevice` (`ideviceinstaller`).
 - Built-in **Apple ID login** with 2FA support and an alternative macOS login
   path (`Sign In Apple ID SKIP`).
+- The GUI automatically creates and reuses ipatool's local keychain passphrase,
+  so file-backed storage does not prompt in the terminal. The passphrase stays
+  in the per-user ipatool state directory and is never sent to Apple or the
+  browser; its at-rest protection relies on the operating system's file
+  permissions. A file-backed session encrypted earlier with a different,
+  manually entered passphrase may need one new Apple ID login.
 - Russian and English interface, dark and light themes.
 
 ## Install

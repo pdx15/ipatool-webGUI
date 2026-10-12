@@ -826,6 +826,24 @@ body {
   flex: 1;
 }
 
+/* Keep the three official App Store actions inside the card at narrow widths. */
+.app-card:not(.removed-app-card) .app-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.app-card:not(.removed-app-card) .app-actions .btn {
+  min-width: 0;
+  padding-left: 6px;
+  padding-right: 6px;
+  gap: 4px;
+  white-space: normal;
+  line-height: 1.2;
+  text-align: center;
+}
+
 /* STATE CONTAINERS (Loading / Empty) */
 .state-container {
   text-align: center;

@@ -17,12 +17,44 @@
     if (url.includes('/api/search?')) return json({ success: true, results: [app(1), app(2), app(3)] });
     if (url.includes('/api/removed-apps')) return json({ success: true, results: [] });
     if (url === '/api/auth/revoke') return json({ success: true });
-    if (url.includes('/api/purchases')) return json({ success: true, apps: [app(1), app(2)], fetchedAt: new Date().toISOString() });
+    if (url.includes('/api/purchases')) return json({
+      success: true,
+      count: 2,
+      items: [app(1), app(2)].map(item => ({
+        appId: item.appId,
+        bundleId: item.bundleId,
+        name: item.name,
+        version: item.version,
+        purchaseDate: '2026-09-07 09:54:20',
+      })),
+      cached: true,
+      fetchedAt: Math.floor(Date.now() / 1000),
+    });
     if (url.includes('/api/install/devices')) return json({ success: true, devices: [], toolsAvailable: false, tools: [], driver: { available: false } });
     if (url.includes('/api/open-folder')) return json({ success: true });
     if (url.includes('/api/purchase')) return json({ success: true, message: 'Лицензия получена (демо)' });
-    if (url.includes('/api/versions')) return json({ success: true, versions: [], items: [] });
-    if (url.includes('/api/version-metadata')) return json({ success: true, items: [] });
+    if (url.includes('/api/versions')) return json({
+      success: true,
+      name: 'Demo App',
+      bundleID: 'com.demo.demoapp',
+      externalVersionIdentifiers: ['2026090701', '2026081201', '2025070101'],
+    });
+    if (url.includes('/api/version-metadata/batch')) {
+      const versionIds = body(req).versionIds || [];
+      const results = Object.fromEntries(versionIds.map((id, index) => [id, {
+        success: true,
+        displayVersion: `3.${index + 1}.0`,
+        releaseDate: '2026-09-07',
+        minimumOSVersion: index === 0 ? '16.0' : '15.0',
+      }]));
+      return json({ success: true, results });
+    }
+    if (url.includes('/api/version-metadata')) return json({
+      success: true,
+      displayVersion: '3.1.0',
+      releaseDate: '2026-09-07',
+      minimumOSVersion: '16.0',
+    });
     if (url === '/api/batch/check' && req.method === 'POST') {
       const b = body(req); const items = b.items || [];
       checkJob = { id: 'demo-check', status: 'running', total: items.length, started: Date.now(), items: items.map((x, i) => ({ appId: x.appId, name: x.name || `Demo App ${i + 1}`, status: 'checking' })) };

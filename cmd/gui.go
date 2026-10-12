@@ -64,16 +64,18 @@ var activeJobs = &jobTracker{
 	jobs: make(map[string]*DownloadJob),
 }
 
-// versionMetadataCache caches per-build display version and release date so
-// revisiting the version-history table does not re-read each IPA from Apple.
+// versionMetadataCache caches per-build display version, release date and
+// minimum OS version so revisiting the version-history table does not re-read
+// each IPA from Apple.
 type versionMetadataCache struct {
 	sync.RWMutex
 	m map[string]map[string]versionMetaEntry // appID -> versionID -> entry
 }
 
 type versionMetaEntry struct {
-	DisplayVersion string
-	ReleaseDate    string
+	DisplayVersion   string
+	ReleaseDate      string
+	MinimumOSVersion string
 }
 
 var versionMetaCache = &versionMetadataCache{
@@ -199,6 +201,10 @@ func guiCmd() *cobra.Command {
 		Use:   "gui",
 		Short: "Launch the graphical user interface for ipatool",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ensureGUIKeychainPassphrase(); err != nil {
+				return err
+			}
+
 			return runGUIServer(host, port, noBrowser)
 		},
 	}
@@ -1202,10 +1208,10 @@ type versionMetadataBatchRequest struct {
 // down to five round-trips.
 const versionMetadataBatchLimit = 10
 
-// handleAPIVersionMetadataBatch resolves display version / release date for
-// many builds in a single HTTP round-trip. Browsers cap concurrent requests
-// per host at ~6, so issuing one request per build could never exceed that
-// parallelism; here the fan-out happens server-side instead.
+// handleAPIVersionMetadataBatch resolves display version, release date and
+// minimum OS version for many builds in a single HTTP round-trip. Browsers cap
+// concurrent requests per host at ~6, so one request per build could never
+// exceed that parallelism; here the fan-out happens server-side instead.
 func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1301,10 +1307,11 @@ func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[
 		versionMetaCache.RUnlock()
 		if ok {
 			return map[string]interface{}{
-				"success":        true,
-				"displayVersion": entry.DisplayVersion,
-				"releaseDate":    entry.ReleaseDate,
-				"cached":         true,
+				"success":          true,
+				"displayVersion":   entry.DisplayVersion,
+				"releaseDate":      entry.ReleaseDate,
+				"minimumOSVersion": entry.MinimumOSVersion,
+				"cached":           true,
 			}, nil
 		}
 	}
@@ -1346,17 +1353,19 @@ func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[
 			versionMetaCache.m[appIDKey(appID)] = map[string]versionMetaEntry{}
 		}
 		versionMetaCache.m[appIDKey(appID)][versionID] = versionMetaEntry{
-			DisplayVersion: out.DisplayVersion,
-			ReleaseDate:    releaseDate,
+			DisplayVersion:   out.DisplayVersion,
+			ReleaseDate:      releaseDate,
+			MinimumOSVersion: out.MinimumOSVersion,
 		}
 		versionMetaCache.Unlock()
 	}
 
 	return map[string]interface{}{
-		"success":        true,
-		"displayVersion": out.DisplayVersion,
-		"releaseDate":    releaseDate,
-		"appleMs":        elapsedMs,
+		"success":          true,
+		"displayVersion":   out.DisplayVersion,
+		"releaseDate":      releaseDate,
+		"minimumOSVersion": out.MinimumOSVersion,
+		"appleMs":          elapsedMs,
 	}, nil
 }
 

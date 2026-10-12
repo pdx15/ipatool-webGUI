@@ -19,6 +19,7 @@ The graphical user interface (GUI) for **ipatool** enables any user without tech
    - Simple visual login dialog.
    - Interactive modal prompt for 6-digit two-factor verification codes.
    - Safe and direct communication with Apple servers over SRP-6a / GSA protocol.
+   - The GUI automatically creates and reuses ipatool's local keychain passphrase, so no terminal prompt is needed; this is separate from your Apple ID password. An existing session encrypted with a different, manually entered passphrase may require one new Apple ID login.
 
 2. **App Store Search & Discovery:**
    - Search by app name or paste an App Store URL.

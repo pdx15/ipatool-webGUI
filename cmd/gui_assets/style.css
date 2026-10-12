@@ -757,6 +757,16 @@ body {
   color: var(--accent-primary);
 }
 
+/* Minimum supported iOS version badge shown beside each historical build. */
+.badge-ios {
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  white-space: nowrap;
+  vertical-align: middle;
+  cursor: help;
+}
 
 .badge-success {
   background: var(--success-bg);
@@ -814,6 +824,24 @@ body {
 
 .app-actions .btn {
   flex: 1;
+}
+
+/* Keep the three official App Store actions inside the card at narrow widths. */
+.app-card:not(.removed-app-card) .app-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.app-card:not(.removed-app-card) .app-actions .btn {
+  min-width: 0;
+  padding-left: 6px;
+  padding-right: 6px;
+  gap: 4px;
+  white-space: normal;
+  line-height: 1.2;
+  text-align: center;
 }
 
 /* STATE CONTAINERS (Loading / Empty) */

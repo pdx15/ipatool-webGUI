@@ -25,6 +25,7 @@ const state = {
     loading: false,
     error: '',
     fetchedAt: null,
+    fromCache: false,
     loadedFor: null      // dsid the list belongs to
   }
 };
@@ -1716,8 +1717,8 @@ function buildVersionsPager(info, onPage, onSize) {
   return pager;
 }
 
-// Fetches display version / release date for the given builds. The visible
-// page is sent to the server in chunks (POST /api/version-metadata/batch)
+// Fetches display version / release date / minimum OS for the given builds.
+// The visible page is sent to the server in chunks (POST /api/version-metadata/batch)
 // and the server fans the Apple calls of each chunk out in parallel. Doing it
 // client-side with one fetch per build never got past the browser's
 // ~6-connections-per-host cap, while Apple answers each metadata request in
@@ -1827,6 +1828,7 @@ function onAuthStateChanged() {
     p.loading = false;
     p.error = '';
     p.fetchedAt = null;
+    p.fromCache = false;
     p.loadedFor = null;
     renderPurchases();
     return;
@@ -1837,6 +1839,7 @@ function onAuthStateChanged() {
     p.loaded = false;
     p.error = '';
     p.fetchedAt = null;
+    p.fromCache = false;
     p.loadedFor = dsid;
     refreshPurchases(false);
   }
@@ -1871,9 +1874,12 @@ async function refreshPurchases(force) {
       return;
     }
 
-    p.apps = Array.isArray(data.apps) ? data.apps : [];
+    // Current GUI servers return `items` with a Unix-seconds timestamp;
+    // accept the older `apps`/ISO timestamp shape as well.
+    const rawItems = Array.isArray(data.items) ? data.items : (Array.isArray(data.apps) ? data.apps : []);
+    p.apps = rawItems.map(normalizePurchaseItem);
     p.loaded = true;
-    p.fetchedAt = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
+    p.fetchedAt = parsePurchaseDate(data.fetchedAt) || new Date();
     p.fromCache = !!data.cached;
 
     if (force) {
@@ -1888,10 +1894,44 @@ async function refreshPurchases(force) {
   }
 }
 
-function formatPurchaseDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '—';
+function normalizePurchaseItem(item) {
+  if (!item || typeof item !== 'object') return {};
+  return {
+    ...item,
+    appId: item.appId ?? item.trackId ?? item.id ?? 0,
+    bundleId: item.bundleId ?? item.bundleID ?? item.bundleIdentifier ?? '',
+    name: item.name ?? item.trackName ?? '',
+    version: item.version ?? item.displayVersion ?? '',
+    purchaseDate: item.purchaseDate ?? item.date ?? ''
+  };
+}
+
+// Go sends fetchedAt as Unix seconds and purchaseDate as `YYYY-MM-DD HH:mm:ss`;
+// normalize both, while continuing to accept ISO strings from older/demo APIs.
+function parsePurchaseDate(value) {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (value === null || value === undefined || value === '') return null;
+
+  if (typeof value === 'number' || (typeof value === 'string' && /^\d+(?:\.\d+)?$/.test(value.trim()))) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    const milliseconds = Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric;
+    const date = new Date(milliseconds);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  let text = String(value).trim();
+  if (!text) return null;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(text)) {
+    text = text.replace(' ', 'T');
+  }
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatPurchaseDate(value) {
+  const d = parsePurchaseDate(value);
+  if (!d) return '—';
   return d.toLocaleString(state.lang === 'ru' ? 'ru-RU' : 'en-US', {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit'
