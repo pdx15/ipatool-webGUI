@@ -241,24 +241,30 @@ func runBatchCheckItem(
 	go func() {
 		res := batchCheckResult{acc: acc}
 
-		// When auto-purchase is enabled, attempt to acquire the license (with
-		// automatic session refresh when needed) before the direct-download
-		// request. The last known account is reused even when the purchase call
-		// itself fails, so a refreshed session is still available for the check.
-		if purchase {
-			refreshed, _, purchaseErr := purchaseWithRetry(acc, app)
-			if purchaseErr == nil {
-				res.acc = refreshed
-			}
-
-			res.purchaseErr = purchaseErr
-		}
-
-		_, out, checkErr := listVersionsWithRetry(res.acc, app, platform)
+		// Probe the direct-download endpoint first so apps the account already
+		// owns (including delisted apps that cannot be purchased again) avoid
+		// an unnecessary purchase round-trip. Only when Apple reports that a
+		// license is missing and auto-purchase is enabled do we acquire the
+		// license and repeat the probe.
+		refreshed, out, checkErr := listVersionsWithRetry(res.acc, app, platform)
+		res.acc = refreshed
 		res.out = out
 		res.checkErr = checkErr
 
-		if checkErr == nil {
+		if errors.Is(checkErr, appstore.ErrLicenseRequired) && purchase {
+			refreshed, _, purchaseErr := purchaseWithRetry(res.acc, app)
+			res.acc = refreshed
+			res.purchaseErr = purchaseErr
+
+			if purchaseErr == nil {
+				refreshed, out, checkErr = listVersionsWithRetry(res.acc, app, platform)
+				res.acc = refreshed
+				res.out = out
+				res.checkErr = checkErr
+			}
+		}
+
+		if res.checkErr == nil {
 			// Only apps the account may download get the extra catalog lookup
 			// that supplies the version string for the result list.
 			res.version = catalogVersion(res.acc, app, platform)
@@ -656,6 +662,7 @@ func runBatchDownloadItem(
 	go func() {
 		done <- executeDownloadJob(downloadJob, downloadRequestPayload{
 			AppID:             item.AppID,
+			AppName:           item.Name,
 			OutputPath:        req.OutputPath,
 			ExternalVersionID: item.VersionID,
 			Platform:          req.Platform,

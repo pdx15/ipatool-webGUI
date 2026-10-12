@@ -1,0 +1,64 @@
+diff --git a/pkg/appstore/appstore_download_product.go b/pkg/appstore/appstore_download_product.go
+index 72b83ff..a8e0990 100644
+--- a/pkg/appstore/appstore_download_product.go
++++ b/pkg/appstore/appstore_download_product.go
+@@ -44,28 +44,6 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+ 		}
+ 	}
+ 
+-	// Prefer ent/download when its generator and bag endpoint are available.
+-	// Keep the fetched bag for the legacy chain if this attempt cannot serve
+-	// the requested app; asset, network, and response failures can fall back.
+-	var bag *urlBag
+-
+-	if t.kbsyncGenerator != nil {
+-		fetched, err := t.fetchURLBag(guid)
+-		if err == nil {
+-			bag = &fetched
+-			if bag.EntDownloadEndpoint != "" {
+-				res, resolvedPlatform, err := t.sendPreferredDownload(ctx, bag.EntDownloadEndpoint, acc, app, guid, externalVersionID, platform)
+-				if err == nil {
+-					return res, resolvedPlatform, nil
+-				}
+-			}
+-		}
+-	}
+-
+-	if err := ctx.Err(); err != nil {
+-		return http.Result[downloadResult]{}, platform, fmt.Errorf("download request canceled: %w", err)
+-	}
+-
+ 	volumeStore := t.volumeStoreEndpoint(acc)
+ 
+ 	res, err := t.downloadClient.Send(t.downloadProductRequest(volumeStore, acc, app, guid, externalVersionID))
+@@ -77,15 +55,23 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+ 		return res, platform, nil
+ 	}
+ 
+-	// Try redownload when volumeStore returns no items, either silently or
+-	// with the message-only "No Longer Available" response.
+-	if bag == nil {
+-		fetched, err := t.fetchURLBag(guid)
+-		if err != nil {
+-			return res, platform, fmt.Errorf("failed to get bag for redownload fallback: %w", err)
++	// Try the bag endpoints (ent/download, then redownload/updateProduct) when
++	// volumeStore returns no items, either silently or with the message-only
++	// "No Longer Available" response.
++	bag, err := t.fetchURLBag(guid)
++	if err != nil {
++		return res, platform, fmt.Errorf("failed to get bag for redownload fallback: %w", err)
++	}
++
++	if t.kbsyncGenerator != nil && bag.EntDownloadEndpoint != "" {
++		entRes, resolvedPlatform, entErr := t.sendPreferredDownload(ctx, bag.EntDownloadEndpoint, acc, app, guid, externalVersionID, platform)
++		if entErr == nil {
++			return entRes, resolvedPlatform, nil
+ 		}
+ 
+-		bag = &fetched
++		if err := ctx.Err(); err != nil {
++			return http.Result[downloadResult]{}, platform, fmt.Errorf("download request canceled: %w", err)
++		}
+ 	}
+ 
+ 	if bag.RedownloadEndpoint == "" {

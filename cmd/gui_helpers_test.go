@@ -46,6 +46,7 @@ func TestBundledAppsIDListIsUsable(t *testing.T) {
 type fakeAppStore struct {
 	login              func(appstore.LoginInput) (appstore.LoginOutput, error)
 	lookup             func(appstore.LookupInput) (appstore.LookupOutput, error)
+	purchase           func(appstore.PurchaseInput) error
 	listVersions       func(appstore.ListVersionsInput) (appstore.ListVersionsOutput, error)
 	download           func(appstore.DownloadInput) (appstore.DownloadOutput, error)
 	getVersionMetadata func(appstore.GetVersionMetadataInput) (appstore.GetVersionMetadataOutput, error)
@@ -81,7 +82,13 @@ func (f *fakeAppStore) OwnedApps(appstore.OwnedAppsInput) (appstore.OwnedAppsOut
 	return appstore.OwnedAppsOutput{}, errors.New("ownedApps is not stubbed")
 }
 
-func (f *fakeAppStore) Purchase(appstore.PurchaseInput) error { return nil }
+func (f *fakeAppStore) Purchase(input appstore.PurchaseInput) error {
+	if f.purchase == nil {
+		return nil
+	}
+
+	return f.purchase(input)
+}
 
 func (f *fakeAppStore) Download(input appstore.DownloadInput) (appstore.DownloadOutput, error) {
 	if f.download == nil {
@@ -228,6 +235,130 @@ func TestCatalogVersionFallsBackToEmpty(t *testing.T) {
 
 	if got := catalogVersion(appstore.Account{}, appstore.App{ID: 12345}, appstore.PlatformIPhone); got != "" {
 		t.Fatalf("expected no version for a delisted app, got %q", got)
+	}
+}
+
+func TestRunBatchCheckItemSkipsPurchaseWhenAlreadyLicensed(t *testing.T) {
+	probes := 0
+	purchases := 0
+
+	withFakeAppStore(t, &fakeAppStore{
+		listVersions: func(appstore.ListVersionsInput) (appstore.ListVersionsOutput, error) {
+			probes++
+			return appstore.ListVersionsOutput{
+				ExternalVersionIdentifiers: []string{"100", "200"},
+				LatestExternalVersionID:    "200",
+			}, nil
+		},
+		purchase: func(appstore.PurchaseInput) error {
+			purchases++
+			return nil
+		},
+		lookup: func(appstore.LookupInput) (appstore.LookupOutput, error) {
+			return appstore.LookupOutput{App: appstore.App{ID: 12345, Version: "2.0"}}, nil
+		},
+	})
+
+	res := runBatchCheckItem(
+		appstore.App{ID: 12345},
+		appstore.Account{Email: "user@example.com"},
+		appstore.PlatformIPhone,
+		true,
+		minBatchTimeout,
+	)
+
+	if res.checkErr != nil {
+		t.Fatalf("unexpected check error: %v", res.checkErr)
+	}
+	if probes != 1 {
+		t.Fatalf("expected 1 probe, got %d", probes)
+	}
+	if purchases != 0 {
+		t.Fatalf("expected 0 purchases for an already-licensed app, got %d", purchases)
+	}
+	if res.version != "2.0" || res.out.LatestExternalVersionID != "200" {
+		t.Fatalf("unexpected batch check result: %+v", res)
+	}
+}
+
+func TestRunBatchCheckItemPurchasesOnlyWhenLicenseRequired(t *testing.T) {
+	probes := 0
+	purchases := 0
+
+	withFakeAppStore(t, &fakeAppStore{
+		listVersions: func(appstore.ListVersionsInput) (appstore.ListVersionsOutput, error) {
+			probes++
+			if probes == 1 {
+				return appstore.ListVersionsOutput{}, appstore.ErrLicenseRequired
+			}
+			return appstore.ListVersionsOutput{
+				ExternalVersionIdentifiers: []string{"300"},
+				LatestExternalVersionID:    "300",
+			}, nil
+		},
+		purchase: func(appstore.PurchaseInput) error {
+			purchases++
+			return nil
+		},
+		lookup: func(appstore.LookupInput) (appstore.LookupOutput, error) {
+			return appstore.LookupOutput{App: appstore.App{ID: 12345, Version: "3.0"}}, nil
+		},
+	})
+
+	res := runBatchCheckItem(
+		appstore.App{ID: 12345},
+		appstore.Account{Email: "user@example.com"},
+		appstore.PlatformIPhone,
+		true,
+		minBatchTimeout,
+	)
+
+	if res.checkErr != nil {
+		t.Fatalf("unexpected check error after purchase: %v", res.checkErr)
+	}
+	if probes != 2 || purchases != 1 {
+		t.Fatalf("expected 2 probes and 1 purchase, got %d probes and %d purchases", probes, purchases)
+	}
+	if res.version != "3.0" || res.out.LatestExternalVersionID != "300" {
+		t.Fatalf("unexpected batch check result: %+v", res)
+	}
+}
+
+func TestExecuteDownloadJobDownloadsBeforePurchasing(t *testing.T) {
+	downloads := 0
+	purchases := 0
+
+	withFakeAppStore(t, &fakeAppStore{
+		download: func(appstore.DownloadInput) (appstore.DownloadOutput, error) {
+			downloads++
+			return appstore.DownloadOutput{
+				DestinationPath: "/tmp/owned.pkg",
+				Sinfs:           []appstore.Sinf{{ID: 1, Data: []byte("sinf")}},
+			}, nil
+		},
+		purchase: func(appstore.PurchaseInput) error {
+			purchases++
+			return nil
+		},
+	})
+
+	job := &DownloadJob{ID: "job-owned", AppID: 12345, AppName: "Owned App", Status: "queued"}
+	activeJobs.set(job)
+
+	executeDownloadJob(job, downloadRequestPayload{
+		AppID:    12345,
+		AppName:  "Owned App",
+		Purchase: true,
+	}, appstore.Account{Email: "user@example.com"})
+
+	if downloads != 1 {
+		t.Fatalf("expected 1 download call, got %d", downloads)
+	}
+	if purchases != 0 {
+		t.Fatalf("expected 0 purchase calls when download succeeds directly, got %d", purchases)
+	}
+	if job.Status != "completed" {
+		t.Fatalf("expected completed job, got %s (%s)", job.Status, job.Error)
 	}
 }
 
