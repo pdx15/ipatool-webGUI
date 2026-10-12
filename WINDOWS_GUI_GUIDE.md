@@ -44,31 +44,6 @@ The graphical user interface (GUI) for **ipatool** enables any user without tech
    - Upload (or reuse) a downloaded `.IPA` and install it with `ideviceinstaller`.
    - Requires `ideviceinstaller` (macOS: `brew install libimobiledevice`, Windows: install a libimobiledevice / iDevice Suite build and put its `bin` on PATH, or extract the build and copy its `.exe`/`.dll` files into the `tools\` folder next to `ipatool.exe` — the GUI detects them automatically). You can also set `IPATOOL_IDEVICEINSTALLER`, `IPATOOL_IDEVICE_ID` and `IPATOOL_IDEVICEDEVICEINFO` to the exact paths.
 
----
-
-## 🔑 Interactive login on Windows
-
-Interactive App Store login (password + 2FA) **does work on Windows** through the
-**legacy flow**: it posts to the older `MZFinance.woa/wa/authenticate` endpoint and
-signs the request with an **SAP action signature** produced by the `sapsigner.exe`
-helper that ships with this tool (the macOS-style CommerceKit service is not
-available on Windows). The GSA (SRP-6a) flow — which needs iCloud anisette data — is
-consistently rejected by Apple on Windows with a machine-provisioning error
-`-22410`, so it is not attempted there.
-
-**Prerequisites for Windows login:**
-1. Keep the `sapsigner.exe` binary (and its companion files) that ships with this
-   build in the `tools\` folder next to `ipatool.exe` — it is auto-detected. To
-   override the location, set the environment variable `IPATOOL_SAPSIGNER` to the
-   full path of `sapsigner.exe`.
-
-2. Restart the GUI and try logging in again — you will be prompted for your password
-   and 2FA code.
-
-If login fails because `sapsigner.exe` was not found, make sure the `tools\` bundle is
-in place next to `ipatool.exe` or set `IPATOOL_SAPSIGNER`. (Anisette/iCloud errors are
-no longer expected on Windows, since the GSA path is not used.) If the account session
-expires, log in again through the **Account** tab.
 
 ---
 
