@@ -8,13 +8,9 @@ Download for macOS/windows - https://github.com/pdx15/ipatool-webGUI/releases
 DEMO MODE [pdx15.github.io](https://pdx15.github.io/ipatool-webGUI/)
 
 A web-based GUI tool that searches, downloads, and installs App Store app
-packages (`.ipa` files) for iOS, iPadOS, and tvOS.
+packages (`.ipa` files) for iOS, iPadOS, tvOS, watchOS, visionOS, and macOS.
 
 ![ipatool GUI preview](resources/social-preview.png)
-
-The macOS App Store login fix adds Apple's required SAP action signature
-(`X-Apple-ActionSignature`) through the macOS CommerceKit service. It also keeps
-passwords and two-factor authentication codes out of verbose logs.
 
 This is an unofficial community project. It is not affiliated with Apple or the
 upstream `ipatool` maintainers.
@@ -84,98 +80,9 @@ A Windows build ships as `ipatool.exe`. Double-click `ipatool-gui.bat` (or run
   the machine that has the connected iOS device.
 - You are responsible for following Apple's terms and applicable law.
 
-## Frequently asked questions
-
-### How do I fix `ipatool auth login` returning HTTP 403?
-
-Install this macOS build and run the normal interactive login command. It signs
-the authentication request with the SAP action signature now expected by the
-Apple App Store endpoint.
-
-### Does it work on Apple Silicon and Intel Macs?
-
-The release includes native `arm64` and `amd64` binaries. Live App Store login
-has been verified on Apple Silicon; reports from Intel Mac users are welcome.
-
-### Does App Store authentication work on Windows?
-
-Yes. On Windows, interactive login uses the legacy `MZFinance` authenticate flow
-directly, signing the request with an **SAP action signature** produced by the
-`sapsigner.exe` helper that ships with the tool in the `tools\` folder next to
-`ipatool.exe`; its path is auto-detected or can be set via
-`IPATOOL_SAPSIGNER`. (The GSA/SRP flow, which needs iCloud anisette data, is
-consistently rejected by Apple on Windows with a machine-provisioning error
-`-22410`, so it is not attempted there.) Enter your password and the two-factor
-code directly. On macOS the SAP signature is instead generated through Apple's
-CommerceKit service.
-
-### Can I use an app-specific password instead of a 2FA code?
-
-No. Apple's App Store authentication endpoint rejects app-specific passwords;
-they only work with services such as iCloud Mail, Contacts, and Calendars. Use
-the session export/import flow to avoid entering 2FA codes repeatedly.
-
-### Does `ipatool` decrypt downloaded IPA files?
-
-No. It downloads the encrypted App Store package associated with the Apple ID
-that acquired the app.
-
-### What should I do if I get an "invalid response" error when downloading?
-
-If you encounter an `invalid response: Apple Media Services Terms and Conditions have changed` error, it means Apple has updated their terms of service and your account hasn't accepted them yet.
-
-To fix this:
-1. Open the App Store on your iPhone, iPad, or Mac
-2. Sign in with the same Apple ID if prompted
-3. Start downloading an app (you can try the app that gave you the error, e.g., Insta360) - this should trigger the new terms popup
-4. Accept the new terms and conditions when prompted
-5. After accepting the terms, ipatool should work normally again
-
-This is a standard Apple procedure when they update their legal terms. Once you accept them through an official Apple app, the error will be resolved.
-
-## Build from source
-
-Install a recent Go toolchain and the Xcode command line tools, then run:
-
-```shell
-git clone https://github.com/pdx15/ipatool-sapfix-webGUI.git
-cd ipatool-sapfix-webGUI
-CGO_ENABLED=1 go build -trimpath -o ipatool .
-./ipatool --version
-```
-
-macOS is the primary build target. For other platforms:
-
-- **Windows** — cross-compile with `mingw-w64` (cgo is required for the
-  classic iCloud anisette path):
-
-  ```shell
-  CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
-    CC=x86_64-w64-mingw32-gcc \
-    go build -trimpath -o ipatool.exe .
-  ```
-
-  See `.github/workflows/build-windows.yml` and the `make` script for the
-  exact environment.
-
-- **Linux** — the code compiles with a plain `go build`, but App Store
-  authentication (SAP signing) requires macOS with cgo, so the GUI works while
-  live App Store login does not.
-
-## Security and privacy
-
-The repository and release artifacts contain no Apple ID, password, two-factor
-code, session token, or local build path. GitHub secret scanning and push
-protection are enabled for the public repository.
-
-Do not publish raw authentication logs. If you report a bug, redact email
-addresses, tokens, cookies, DSIDs, passwords, and two-factor codes first.
-
 ## Credits and license
 
-Based on [`majd/ipatool`](https://github.com/majd/ipatool) and
-[`maksimryabkin/ipatool-sapfix`](https://github.com/maksimryabkin/ipatool-sapfix/)
-and distributed under the [MIT License](LICENSE). The original copyright and
+Based on [`majd/ipatool`](https://github.com/majd/ipatool) and distributed under the [MIT License](LICENSE). The original copyright and
 license notice are preserved.
 
 ## Донат/Donate
