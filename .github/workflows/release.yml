@@ -9,6 +9,7 @@ on:
         default: ''
   push:
     tags:
+      - '*-webGUI'
       - 'v*'
 
 permissions:
@@ -45,7 +46,7 @@ jobs:
           fi
 
           RELEASE_VER="${RAW_VER}-webGUI"
-          RELEASE_TAG="v${RELEASE_VER}"
+          RELEASE_TAG="${RELEASE_VER}"
 
           echo "raw_version=${RAW_VER}" >> $GITHUB_OUTPUT
           echo "upstream_tag=${UPSTREAM_TAG}" >> $GITHUB_OUTPUT
