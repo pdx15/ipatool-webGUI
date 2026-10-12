@@ -1040,6 +1040,24 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 		return acc
 	}
 
+	// Name GUI-managed IPA files from their own Info.plist, after download.
+	// Explicit output filenames remain exactly as the user entered them.
+	if destination, metadata, nameErr := renameDownloadedIPAPackage(
+		out.DestinationPath,
+		req.OutputPath,
+		app.Name,
+		acc.Email,
+		platform,
+	); nameErr != nil {
+		job.Warning = appendDownloadJobWarning(job.Warning, downloadFilenameFallbackWarning)
+	} else {
+		out.DestinationPath = destination
+		if metadata.DisplayName != "" {
+			job.AppName = metadata.DisplayName
+		}
+		job.Version = metadata.Version
+	}
+
 	// Step 4: Finished!
 	job.Status = "completed"
 	job.Progress = 100.0

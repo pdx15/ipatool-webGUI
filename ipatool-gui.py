@@ -19,6 +19,8 @@ import time
 import webbrowser
 import email
 import email.message
+import plistlib
+import zipfile
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = 54321
@@ -108,6 +110,103 @@ def gui_keychain_passphrase():
 def ipatool_command(bin_path, args):
     """Build an ipatool command that always receives the GUI keychain key."""
     return [bin_path, "--keychain-passphrase", gui_keychain_passphrase()] + list(args)
+
+
+DOWNLOAD_FILENAME_FALLBACK_WARNING = "ipatool-gui-filename-fallback"
+
+
+def safe_filename_part(value):
+    value = str(value or "").strip()
+    value = "".join("_" if ord(char) < 32 or char in '<>:\"/\\\\|?*' else char for char in value)
+    return value.strip(" .")
+
+
+def account_username(email_address):
+    email_address = str(email_address or "").strip()
+    return safe_filename_part(email_address.split("@", 1)[0])
+
+
+def platform_filename_label(info):
+    platforms = info.get("CFBundleSupportedPlatforms", [])
+    if isinstance(platforms, str):
+        platforms = [platforms]
+    mapping = {
+        "iphoneos": "iOS",
+        "ios": "iOS",
+        "appletvos": "tvOS",
+        "tvos": "tvOS",
+        "watchos": "watchOS",
+        "xros": "visionOS",
+        "visionos": "visionOS",
+        "macosx": "macOS",
+        "macos": "macOS",
+    }
+    for platform in platforms:
+        label = mapping.get(str(platform).strip().lower())
+        if label:
+            return label
+    return ""
+
+
+def ipa_filename_from_info(info, email_address, fallback_app_name=""):
+    app_name = info.get("CFBundleDisplayName") or info.get("CFBundleName") or fallback_app_name
+    version = safe_filename_part(info.get("CFBundleShortVersionString"))
+    app_name = safe_filename_part(app_name)
+    if not app_name or not version:
+        return "", app_name, version
+
+    parts = [app_name, version]
+    minimum_os = safe_filename_part(info.get("MinimumOSVersion"))
+    if minimum_os:
+        platform_label = platform_filename_label(info) or "iOS"
+        parts.append(platform_label + minimum_os)
+    username = account_username(email_address)
+    if username:
+        parts.append(username)
+    return "_".join(parts) + ".ipa", app_name, version
+
+
+def read_downloaded_ipa_info(path):
+    with zipfile.ZipFile(path, "r") as archive:
+        for member in archive.namelist():
+            parts = member.split("/")
+            if len(parts) != 3 or parts[0] != "Payload" or not parts[1].endswith(".app") or parts[2] != "Info.plist":
+                continue
+            return plistlib.loads(archive.read(member))
+    raise ValueError("main app Info.plist was not found")
+
+
+def rename_downloaded_ipa(path, email_address, fallback_app_name=""):
+    info = read_downloaded_ipa_info(path)
+    file_name, app_name, version = ipa_filename_from_info(info, email_address, fallback_app_name)
+    if not file_name:
+        raise ValueError("Info.plist does not contain a usable app name and version")
+
+    directory = os.path.dirname(path)
+    destination = os.path.join(directory, file_name)
+    base, extension = os.path.splitext(destination)
+    suffix = 2
+    while os.path.exists(destination) and os.path.abspath(destination) != os.path.abspath(path):
+        destination = f"{base}_{suffix}{extension}"
+        suffix += 1
+    if os.path.abspath(destination) != os.path.abspath(path):
+        os.rename(path, destination)
+    return destination, app_name, version
+
+
+def ipatool_account_email(bin_path):
+    try:
+        result = subprocess.run(
+            ipatool_command(bin_path, ["auth", "info", "--format", "json"]),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return json.loads(result.stdout).get("email", "")
+    except Exception:
+        pass
+    return ""
 
 
 # Active background jobs for download tracking
@@ -925,13 +1024,15 @@ class RequestHandler(SimpleHTTPRequestHandler):
             "id": job_id,
             "bundleId": bundle_id,
             "appId": app_id,
-            "appName": bundle_id or str(app_id),
+            "appName": payload.get("appName") or bundle_id or str(app_id),
             "progress": 0.0,
             "bytesRead": 0,
             "totalBytes": 1024 * 1024 * 50, # default estimate
             "speed": "—",
             "status": "queued",
             "error": None,
+            "warning": "",
+            "version": "",
             "outputPath": output_path or os.path.join(os.getcwd(), f"{bundle_id or app_id}.ipa"),
             "createdAt": int(time.time())
         }
@@ -956,6 +1057,13 @@ class RequestHandler(SimpleHTTPRequestHandler):
 
         bin_path = find_ipatool_binary()
         if bin_path:
+            auto_name = (not output_path or os.path.isdir(output_path)) and str(platform).lower() not in ("macos", "mac")
+            target_directory = os.path.abspath(output_path if output_path and os.path.isdir(output_path) else os.getcwd())
+            download_path = output_path
+            if auto_name:
+                download_path = os.path.join(target_directory, f"ipatool-download-{job_id}-{secrets.token_hex(4)}.ipa")
+            account_email = ipatool_account_email(bin_path) if auto_name else ""
+
             with JOBS_LOCK:
                 ACTIVE_JOBS[job_id]["status"] = "purchasing" if purchase else "downloading"
 
@@ -964,8 +1072,8 @@ class RequestHandler(SimpleHTTPRequestHandler):
                 cmd.extend(["--bundle-identifier", bundle_id])
             elif app_id:
                 cmd.extend(["--app-id", str(app_id)])
-            if output_path:
-                cmd.extend(["--output", output_path])
+            if download_path:
+                cmd.extend(["--output", download_path])
             if version_id:
                 cmd.extend(["--external-version-id", version_id])
             if platform:
@@ -979,11 +1087,31 @@ class RequestHandler(SimpleHTTPRequestHandler):
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             stdout, stderr = proc.communicate()
 
+            final_path = download_path or ACTIVE_JOBS[job_id].get("outputPath", "")
+            app_name = payload.get("appName") or bundle_id or str(app_id)
+            version = ""
+            warning = ""
+            if proc.returncode == 0 and auto_name:
+                try:
+                    final_path, app_name, version = rename_downloaded_ipa(download_path, account_email, app_name)
+                except Exception:
+                    warning = DOWNLOAD_FILENAME_FALLBACK_WARNING
+
             with JOBS_LOCK:
                 if proc.returncode == 0:
-                    ACTIVE_JOBS[job_id]["status"] = "completed"
-                    ACTIVE_JOBS[job_id]["progress"] = 100.0
+                    job = ACTIVE_JOBS[job_id]
+                    job["status"] = "completed"
+                    job["progress"] = 100.0
+                    job["outputPath"] = final_path
+                    job["appName"] = app_name
+                    job["version"] = version
+                    job["warning"] = warning
                 else:
+                    if auto_name and os.path.isfile(download_path):
+                        try:
+                            os.remove(download_path)
+                        except OSError:
+                            pass
                     ACTIVE_JOBS[job_id]["status"] = "error"
                     ACTIVE_JOBS[job_id]["error"] = stderr or stdout or "Download process failed"
             return

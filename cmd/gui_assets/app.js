@@ -226,6 +226,7 @@ const i18n = {
     pager_per_page: 'На странице:',
     pager_all: 'Все',
     no_sinf_warning: 'Apple отдала пакет без DRM-подписей (sinf). Файл .ipa сохранён полностью — его можно расшифровать или изучить, но на устройство он не установится. Попробуйте скачать позже или выберите другую версию.',
+    filename_warning: 'Не удалось прочитать имя и версию из Info.plist; имя файла не изменено.',
     no_sinf_short: 'без sinf',
     batch_select_hint: 'Отметьте приложения и нажмите «Скачать выбранные»:',
     batch_download_progress_title: 'Массовое скачивание выбранных приложений...',
@@ -476,6 +477,7 @@ const i18n = {
     pager_per_page: 'Per page:',
     pager_all: 'All',
     no_sinf_warning: 'Apple served the package without DRM signatures (sinf). The .ipa was saved completely — it can be decrypted or inspected, but it will not install on a device. Try again later or pick a different version.',
+    filename_warning: 'Could not read the app name and version from Info.plist; the downloaded filename was left unchanged.',
     no_sinf_short: 'no sinf',
     batch_select_hint: 'Check the apps and press "Download selected":',
     batch_download_progress_title: 'Mass downloading selected apps...',
@@ -1346,8 +1348,11 @@ function openDownloadModal(title, subtitle, iconUrl) {
 // Maps a server-side job warning to the localised text shown in the UI.
 function localizeJobWarning(warning) {
   if (!warning) return '';
-  if (/sinf/i.test(warning)) return batchText('no_sinf_warning');
-  return warning;
+  return String(warning).split(/\n+/).filter(Boolean).map((item) => {
+    if (item === 'ipatool-gui-filename-fallback') return batchText('filename_warning');
+    if (/sinf/i.test(item)) return batchText('no_sinf_warning');
+    return item;
+  }).join(' ');
 }
 
 function updateDownloadModalWarning(warning) {
@@ -1461,7 +1466,6 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl) {
         renderActiveDownloadsTab();
         if (job.warning) {
           updateDownloadModalWarning(job.warning);
-          if (subEl) subEl.textContent = `Пакет .IPA сохранён (${batchText('no_sinf_short')})`;
           showToast(localizeJobWarning(job.warning), 'warning');
         } else {
           showToast(`Файл сохранен: ${job.outputPath}`, 'success');
