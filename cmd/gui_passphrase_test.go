@@ -9,7 +9,7 @@ import (
 )
 
 func TestLoadOrCreateGUIKeychainPassphrasePersists(t *testing.T) {
-	path := filepath.Join(t.TempDir(), ".ipatool", guiKeychainPassphraseFileName)
+	path := filepath.Join(t.TempDir(), guiConfigDirectoryName, guiKeychainPassphraseFileName)
 
 	first, err := loadOrCreateGUIKeychainPassphrase(path)
 	if err != nil {

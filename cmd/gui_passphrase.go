@@ -27,9 +27,9 @@ func ensureGUIKeychainPassphrase() error {
 		return errors.New("ipatool dependencies are not initialized")
 	}
 
-	stateDirectory, err := prepareStateDirectory(dependencies.OS, dependencies.Machine.HomeDirectory())
+	stateDirectory, err := prepareGUIStateDirectory(dependencies.OS, dependencies.Machine.HomeDirectory())
 	if err != nil {
-		return fmt.Errorf("failed to locate ipatool state directory: %w", err)
+		return fmt.Errorf("failed to locate ipatool webgui state directory: %w", err)
 	}
 
 	passphrase, err := loadOrCreateGUIKeychainPassphrase(filepath.Join(stateDirectory, guiKeychainPassphraseFileName))

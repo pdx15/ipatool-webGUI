@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -19,7 +20,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/byteness/keyring"
 	"github.com/majd/ipatool/v2/pkg/appstore"
+	"github.com/majd/ipatool/v2/pkg/keychain"
+	"github.com/majd/ipatool/v2/pkg/util"
+	"github.com/majd/ipatool/v2/pkg/util/machine"
+	"github.com/majd/ipatool/v2/pkg/util/operatingsystem"
 	"github.com/majd/ipatool/v2/resources"
 	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
@@ -190,6 +196,93 @@ func formatTransferSpeed(bytesPerSecond float64) string {
 	}
 }
 
+const (
+	guiConfigDirectoryName = ".ipatool-webgui"
+	guiKeychainServiceName = "ipatool-webgui-auth.service"
+)
+
+func prepareGUIStateDirectory(osImpl operatingsystem.OperatingSystem, homeDirectory string) (string, error) {
+	stateDirectory := filepath.Join(homeDirectory, guiConfigDirectoryName)
+	if err := osImpl.MkdirAll(stateDirectory, 0700); err != nil {
+		return "", fmt.Errorf("failed to create webgui state directory: %w", err)
+	}
+
+	return stateDirectory, nil
+}
+
+func newGUIKeychain(stateDirectory string, interactive bool) keychain.Keychain {
+	ring := util.Must(openKeyring(keyring.Config{
+		AllowedBackends: []keyring.BackendType{
+			keyring.KeychainBackend,
+			keyring.SecretServiceBackend,
+			keyring.FileBackend,
+		},
+		ServiceName:              guiKeychainServiceName,
+		KeychainTrustApplication: true,
+		FileDir:                  stateDirectory,
+		FilePasswordFunc: func(s string) (string, error) {
+			if keychainPassphrase == "" && !interactive {
+				return "", errors.New("keychain passphrase is required when not running in interactive mode; use the \"--keychain-passphrase\" flag")
+			}
+
+			if keychainPassphrase != "" {
+				return keychainPassphrase, nil
+			}
+
+			path := strings.Split(s, " unlock ")[1]
+			password, err := readPrompt(fmt.Sprintf("enter passphrase to unlock %s (this is separate from your Apple ID password): ", path), true)
+			if err != nil {
+				return "", fmt.Errorf("failed to read password: %w", err)
+			}
+
+			return password, nil
+		},
+	}))
+
+	return keychain.New(keychain.Args{
+		Keyring: ring,
+		Label:   guiKeychainServiceName,
+	})
+}
+
+func initGUIWithCommand(cmd *cobra.Command) error {
+	verbose := cmd.Flag("verbose") != nil && cmd.Flag("verbose").Value.String() == "true"
+	nonInteractive := cmd.Flag("non-interactive") != nil && cmd.Flag("non-interactive").Value.String() == "true"
+	ctx := context.WithValue(context.Background(), interactiveKey, !nonInteractive)
+	cmd.SetContext(ctx)
+
+	format := OutputFormatText
+	if formatFlag := cmd.Flag("format"); formatFlag != nil && formatFlag.Value.String() != "" {
+		if parsed, err := OutputFormatFromString(formatFlag.Value.String()); err == nil {
+			format = parsed
+		}
+	}
+
+	dependencies.Logger = newLogger(format, verbose)
+	dependencies.OS = operatingsystem.New()
+	dependencies.Machine = machine.New(machine.Args{OS: dependencies.OS})
+
+	stateDirectory, err := prepareGUIStateDirectory(dependencies.OS, dependencies.Machine.HomeDirectory())
+	if err != nil {
+		return err
+	}
+
+	if err := ensureGUIKeychainPassphrase(); err != nil {
+		return err
+	}
+
+	dependencies.CookieJar = newCookieJar(stateDirectory)
+	dependencies.Keychain = newGUIKeychain(stateDirectory, !nonInteractive)
+	dependencies.AppStore = appstore.NewAppStore(appstore.Args{
+		CookieJar:       dependencies.CookieJar,
+		OperatingSystem: dependencies.OS,
+		Keychain:        dependencies.Keychain,
+		Machine:         dependencies.Machine,
+	})
+
+	return nil
+}
+
 func guiCmd() *cobra.Command {
 	var (
 		host      string
@@ -200,11 +293,10 @@ func guiCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gui",
 		Short: "Launch the graphical user interface for ipatool",
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return initGUIWithCommand(cmd)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := ensureGUIKeychainPassphrase(); err != nil {
-				return err
-			}
-
 			return runGUIServer(host, port, noBrowser)
 		},
 	}
