@@ -752,6 +752,19 @@ func TestResolveDownloadOutputPathDefaultsToAppsDir(t *testing.T) {
 	}
 }
 
+func TestSanitizeTxtFilename(t *testing.T) {
+	if got := sanitizeTxtFilename("purchases-user@example.com.txt"); got != "purchases-user@example.com.txt" {
+		t.Fatalf("unexpected sanitized filename: %q", got)
+	}
+	if got := sanitizeTxtFilename("list:bad*chars"); got != "list_bad_chars.txt" {
+		t.Fatalf("expected list_bad_chars.txt, got %q", got)
+	}
+	if got := sanitizeTxtFilename(""); got != "purchases.txt" {
+		t.Fatalf("expected purchases.txt for empty input, got %q", got)
+	}
+}
+
+
 
 
 

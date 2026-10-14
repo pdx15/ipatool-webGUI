@@ -185,10 +185,14 @@ const i18n = {
     open_in_explorer_btn: 'Показать в проводнике',
     step_license: 'Проверка лицензии / Покупка',
     step_download: 'Загрузка пакета .IPA из App Store',
+    step_download_pkg: 'Загрузка пакета .PKG из App Store',
     step_sinf: 'Применение цифровой подписи (sinf)',
     step_complete: 'Готово к установке',
+    dl_completed_ipa: 'Пакет .IPA успешно скачан!',
+    dl_completed_pkg: 'Пакет .PKG успешно скачан!',
     free_price: 'Бесплатно',
     download_btn: 'Скачать IPA',
+    download_btn_pkg: 'Скачать PKG',
     license_btn: 'Лицензия',
     versions_btn: 'Версии',
     copied_toast: 'Скопировано в буфер обмена',
@@ -264,8 +268,12 @@ const i18n = {
     purchases_desc: 'Все приложения, приобретённые на этом Apple ID. Список загружается один раз при входе и обновляется по кнопке.',
     purchases_refresh: 'Обновить',
     purchases_filter_placeholder: 'Фильтр по названию, Bundle ID или App ID',
+    purchases_os_label: 'ОС:',
+    purchases_os_all: 'Все ОС',
     purchases_only_hidden: 'Только скрытые',
     purchases_export: 'Сохранить список (.txt)',
+    purchases_saved_toast: 'Список сохранён: {path}',
+    purchases_save_failed: 'Не удалось сохранить список в файл',
     purchases_need_auth: 'Войдите в Apple ID во вкладке «Аккаунт», чтобы увидеть историю покупок',
     purchases_loading: 'Загрузка истории покупок с серверов Apple...',
     purchases_retry: 'Повторить',
@@ -436,10 +444,14 @@ const i18n = {
     open_in_explorer_btn: 'Show in Explorer',
     step_license: 'License Verification / Purchase',
     step_download: 'Downloading .IPA package from App Store',
+    step_download_pkg: 'Downloading .PKG package from App Store',
     step_sinf: 'Applying digital signature (sinf replication)',
     step_complete: 'Ready for installation',
+    dl_completed_ipa: 'Package .IPA downloaded successfully!',
+    dl_completed_pkg: 'Package .PKG downloaded successfully!',
     free_price: 'Free',
     download_btn: 'Download IPA',
+    download_btn_pkg: 'Download PKG',
     license_btn: 'License',
     versions_btn: 'Versions',
     copied_toast: 'Copied to clipboard',
@@ -515,8 +527,12 @@ const i18n = {
     purchases_desc: 'Every app owned by this Apple ID. The list is fetched once after sign-in and refreshed on demand.',
     purchases_refresh: 'Refresh',
     purchases_filter_placeholder: 'Filter by name, Bundle ID or App ID',
+    purchases_os_label: 'OS:',
+    purchases_os_all: 'All OS',
     purchases_only_hidden: 'Hidden only',
     purchases_export: 'Save list (.txt)',
+    purchases_saved_toast: 'List saved: {path}',
+    purchases_save_failed: 'Failed to save list to file',
     purchases_need_auth: 'Sign in to your Apple ID on the "Account" tab to see the purchase history',
     purchases_loading: 'Loading purchase history from Apple...',
     purchases_retry: 'Retry',
@@ -1230,6 +1246,7 @@ function createAppCard(app, platform) {
   const iconUrl = app.artworkUrl512 || app.artworkUrl100 || app.artworkUrl60;
   const priceText = app.price === 0 || !app.price ? (i18n[state.lang]?.free_price || 'Бесплатно') : (app.formattedPrice || `$${app.price}`);
   const dict = i18n[state.lang] || i18n.ru;
+  const dlBtnText = platformOSLabel(platform) === 'macOS' ? (dict.download_btn_pkg || dict.download_btn) : dict.download_btn;
 
   card.innerHTML = `
     <div class="app-main-info">
@@ -1265,7 +1282,7 @@ function createAppCard(app, platform) {
 
     <div class="app-actions">
       <button class="btn btn-primary" onclick="startAppDownload('${app.bundleId}', ${app.trackId}, '${platform}', '${app.trackName.replace(/'/g, "\\'")}', '${iconUrl || ''}')">
-        ⬇️ ${dict.download_btn}
+        ⬇️ ${dlBtnText}
       </button>
       <button class="btn btn-outline" onclick="purchaseApp('${app.bundleId}', '${platform}')" title="Получить лицензию">
         🛒 ${dict.license_btn}
@@ -1288,6 +1305,7 @@ function createRemovedAppCard(app, platform) {
   card.className = 'app-card removed-app-card';
 
   const dict = i18n[state.lang] || i18n.ru;
+  const dlBtnText = platformOSLabel(platform) === 'macOS' ? (dict.download_btn_pkg || dict.download_btn) : dict.download_btn;
   const name = app.name || String(app.appId);
   const nameEsc = String(name).replace(/'/g, "\\'");
   const appId = Number(app.appId) || 0;
@@ -1317,7 +1335,7 @@ function createRemovedAppCard(app, platform) {
 
     <div class="app-actions">
       <button class="btn btn-primary" onclick="startAppDownload('', ${appId}, '${platform}', '${nameEsc}', '')">
-        ⬇️ ${dict.download_btn}
+        ⬇️ ${dlBtnText}
       </button>
       <button class="btn btn-outline" onclick="viewAppVersions('', ${appId}, '${nameEsc}', '${platform}')" title="История версий">
         🕒 ${dict.versions_btn}
@@ -1378,7 +1396,7 @@ async function startAppDownload(bundleId, appId, platform, appName, iconUrl, ver
   state.isDownloading = true;
 
   // Open download progress modal
-  openDownloadModal(appName, bundleId, iconUrl);
+  openDownloadModal(appName, bundleId, iconUrl, platform);
 
   try {
     const res = await fetch('/api/download', {
@@ -1403,14 +1421,24 @@ async function startAppDownload(bundleId, appId, platform, appName, iconUrl, ver
     }
 
     state.currentJobId = data.jobId;
-    trackDownloadProgress(data.jobId, appName, bundleId, iconUrl);
+    trackDownloadProgress(data.jobId, appName, bundleId, iconUrl, platform);
   } catch (err) {
     state.isDownloading = false;
     updateDownloadModalError('Ошибка запуска загрузки');
   }
 }
 
-function openDownloadModal(title, subtitle, iconUrl) {
+function updateDownloadModalStepLabels(platform) {
+  const isMac = platformOSLabel(platform) === 'macOS';
+  const stepDownloadText = document.querySelector('#step-download .step-text');
+  if (stepDownloadText) {
+    const key = isMac ? 'step_download_pkg' : 'step_download';
+    stepDownloadText.setAttribute('data-i18n', key);
+    stepDownloadText.textContent = batchText(key);
+  }
+}
+
+function openDownloadModal(title, subtitle, iconUrl, platform = 'iphone') {
   const modal = document.getElementById('download-modal');
   const titleEl = document.getElementById('dl-modal-title');
   const subEl = document.getElementById('dl-modal-subtitle');
@@ -1442,6 +1470,7 @@ function openDownloadModal(title, subtitle, iconUrl) {
 
   // Reset steps
   document.querySelectorAll('.dl-step').forEach(step => step.className = 'dl-step');
+  updateDownloadModalStepLabels(platform);
   const stepLicense = document.getElementById('step-license');
   if (stepLicense) stepLicense.classList.add('active');
 
@@ -1481,7 +1510,7 @@ function closeDownloadModal() {
   if (modal) modal.style.display = 'none';
 }
 
-function trackDownloadProgress(jobId, appName, bundleId, iconUrl) {
+function trackDownloadProgress(jobId, appName, bundleId, iconUrl, platform = 'iphone') {
   const fillEl = document.getElementById('dl-progress-bar-fill');
   const percentEl = document.getElementById('dl-progress-percent');
   const bytesEl = document.getElementById('dl-progress-bytes');
@@ -1505,6 +1534,10 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl) {
         handling = false;
         return;
       }
+
+      const effectivePlatform = job.platform || platform || 'iphone';
+      const isMac = platformOSLabel(effectivePlatform) === 'macOS' || /\.pkg$/i.test(job.outputPath || '');
+      updateDownloadModalStepLabels(isMac ? 'macos' : effectivePlatform);
 
       // Update state
       state.activeDownloads.set(jobId, job);
@@ -1546,7 +1579,7 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl) {
 
         document.getElementById('step-sinf')?.classList.add('completed');
         document.getElementById('step-complete')?.classList.add('completed');
-        if (subEl) subEl.textContent = 'Пакет .IPA успешно скачан!';
+        if (subEl) subEl.textContent = batchText(isMac ? 'dl_completed_pkg' : 'dl_completed_ipa');
         if (fillEl) fillEl.style.width = '100%';
         if (percentEl) percentEl.textContent = '100%';
         if (openBtn) {
@@ -2105,12 +2138,21 @@ function formatPurchaseDate(value) {
   });
 }
 
+function purchaseAppOSLabels(a) {
+  const validPlatforms = Array.isArray(a?.platforms)
+    ? a.platforms.filter(pl => pl && String(pl).toLowerCase() !== 'unknown')
+    : [];
+  return [...new Set((validPlatforms.length ? validPlatforms : ['iphone']).map(pl => platformOSLabel(pl)))];
+}
+
 function filteredPurchases() {
   const p = state.purchases;
   const q = (document.getElementById('purchases-filter')?.value || '').trim().toLowerCase();
+  const osFilter = document.getElementById('purchases-os-filter')?.value || 'all';
   const onlyHidden = !!document.getElementById('purchases-only-hidden')?.checked;
   return p.apps.filter(a => {
     if (onlyHidden && !a.hiddenFromStorefront) return false;
+    if (osFilter && osFilter !== 'all' && !purchaseAppOSLabels(a).includes(osFilter)) return false;
     if (!q) return true;
     return (
       (a.name || '').toLowerCase().includes(q) ||
@@ -2194,7 +2236,12 @@ function renderPurchases() {
   }
 
   const list = filteredPurchases();
-  const hiddenTotal = p.apps.filter(a => a.hiddenFromStorefront).length;
+  const osFilter = document.getElementById('purchases-os-filter')?.value || 'all';
+  const hiddenTotal = p.apps.filter(a => {
+    if (!a.hiddenFromStorefront) return false;
+    if (osFilter && osFilter !== 'all' && !purchaseAppOSLabels(a).includes(osFilter)) return false;
+    return true;
+  }).length;
   const hiddenCountEl = document.getElementById('purchases-hidden-count');
   if (hiddenCountEl) {
     hiddenCountEl.textContent = String(hiddenTotal);
@@ -2238,8 +2285,11 @@ function renderPurchases() {
     const validPlatforms = Array.isArray(a.platforms)
       ? a.platforms.filter(pl => pl && String(pl).toLowerCase() !== 'unknown')
       : [];
-    const itemPlatform = validPlatforms[0] || 'iphone';
-    const osLabels = [...new Set((validPlatforms.length ? validPlatforms : ['iphone']).map(pl => platformOSLabel(pl)))];
+    const matchedPlatform = (osFilter && osFilter !== 'all')
+      ? validPlatforms.find(pl => platformOSLabel(pl) === osFilter)
+      : '';
+    const itemPlatform = matchedPlatform || validPlatforms[0] || 'iphone';
+    const osLabels = purchaseAppOSLabels(a);
     const osBadgesCell = osLabels
       .map(lbl => ` <span class="badge badge-ios">${batchEscapeHtml(lbl)}</span>`)
       .join('');
@@ -2264,8 +2314,8 @@ function renderPurchases() {
 }
 
 // Saves the (filtered) purchase list in the same "Name: AppID" format the
-// mass-download tab accepts, so it can be fed straight back into it.
-function exportPurchasesList() {
+// mass-download tab accepts, directly to the current working folder.
+async function exportPurchasesList() {
   const list = filteredPurchases();
   if (!list.length) {
     showToast(batchText('purchases_nothing_to_export'), 'error');
@@ -2276,16 +2326,24 @@ function exportPurchasesList() {
     .map(a => `${(a.name || a.bundleId || a.appId)}: ${a.appId}`)
     .join('\n') + '\n';
 
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
   const who = state.account ? (state.account.email || 'apple').replace(/[^\w.@-]+/g, '_') : 'apple';
-  a.download = `purchases-${who}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  const filename = `purchases-${who}.txt`;
+
+  try {
+    const res = await fetch('/api/save-list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, content })
+    });
+    const data = await res.json();
+    if (data && data.success) {
+      showToast(batchText('purchases_saved_toast', { path: data.path || filename }), 'success');
+      return;
+    }
+    showToast((data && data.message) || batchText('purchases_save_failed'), 'error');
+  } catch (err) {
+    showToast(batchText('purchases_save_failed'), 'error');
+  }
 }
 
 // ==========================================
@@ -2967,7 +3025,7 @@ function onBatchVersionPicked(appId, versionId, checked) {
 // Saves the list of apps that passed the Apple ID check (status "available")
 // back to a text file in the same "Name: AppID" format as Apps_ID_List.txt,
 // so the remaining apps can be reused later.
-function saveBatchList() {
+async function saveBatchList() {
   const results = batchState.results;
   if (!results) return;
 
@@ -2981,17 +3039,22 @@ function saveBatchList() {
     .map(i => `${i.name || i.appId}: ${i.appId}`)
     .join('\n') + '\n';
 
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'apps_list.txt';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-
-  showToast(batchText('batch_save_toast'), 'success');
+  const filename = 'apps_list.txt';
+  try {
+    const res = await fetch('/api/save-list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, content })
+    });
+    const data = await res.json();
+    if (data && data.success) {
+      showToast(batchText('purchases_saved_toast', { path: data.path || filename }), 'success');
+      return;
+    }
+    showToast((data && data.message) || batchText('purchases_save_failed'), 'error');
+  } catch (err) {
+    showToast(batchText('purchases_save_failed'), 'error');
+  }
 }
 
 function batchSelectAll(select) {
