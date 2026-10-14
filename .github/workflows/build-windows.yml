@@ -130,7 +130,7 @@ jobs:
           find libimobile-suite/ -type f \( -name "*.exe" -o -name "*.dll" \) -exec cp {} tools/ \;
           ls -la tools/
 
-      - name: Assemble Windows distribution zip
+      - name: Assemble Windows distribution
         run: |
           DIST="ipatool-${{ needs.get_version.outputs.release_version }}-windows"
           mkdir -p "$DIST"
@@ -140,11 +140,9 @@ jobs:
           cp webgui/ipatool-gui.bat "$DIST/"
           cp webgui/resources/Apps_ID_List.txt "$DIST/"
 
-          zip -r "${DIST}.zip" "$DIST"
-
       - name: Upload Windows package artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ipatool-${{ needs.get_version.outputs.release_version }}-windows.zip
-          path: ipatool-*-windows.zip
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-windows
+          path: ipatool-${{ needs.get_version.outputs.release_version }}-windows
           if-no-files-found: error
