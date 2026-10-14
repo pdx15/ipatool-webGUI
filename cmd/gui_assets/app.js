@@ -1735,16 +1735,38 @@ function platformOSLabel(platform) {
   }
 }
 
+function parseMinimumOSBadge(minimumOSVersion, fallbackPlatform = 'iphone') {
+  const raw = String(minimumOSVersion || '').trim();
+  if (!raw) return null;
+  const osMap = {
+    ios: { label: 'iOS', platform: 'iphone' },
+    ipados: { label: 'iPadOS', platform: 'ipad' },
+    tvos: { label: 'tvOS', platform: 'appletv' },
+    watchos: { label: 'watchOS', platform: 'watchos' },
+    visionos: { label: 'visionOS', platform: 'visionos' },
+    macos: { label: 'macOS', platform: 'macos' }
+  };
+  const m = raw.match(/^(iOS|iPadOS|tvOS|watchOS|visionOS|macOS)(?:\s+(.+))?$/i);
+  if (m) {
+    const hit = osMap[m[1].toLowerCase()];
+    if (hit) {
+      return { osLabel: hit.label, minOS: (m[2] || '').trim(), platform: hit.platform };
+    }
+  }
+  return { osLabel: platformOSLabel(fallbackPlatform), minOS: raw, platform: fallbackPlatform || 'iphone' };
+}
+
 // Builds the inner HTML of a "Display Version" table cell: the app version and,
 // when known, a small OS badge showing the minimum supported OS version from
 // the selected build's Info.plist / package metadata.
 function renderDisplayVersionCell(displayVersion, minimumOSVersion, platform = 'iphone') {
   const version = batchEscapeHtml(displayVersion || '—');
-  const minOS = String(minimumOSVersion || '').trim();
-  if (!minOS) return version;
-  const osLabel = platformOSLabel(platform);
+  const parsed = parseMinimumOSBadge(minimumOSVersion, platform);
+  if (!parsed) return version;
+  const osLabel = parsed.osLabel;
+  const badgeText = parsed.minOS ? `${osLabel} ${parsed.minOS}` : osLabel;
   const title = batchText('min_ios_badge_title').replace(/\biOS\b/g, osLabel);
-  return `${version} <span class="badge badge-ios" title="${batchEscapeHtml(title)}">${batchEscapeHtml(osLabel)} ${batchEscapeHtml(minOS)}</span>`;
+  return `${version} <span class="badge badge-ios" title="${batchEscapeHtml(title)}">${batchEscapeHtml(badgeText)}</span>`;
 }
 
 async function handleFetchVersions(e) {
@@ -1976,7 +1998,7 @@ function renderVersionsPage() {
       <td id="disp-ver-${vId}">…</td>
       <td id="date-ver-${vId}">…</td>
       <td>
-        <button class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleId}', ${appId}, '${platform}', '${appNameEsc || bundleId}', '', '${vId}')">
+        <button id="dl-ver-${vId}" class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleId}', ${appId}, '${platform}', '${appNameEsc || bundleId}', '', '${vId}')">
           ⬇️ ${batchText('batch_download_single')}
         </button>
       </td>
@@ -2000,6 +2022,13 @@ function renderVersionsPage() {
       const dateEl = document.getElementById(`date-ver-${vId}`);
       if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion, platform) : '—';
       if (dateEl) dateEl.textContent = data ? (data.releaseDate || '—') : '—';
+      if (data && data.minimumOSVersion) {
+        const parsedOS = parseMinimumOSBadge(data.minimumOSVersion, platform);
+        const dlBtn = document.getElementById(`dl-ver-${vId}`);
+        if (parsedOS && dlBtn && parsedOS.platform) {
+          dlBtn.setAttribute('onclick', `startAppDownload('${bundleId}', ${appId}, '${parsedOS.platform}', '${appNameEsc || bundleId}', '', '${vId}')`);
+        }
+      }
     },
     () => ps.renderToken !== token
   );

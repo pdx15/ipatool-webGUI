@@ -1222,11 +1222,59 @@ type downloadRequestPayload struct {
 
 const defaultDownloadFolderName = "apps"
 
-func defaultDownloadDir() string {
-	dir := defaultDownloadFolderName
-	if cwd, err := os.Getwd(); err == nil && cwd != "" {
-		dir = filepath.Join(cwd, defaultDownloadFolderName)
+func isTestOrSystemExecDir(exe string, dir string) bool {
+	base := filepath.Base(exe)
+	if strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".test.exe") || strings.Contains(exe, "go-build") {
+		return true
 	}
+	clean := filepath.Clean(dir)
+	for _, prefix := range []string{"/usr/", "/bin", "/sbin", "/opt/", "/tmp", "/private/tmp", "/var/folders/"} {
+		if clean == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(clean, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func appWorkingDir() string {
+	homeDir, _ := os.UserHomeDir()
+	cleanHome := filepath.Clean(homeDir)
+
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		if resolved, evalErr := filepath.EvalSymlinks(exe); evalErr == nil && resolved != "" {
+			exe = resolved
+		}
+		exeDir := filepath.Clean(filepath.Dir(exe))
+		if exeDir != "" && exeDir != "." && !isTestOrSystemExecDir(exe, exeDir) {
+			if runtime.GOOS == "darwin" {
+				if exeDir == cleanHome || exeDir == "/" {
+					if cleanHome != "" && cleanHome != "." {
+						return filepath.Join(cleanHome, "ipatool-webGUI")
+					}
+				}
+				return exeDir
+			}
+		}
+	}
+
+	cwd, err := os.Getwd()
+	if err == nil && cwd != "" {
+		cleanCwd := filepath.Clean(cwd)
+		if runtime.GOOS == "darwin" && (cleanCwd == cleanHome || cleanCwd == "/") && cleanHome != "" && cleanHome != "." {
+			return filepath.Join(cleanHome, "ipatool-webGUI")
+		}
+		return cleanCwd
+	}
+
+	if runtime.GOOS == "darwin" && cleanHome != "" && cleanHome != "." {
+		return filepath.Join(cleanHome, "ipatool-webGUI")
+	}
+
+	return "."
+}
+
+func defaultDownloadDir() string {
+	dir := filepath.Join(appWorkingDir(), defaultDownloadFolderName)
 	_ = os.MkdirAll(dir, 0o755)
 	return dir
 }
@@ -1860,13 +1908,9 @@ type saveListPayload struct {
 }
 
 func currentWorkingDir() string {
-	if wd, err := os.Getwd(); err == nil && wd != "" {
-		return wd
-	}
-	if exe, err := os.Executable(); err == nil && exe != "" {
-		return filepath.Dir(exe)
-	}
-	return "."
+	dir := appWorkingDir()
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
 }
 
 func sanitizeTxtFilename(name string) string {
