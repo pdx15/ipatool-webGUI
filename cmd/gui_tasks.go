@@ -50,11 +50,12 @@ func refreshAccount(account appstore.Account) (appstore.Account, error) {
 // purchaseWithRetry attempts to acquire a license, refreshing the account once
 // if Apple's cached password token has expired. The returned bool is true when
 // Apple reported that the license already exists.
-func purchaseWithRetry(account appstore.Account, app appstore.App) (appstore.Account, bool, error) {
+func purchaseWithRetry(account appstore.Account, app appstore.App, platform appstore.Platform) (appstore.Account, bool, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		err := dependencies.AppStore.Purchase(appstore.PurchaseInput{
-			Account: account,
-			App:     app,
+			Account:  account,
+			App:      app,
+			Platform: platform,
 		})
 		if errors.Is(err, appstore.ErrLicenseAlreadyExists) {
 			return account, true, nil
@@ -124,7 +125,7 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 			if input.OnPurchase != nil {
 				input.OnPurchase()
 			}
-			updated, alreadyOwned, purchaseErr := purchaseWithRetry(account, input.App)
+			updated, alreadyOwned, purchaseErr := purchaseWithRetry(account, input.App, input.Platform)
 			if purchaseErr != nil {
 				return updated, appstore.DownloadOutput{}, licenseAcquired, purchaseErr
 			}

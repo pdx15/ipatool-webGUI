@@ -167,6 +167,9 @@
                 <option value="iphone" selected>iPhone (iOS)</option>
                 <option value="ipad">iPad (iPadOS)</option>
                 <option value="appletv">Apple TV (tvOS)</option>
+                <option value="watchos">Apple Watch (watchOS)</option>
+                <option value="visionos">Apple Vision Pro (visionOS)</option>
+                <option value="macos">Mac (macOS)</option>
               </select>
             </div>
 
@@ -278,6 +281,9 @@
                 <option value="iphone" selected>iPhone (iOS)</option>
                 <option value="ipad">iPad (iPadOS)</option>
                 <option value="appletv">Apple TV (tvOS)</option>
+                <option value="watchos">Apple Watch (watchOS)</option>
+                <option value="visionos">Apple Vision Pro (visionOS)</option>
+                <option value="macos">Mac (macOS)</option>
               </select>
             </div>
 
@@ -378,6 +384,9 @@
                 <option value="iphone" selected>iPhone (iOS)</option>
                 <option value="ipad">iPad (iPadOS)</option>
                 <option value="appletv">Apple TV (tvOS)</option>
+                <option value="watchos">Apple Watch (watchOS)</option>
+                <option value="visionos">Apple Vision Pro (visionOS)</option>
+                <option value="macos">Mac (macOS)</option>
               </select>
             </div>
 
@@ -551,9 +560,22 @@
               required
             >
           </div>
-          <button type="submit" id="versions-btn" class="btn btn-primary">
-            <span data-i18n="fetch_versions_btn">Получить версии</span>
-          </button>
+          <div class="search-options">
+            <div class="option-group">
+              <label for="versions-platform" data-i18n="platform_label">Платформа:</label>
+              <select id="versions-platform" class="select-control">
+                <option value="iphone" selected>iPhone (iOS)</option>
+                <option value="ipad">iPad (iPadOS)</option>
+                <option value="appletv">Apple TV (tvOS)</option>
+                <option value="watchos">Apple Watch (watchOS)</option>
+                <option value="visionos">Apple Vision Pro (visionOS)</option>
+                <option value="macos">Mac (macOS)</option>
+              </select>
+            </div>
+            <button type="submit" id="versions-btn" class="btn btn-primary">
+              <span data-i18n="fetch_versions_btn">Получить версии</span>
+            </button>
+          </div>
         </form>
 
         <div id="versions-loading" class="state-container" style="display:none">

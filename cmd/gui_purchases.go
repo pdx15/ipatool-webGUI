@@ -32,11 +32,12 @@ var purchasesState = &purchasesCache{}
 
 // purchaseItem is the JSON shape consumed by the GUI.
 type purchaseItem struct {
-	AppID        int64  `json:"appId"`
-	BundleID     string `json:"bundleId"`
-	Name         string `json:"name"`
-	Version      string `json:"version,omitempty"`
-	PurchaseDate string `json:"purchaseDate,omitempty"`
+	AppID        int64               `json:"appId"`
+	BundleID     string              `json:"bundleId"`
+	Name         string              `json:"name"`
+	Version      string              `json:"version,omitempty"`
+	PurchaseDate string              `json:"purchaseDate,omitempty"`
+	Platforms    []appstore.Platform `json:"platforms,omitempty"`
 }
 
 func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, error) {
@@ -175,6 +176,7 @@ func handleAPIPurchases(w http.ResponseWriter, r *http.Request) {
 			Name:         app.Name,
 			Version:      app.Version,
 			PurchaseDate: purchaseDate,
+			Platforms:    app.Platforms,
 		})
 	}
 

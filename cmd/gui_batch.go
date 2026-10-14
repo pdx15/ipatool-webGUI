@@ -252,7 +252,7 @@ func runBatchCheckItem(
 		res.checkErr = checkErr
 
 		if errors.Is(checkErr, appstore.ErrLicenseRequired) && purchase {
-			refreshed, _, purchaseErr := purchaseWithRetry(res.acc, app)
+			refreshed, _, purchaseErr := purchaseWithRetry(res.acc, app, platform)
 			res.acc = refreshed
 			res.purchaseErr = purchaseErr
 
