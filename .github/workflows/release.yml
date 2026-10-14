@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_version:
-        description: 'Upstream majd/ipatool version (e.g. 2.7.0). Leave blank for latest release'
+        description: 'Version (e.g. 2.7.0, 2.7.0b for WebGUI hotfix on v2.7.0, or 2.7.1). Leave blank for latest release'
         required: false
         default: ''
   push:
@@ -30,12 +30,14 @@ jobs:
         run: |
           CUSTOM_VER="${{ github.event.inputs.upstream_version }}"
           if [ -n "$CUSTOM_VER" ]; then
-            RAW_VER="${CUSTOM_VER#v}"
-            UPSTREAM_TAG="v${RAW_VER}"
+            RAW_VER=$(echo "$CUSTOM_VER" | sed 's/^v//' | sed 's/-webGUI$//')
+            UPSTREAM_VER=$(echo "$RAW_VER" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+)[a-zA-Z].*$/\1/')
+            UPSTREAM_TAG="v${UPSTREAM_VER}"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             TAG_NAME="${{ github.ref_name }}"
             RAW_VER=$(echo "$TAG_NAME" | sed 's/^v//' | sed 's/-webGUI$//')
-            UPSTREAM_TAG="v${RAW_VER}"
+            UPSTREAM_VER=$(echo "$RAW_VER" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+)[a-zA-Z].*$/\1/')
+            UPSTREAM_TAG="v${UPSTREAM_VER}"
           else
             LATEST_TAG=$(curl -s https://api.github.com/repos/majd/ipatool/releases/latest | jq -r '.tag_name // empty')
             if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
