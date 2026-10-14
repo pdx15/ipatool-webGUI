@@ -271,7 +271,7 @@ func initGUIWithCommand(cmd *cobra.Command) error {
 		return err
 	}
 
-	dependencies.CookieJar = newCookieJar(stateDirectory)
+	dependencies.CookieJar = newGUICookieJar(stateDirectory)
 	dependencies.Keychain = newGUIKeychain(stateDirectory, !nonInteractive)
 	dependencies.AppStore = appstore.NewAppStore(appstore.Args{
 		CookieJar:       dependencies.CookieJar,
