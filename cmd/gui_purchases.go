@@ -908,118 +908,117 @@ func mergePurchaseHistoryApps(daapApps, commerceApps []appstore.App) []appstore.
 // enrichMissingCatalogFields populates BundleID, Version, and Name for apps
 // that came only from /commerce/account/purchases (which does not include
 // bundle identifiers). It checks the bundled removed-apps catalog first and
-// then performs batch iTunes Lookup requests across the account storefront
+// then performs batch iTunes Lookup requests across the default storefront
 // plus US/GB fallback storefronts.
 func enrichMissingCatalogFields(apps []appstore.App) {
 	if len(apps) == 0 {
 		return
 	}
 
-	removedByID := make(map[int64]RemovedAppEntry)
-	for _, entry := range getRemovedAppsCatalog() {
+	removedByID := make(map[int64]removedAppEntry)
+	for _, entry := range loadRemovedApps() {
 		if entry.AppID > 0 {
 			removedByID[entry.AppID] = entry
 		}
 	}
 
-	var missingIndices []int
-	for i := range apps {
-		if entry, ok := removedByID[apps[i].ID]; ok {
-			if apps[i].BundleID == "" && entry.BundleID != "" {
-				apps[i].BundleID = entry.BundleID
-			}
-			if apps[i].Name == "" && entry.Name != "" {
-				apps[i].Name = entry.Name
-			}
-			if apps[i].Version == "" && entry.Version != "" {
-				apps[i].Version = entry.Version
+	missingIndices := make(map[int64]int)
+	missingIDs := make([]int64, 0)
+
+	for idx := range apps {
+		if entry, ok := removedByID[apps[idx].ID]; ok {
+			if apps[idx].Name == "" && entry.Name != "" {
+				apps[idx].Name = entry.Name
 			}
 		}
-		if apps[i].BundleID == "" && apps[i].ID > 0 {
-			missingIndices = append(missingIndices, i)
+		if apps[idx].ID > 0 && (apps[idx].BundleID == "" || apps[idx].Version == "") {
+			if _, exists := missingIndices[apps[idx].ID]; !exists {
+				missingIndices[apps[idx].ID] = idx
+				missingIDs = append(missingIDs, apps[idx].ID)
+			}
 		}
 	}
 
-	if len(missingIndices) == 0 {
+	if len(missingIDs) == 0 {
 		return
 	}
 
-	countries := []string{"us", "gb"}
-	if info, err := dependencies.AppStore.AccountInfo(); err == nil {
-		if cc := strings.ToLower(resolveCountryCode(info.Account.StoreFront)); cc != "" && cc != "us" && cc != "gb" {
-			countries = append([]string{cc}, countries...)
+	for start := 0; start < len(missingIDs); start += commerceCatalogBatchSize {
+		end := start + commerceCatalogBatchSize
+		if end > len(missingIDs) {
+			end = len(missingIDs)
 		}
-	}
 
-	client := &http.Client{Timeout: 8 * time.Second}
-	idxByAppID := make(map[int64]int, len(missingIndices))
-	for _, idx := range missingIndices {
-		idxByAppID[apps[idx].ID] = idx
-	}
-
-	for _, country := range countries {
-		var remainingIDs []string
-		for appID, idx := range idxByAppID {
-			if apps[idx].BundleID == "" {
-				remainingIDs = append(remainingIDs, strconv.FormatInt(appID, 10))
+		remaining := append([]int64(nil), missingIDs[start:end]...)
+		for _, country := range []string{"", "us", "gb"} {
+			if len(remaining) == 0 {
+				break
 			}
-		}
-		if len(remainingIDs) == 0 {
-			break
-		}
 
-		for start := 0; start < len(remainingIDs); start += commerceCatalogBatchSize {
-			end := start + commerceCatalogBatchSize
-			if end > len(remainingIDs) {
-				end = len(remainingIDs)
+			strIDs := make([]string, len(remaining))
+			for i, id := range remaining {
+				strIDs[i] = strconv.FormatInt(id, 10)
 			}
-			batch := remainingIDs[start:end]
-			items := fetchCatalogBatch(client, batch, country)
-			for _, item := range items {
-				if idx, ok := idxByAppID[item.TrackID]; ok {
-					if apps[idx].BundleID == "" && item.BundleID != "" {
-						apps[idx].BundleID = item.BundleID
+
+			items, err := lookupCatalogEnrichment(strIDs, country)
+			if err != nil {
+				continue
+			}
+
+			found := make(map[int64]struct{}, len(items))
+			for _, entry := range items {
+				if entry.TrackID == 0 {
+					continue
+				}
+				found[entry.TrackID] = struct{}{}
+				if idx, ok := missingIndices[entry.TrackID]; ok {
+					if apps[idx].BundleID == "" && entry.BundleID != "" {
+						apps[idx].BundleID = entry.BundleID
 					}
-					if apps[idx].Version == "" && item.Version != "" {
-						apps[idx].Version = item.Version
+					if apps[idx].Version == "" && entry.Version != "" {
+						apps[idx].Version = entry.Version
 					}
-					if apps[idx].Name == "" && item.Name != "" {
-						apps[idx].Name = item.Name
+					if apps[idx].Name == "" && entry.Name != "" {
+						apps[idx].Name = entry.Name
 					}
 				}
 			}
+
+			nextRemaining := make([]int64, 0, len(remaining))
+			for _, id := range remaining {
+				if _, ok := found[id]; !ok {
+					nextRemaining = append(nextRemaining, id)
+				}
+			}
+			remaining = nextRemaining
 		}
 	}
 }
 
-func fetchCatalogBatch(client *http.Client, ids []string, country string) []catalogEnrichmentItem {
-	if len(ids) == 0 {
-		return nil
+func lookupCatalogEnrichment(ids []string, country string) ([]catalogEnrichmentItem, error) {
+	query := url.Values{}
+	query.Set("id", strings.Join(ids, ","))
+	query.Set("entity", "software,iPadSoftware,macSoftware")
+	if country != "" {
+		query.Set("country", country)
 	}
-	q := url.Values{}
-	q.Set("id", strings.Join(ids, ","))
-	q.Set("country", country)
-	q.Set("entity", "software,iPadSoftware,macSoftware")
-	lookupURL := "https://itunes.apple.com/lookup?" + q.Encode()
 
-	res, err := client.Get(lookupURL)
+	res, err := displayLookupClient.Get(displayLookupURL + "?" + query.Encode())
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, res.Body)
-		_ = res.Body.Close()
-	}()
+	defer res.Body.Close()
 
 	if res.StatusCode != http.StatusOK {
-		return nil
+		return nil, errDisplayLookupFailed
 	}
 
-	var parsed catalogEnrichmentResponse
-	if err := json.NewDecoder(res.Body).Decode(&parsed); err != nil {
-		return nil
+	var payload catalogEnrichmentResponse
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		return nil, err
 	}
-	return parsed.Results
+
+	return payload.Results, nil
 }
 
 func sortPurchasesByDate(apps []appstore.App) []appstore.App {
