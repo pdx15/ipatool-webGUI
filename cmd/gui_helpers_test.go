@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/majd/ipatool/v2/pkg/appstore"
@@ -723,6 +725,24 @@ func TestCompareWebGUIVersions(t *testing.T) {
 		t.Fatalf("expected 2.7.0c-webGUI == 2.7.0c")
 	}
 }
+
+func TestResolveDownloadOutputPathDefaultsToAppsDir(t *testing.T) {
+	got := resolveDownloadOutputPath("")
+	if filepath.Base(got) != "apps" {
+		t.Fatalf("expected default download directory base name 'apps', got %q", got)
+	}
+	info, err := os.Stat(got)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("expected default download directory %q to exist: %v", got, err)
+	}
+	_ = os.Remove(got)
+
+	custom := resolveDownloadOutputPath("  /custom/output/dir  ")
+	if custom != "/custom/output/dir" {
+		t.Fatalf("expected trimmed custom path, got %q", custom)
+	}
+}
+
 
 
 
