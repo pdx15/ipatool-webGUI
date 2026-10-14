@@ -640,6 +640,15 @@
           <div class="search-input-wrapper">
             <input type="text" id="purchases-filter" data-i18n-placeholder="purchases_filter_placeholder" placeholder="Фильтр по названию, Bundle ID или App ID" oninput="renderPurchases()">
           </div>
+          <label class="purchases-hidden-toggle" id="purchases-hidden-toggle-wrap" title="Показать только приложения, скрытые или удалённые из региональной витрины App Store">
+            <input type="checkbox" id="purchases-only-hidden" onchange="renderPurchases()">
+            <span class="purchases-hidden-toggle-track"><span class="purchases-hidden-toggle-thumb"></span></span>
+            <span class="purchases-hidden-toggle-label">
+              <span class="badge-hidden-storefront">!</span>
+              <span data-i18n="purchases_only_hidden">Только скрытые</span>
+              <span id="purchases-hidden-count" class="purchases-hidden-count">0</span>
+            </span>
+          </label>
           <div class="purchases-toolbar-right">
             <span id="purchases-count-badge" class="badge">0</span>
             <button type="button" class="btn btn-outline btn-sm" onclick="exportPurchasesList()">

@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -15,17 +18,167 @@ import (
 	"time"
 
 	"github.com/majd/ipatool/v2/pkg/appstore"
+	pkghttp "github.com/majd/ipatool/v2/pkg/http"
 )
 
 const (
-	commercePurchasesPath       = "/commerce/account/purchases"
-	commerceConfiguratorUA      = "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
-	commerceAppStoreLaunchYear  = 2008
-	commerceMaxPagesPerYear     = 50
-	commerceMaxRedirectHops     = 4
-	commerceYearConcurrency     = 4
-	commerceCatalogBatchSize    = 100
+	commercePurchasesPath      = "/commerce/account/purchases"
+	commerceConfiguratorUA     = "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
+	commerceAppStoreLaunchYear = 2008
+	commerceMaxPagesPerYear    = 50
+	commerceMaxRedirectHops    = 5
+	commerceYearConcurrency    = 2
+	commerceCatalogBatchSize   = 100
 )
+
+// guiPersistentCookieJar wraps juju/persistent-cookiejar so Apple session
+// cookies (wosid, mz_at0-*, mz_at_ssl-*, itspod, ns-mzf-inst, myacinfo) that
+// arrive without an explicit Expires/Max-Age are promoted to persistent
+// cookies and written to ~/.ipatool/cookies on Save(). Without this,
+// persistent-cookiejar drops all session cookies when the process exits,
+// causing /commerce/account/purchases to lose its session on the next run.
+type guiPersistentCookieJar struct {
+	inner pkghttp.CookieJar
+}
+
+type netscapeCookieEntry struct {
+	u      *url.URL
+	cookie *http.Cookie
+}
+
+func newGUICookieJar(stateDirectory string) pkghttp.CookieJar {
+	cookiePath := filepath.Join(stateDirectory, CookieJarFileName)
+	imported := importNetscapeCookieFileIfNeeded(cookiePath)
+
+	baseJar := newCookieJar(stateDirectory)
+	wrapped := &guiPersistentCookieJar{inner: baseJar}
+
+	if len(imported) > 0 {
+		for _, entry := range imported {
+			wrapped.SetCookies(entry.u, []*http.Cookie{entry.cookie})
+		}
+		_ = wrapped.Save()
+	}
+
+	return wrapped
+}
+
+func importNetscapeCookieFileIfNeeded(cookiePath string) []netscapeCookieEntry {
+	data, err := os.ReadFile(cookiePath)
+	if err != nil {
+		return nil
+	}
+
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		_ = os.Remove(cookiePath)
+		return nil
+	}
+
+	// juju/persistent-cookiejar stores a JSON array starting with '['.
+	if trimmed[0] == '[' {
+		return nil
+	}
+
+	var entries []netscapeCookieEntry
+	lines := strings.Split(string(trimmed), "\n")
+	defaultExpiry := time.Now().Add(14 * 24 * time.Hour)
+
+	for _, rawLine := range lines {
+		line := strings.TrimSpace(rawLine)
+		if line == "" {
+			continue
+		}
+		httpOnly := false
+		if strings.HasPrefix(line, "#HttpOnly_") {
+			httpOnly = true
+			line = strings.TrimPrefix(line, "#HttpOnly_")
+		} else if strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		fields := strings.Split(line, "\t")
+		if len(fields) < 7 {
+			continue
+		}
+
+		domain := strings.TrimSpace(fields[0])
+		path := strings.TrimSpace(fields[2])
+		secure := strings.EqualFold(strings.TrimSpace(fields[3]), "TRUE")
+		expSec, _ := strconv.ParseInt(strings.TrimSpace(fields[4]), 10, 64)
+		name := strings.TrimSpace(fields[5])
+		value := fields[6]
+
+		if domain == "" || name == "" {
+			continue
+		}
+		if path == "" {
+			path = "/"
+		}
+
+		host := strings.TrimPrefix(domain, ".")
+		scheme := "https"
+		if !secure {
+			scheme = "http"
+		}
+		u, parseErr := url.Parse(fmt.Sprintf("%s://%s%s", scheme, host, path))
+		if parseErr != nil {
+			continue
+		}
+
+		exp := defaultExpiry
+		if expSec > 0 {
+			parsedExp := time.Unix(expSec, 0)
+			if parsedExp.After(time.Now()) {
+				exp = parsedExp
+			}
+		}
+
+		entries = append(entries, netscapeCookieEntry{
+			u: u,
+			cookie: &http.Cookie{
+				Name:     name,
+				Value:    value,
+				Domain:   domain,
+				Path:     path,
+				Secure:   secure,
+				HttpOnly: httpOnly,
+				Expires:  exp,
+			},
+		})
+	}
+
+	// Remove the non-JSON file before juju/persistent-cookiejar opens it.
+	_ = os.Remove(cookiePath)
+	return entries
+}
+
+func (j *guiPersistentCookieJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
+	if len(cookies) == 0 {
+		return
+	}
+	promoted := make([]*http.Cookie, 0, len(cookies))
+	defaultExpiry := time.Now().Add(14 * 24 * time.Hour)
+	for _, c := range cookies {
+		if c == nil {
+			continue
+		}
+		cp := *c
+		if cp.MaxAge == 0 && cp.Expires.IsZero() {
+			cp.Expires = defaultExpiry
+		}
+		promoted = append(promoted, &cp)
+	}
+	j.inner.SetCookies(u, promoted)
+}
+
+func (j *guiPersistentCookieJar) Cookies(u *url.URL) []*http.Cookie {
+	return j.inner.Cookies(u)
+}
+
+func (j *guiPersistentCookieJar) Save() error {
+	return j.inner.Save()
+}
 
 // purchasesCache keeps the last purchase-history result per Apple ID so the
 // "Purchase history" tab is populated instantly after the first load. The
@@ -50,6 +203,8 @@ type purchasesLoad struct {
 
 var purchasesState = &purchasesCache{}
 
+var commerceRefreshMu sync.Mutex
+
 // purchaseItem is the JSON shape consumed by the GUI.
 type purchaseItem struct {
 	AppID                int64               `json:"appId"`
@@ -62,8 +217,8 @@ type purchaseItem struct {
 }
 
 type commercePurchasesResponse struct {
-	Data struct {
-		Attributes struct {
+	Data *struct {
+		Attributes *struct {
 			IsComplete *bool                     `json:"is-complete"`
 			Purchases  []commercePurchaseInvoice `json:"purchases"`
 		} `json:"attributes"`
@@ -96,7 +251,7 @@ type catalogEnrichmentResponse struct {
 	Results []catalogEnrichmentItem `json:"results"`
 }
 
-func fetchDAAPOwnedApps(acc appstore.Account) ([]appstore.App, error) {
+func fetchDAAPOwnedAppsForAccount(acc appstore.Account) ([]appstore.App, error) {
 	var allApps []appstore.App
 	page := 1
 	for {
@@ -117,31 +272,56 @@ func fetchDAAPOwnedApps(acc appstore.Account) ([]appstore.App, error) {
 	return allApps, nil
 }
 
+// fetchDAAPOwnedApps queries the user's primary regional storefront and, when
+// the account is outside the US/GB storefronts, also probes the US storefront
+// so purchased apps hidden only in the regional storefront are discovered via
+// DAAP as well.
+func fetchDAAPOwnedApps(acc appstore.Account) (regionalApps []appstore.App, fallbackApps []appstore.App, err error) {
+	regionalApps, err = fetchDAAPOwnedAppsForAccount(acc)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	trimmedSF := strings.TrimSpace(acc.StoreFront)
+	if !strings.HasPrefix(trimmedSF, "143441") {
+		usAcc := acc
+		usAcc.StoreFront = "143441-1,29"
+		if usApps, usErr := fetchDAAPOwnedAppsForAccount(usAcc); usErr == nil && len(usApps) > 0 {
+			fallbackApps = append(fallbackApps, usApps...)
+		}
+	}
+
+	return regionalApps, fallbackApps, nil
+}
+
 func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, error) {
 	var (
-		daapApps     []appstore.App
-		daapErr      error
-		commerceApps []appstore.App
-		commerceErr  error
-		wg           sync.WaitGroup
+		regionalDAAPApps []appstore.App
+		fallbackDAAPApps []appstore.App
+		daapErr          error
+		commerceApps     []appstore.App
+		commerceErr      error
+		wg               sync.WaitGroup
 	)
 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		daapApps, daapErr = fetchDAAPOwnedApps(acc)
+		regionalDAAPApps, fallbackDAAPApps, daapErr = fetchDAAPOwnedApps(acc)
 	}()
 	go func() {
 		defer wg.Done()
-		commerceApps, commerceErr = fetchCommercePurchaseHistory(acc)
+		commerceApps, commerceErr = fetchCommercePurchaseHistoryWithRelogin(acc)
 	}()
 	wg.Wait()
 
 	if daapErr != nil && errors.Is(daapErr, appstore.ErrPasswordTokenExpired) {
-		return nil, nil, daapErr
+		if len(commerceApps) == 0 {
+			return nil, nil, daapErr
+		}
 	}
 
-	if daapErr != nil {
+	if daapErr != nil && len(regionalDAAPApps) == 0 {
 		if commerceErr == nil && len(commerceApps) > 0 {
 			enrichMissingCatalogFields(commerceApps)
 			return sortPurchasesByDate(commerceApps), nil, nil
@@ -152,15 +332,17 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, er
 		return nil, nil, daapErr
 	}
 
-	daapSeen := make(map[int64]struct{}, len(daapApps))
-	for _, app := range daapApps {
+	daapSeen := make(map[int64]struct{}, len(regionalDAAPApps))
+	for _, app := range regionalDAAPApps {
 		if app.ID > 0 {
 			daapSeen[app.ID] = struct{}{}
 		}
 	}
 
+	extraApps := mergePurchaseHistoryApps(fallbackDAAPApps, commerceApps)
+
 	hiddenIDs := make(map[int64]bool)
-	for _, app := range commerceApps {
+	for _, app := range extraApps {
 		if app.ID > 0 {
 			if _, ok := daapSeen[app.ID]; !ok {
 				hiddenIDs[app.ID] = true
@@ -168,19 +350,58 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, er
 		}
 	}
 
-	merged := mergePurchaseHistoryApps(daapApps, commerceApps)
+	merged := mergePurchaseHistoryApps(regionalDAAPApps, extraApps)
 	enrichMissingCatalogFields(merged)
 
 	return sortPurchasesByDate(merged), hiddenIDs, nil
 }
 
-func fetchCommercePurchaseHistory(acc appstore.Account) ([]appstore.App, error) {
-	if strings.TrimSpace(acc.DirectoryServicesID) == "" {
-		return nil, nil
+func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.App, error) {
+	apps, updatedPod, err := fetchCommercePurchaseHistoryOnce(acc)
+	if err == nil {
+		persistAccountPodIfChanged(acc, updatedPod)
+		return apps, nil
 	}
 
+	// If session cookies in ~/.ipatool/cookies were missing or expired,
+	// refreshAccount performs a silent Login (populating fresh wosid/mz_at0
+	// cookies into dependencies.CookieJar) and we retry immediately.
+	if acc.Password != "" {
+		commerceRefreshMu.Lock()
+		refreshedAcc, refreshErr := refreshAccount(acc)
+		commerceRefreshMu.Unlock()
+		if refreshErr == nil {
+			apps, updatedPod, err = fetchCommercePurchaseHistoryOnce(refreshedAcc)
+			if err == nil {
+				persistAccountPodIfChanged(refreshedAcc, updatedPod)
+				return apps, nil
+			}
+		}
+	}
+
+	return nil, err
+}
+
+func persistAccountPodIfChanged(acc appstore.Account, newPod string) {
+	newPod = strings.TrimSpace(newPod)
+	if newPod == "" || newPod == strings.TrimSpace(acc.Pod) || dependencies.Keychain == nil {
+		return
+	}
+	acc.Pod = newPod
+	if data, err := json.Marshal(acc); err == nil {
+		_ = dependencies.Keychain.Set("account", data)
+	}
+}
+
+func newCommerceHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Match sorvigolova/ipatool: do not send Accept-Encoding: gzip so Apple
+	// returns plain JSON directly.
+	transport.DisableCompression = true
+
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout:   20 * time.Second,
+		Transport: transport,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -188,6 +409,15 @@ func fetchCommercePurchaseHistory(acc appstore.Account) ([]appstore.App, error) 
 	if dependencies.CookieJar != nil {
 		client.Jar = dependencies.CookieJar
 	}
+	return client
+}
+
+func fetchCommercePurchaseHistoryOnce(acc appstore.Account) ([]appstore.App, string, error) {
+	if strings.TrimSpace(acc.DirectoryServicesID) == "" {
+		return nil, "", nil
+	}
+
+	client := newCommerceHTTPClient()
 
 	podMu := sync.Mutex{}
 	activePod := strings.TrimSpace(acc.Pod)
@@ -206,24 +436,25 @@ func fetchCommercePurchaseHistory(acc appstore.Account) ([]appstore.App, error) 
 		podMu.Unlock()
 	}
 
-	currentYear := time.Now().Year()
-	if currentYear < commerceAppStoreLaunchYear {
-		currentYear = commerceAppStoreLaunchYear
-	}
-
-	// Fetch the current year first so the initial 302 pod/cookie handshake
-	// populates itspod in CookieJar and discovers any updated pod before
-	// launching concurrent requests for earlier years.
-	firstYearApps, status, err := fetchCommercePurchasesForRange(client, acc, getPod, setPod, fmt.Sprintf("%d-all", currentYear))
+	// Step 1: Fetch the default 90-day window (range="") first, just like iTunes
+	// Purchase History. This also completes the 302 pod/cookie handshake
+	// (mzcprh=1 & Set-Cookie itspod=N) and validates that our session cookies
+	// are accepted before querying historical years.
+	recentApps, status, err := fetchCommercePurchasesForRange(client, acc, getPod, setPod, "", 0)
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return nil, appstore.ErrPasswordTokenExpired
+		return nil, getPod(), appstore.ErrPasswordTokenExpired
 	}
 	if err != nil {
-		return nil, err
+		return nil, getPod(), err
 	}
 
 	if dependencies.CookieJar != nil {
 		_ = dependencies.CookieJar.Save()
+	}
+
+	currentYear := time.Now().UTC().Year()
+	if currentYear < commerceAppStoreLaunchYear {
+		currentYear = commerceAppStoreLaunchYear
 	}
 
 	type yearResult struct {
@@ -231,8 +462,8 @@ func fetchCommercePurchaseHistory(acc appstore.Account) ([]appstore.App, error) 
 		apps []appstore.App
 	}
 
-	years := make([]int, 0, currentYear-commerceAppStoreLaunchYear)
-	for y := currentYear - 1; y >= commerceAppStoreLaunchYear; y-- {
+	years := make([]int, 0, currentYear-commerceAppStoreLaunchYear+1)
+	for y := currentYear; y >= commerceAppStoreLaunchYear; y-- {
 		years = append(years, y)
 	}
 
@@ -247,7 +478,13 @@ func fetchCommercePurchaseHistory(acc appstore.Account) ([]appstore.App, error) 
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			apps, _, rangeErr := fetchCommercePurchasesForRange(client, acc, getPod, setPod, fmt.Sprintf("%d-all", y))
+			rangeStr := fmt.Sprintf("%d-all", y)
+			apps, _, rangeErr := fetchCommercePurchasesForRange(client, acc, getPod, setPod, rangeStr, y)
+			if rangeErr != nil {
+				// Retry once after a short pause if a concurrent request was throttled.
+				time.Sleep(250 * time.Millisecond)
+				apps, _, rangeErr = fetchCommercePurchasesForRange(client, acc, getPod, setPod, rangeStr, y)
+			}
 			if rangeErr == nil && len(apps) > 0 {
 				results[i] = yearResult{year: y, apps: apps}
 			}
@@ -260,13 +497,13 @@ func fetchCommercePurchaseHistory(acc appstore.Account) ([]appstore.App, error) 
 		_ = dependencies.CookieJar.Save()
 	}
 
-	allApps := make([]appstore.App, 0, len(firstYearApps)+64)
-	allApps = append(allApps, firstYearApps...)
+	allApps := make([]appstore.App, 0, len(recentApps)+128)
+	allApps = append(allApps, recentApps...)
 	for _, res := range results {
 		allApps = append(allApps, res.apps...)
 	}
 
-	return mergePurchaseHistoryApps(nil, allApps), nil
+	return mergePurchaseHistoryApps(nil, allApps), getPod(), nil
 }
 
 func fetchCommercePurchasesForRange(
@@ -275,6 +512,7 @@ func fetchCommercePurchasesForRange(
 	getPod func() string,
 	setPod func(string),
 	rangeParam string,
+	fallbackYear int,
 ) ([]appstore.App, int, error) {
 	seenOrders := make(map[string]struct{})
 	var apps []appstore.App
@@ -291,6 +529,15 @@ func fetchCommercePurchasesForRange(
 		pageApps, isComplete, addedInvoices, ok := parseCommercePurchasesPage(body, seenOrders)
 		if !ok {
 			return apps, status, errors.New("unexpected commerce purchase history response")
+		}
+
+		if fallbackYear > 0 {
+			fallbackDate := time.Date(fallbackYear, time.January, 1, 0, 0, 0, 0, time.UTC)
+			for i := range pageApps {
+				if pageApps[i].PurchaseDate.IsZero() {
+					pageApps[i].PurchaseDate = fallbackDate
+				}
+			}
 		}
 
 		apps = append(apps, pageApps...)
@@ -315,17 +562,17 @@ func sendCommercePurchasesRequest(
 		if targetPod != "" {
 			prefix = "p" + targetPod + "-"
 		}
-		q := url.Values{}
-		q.Set("isDeepLink", "false")
-		q.Set("isJsonApiFormat", "true")
+		query := "isDeepLink=false&isJsonApiFormat=true"
 		if page > 0 {
-			q.Set("page", strconv.Itoa(page))
+			query += "&page=" + strconv.Itoa(page)
 		}
 		if rangeParam != "" {
-			q.Set("range", rangeParam)
+			query += "&range=" + url.QueryEscape(rangeParam)
 		}
-		return fmt.Sprintf("https://%sbuy.itunes.apple.com%s?%s", prefix, commercePurchasesPath, q.Encode())
+		return fmt.Sprintf("https://%sbuy.itunes.apple.com%s?%s", prefix, commercePurchasesPath, query)
 	}
+
+	storeFrontHeader := strings.TrimSpace(acc.StoreFront)
 
 	doGET := func(rawURL string) (*http.Response, error) {
 		req, err := http.NewRequest(http.MethodGet, rawURL, nil)
@@ -334,8 +581,9 @@ func sendCommercePurchasesRequest(
 		}
 		req.Header.Set("User-Agent", commerceConfiguratorUA)
 		req.Header.Set("Accept-Language", "en-us")
-		req.Header.Set("X-Apple-Store-Front", acc.StoreFront)
+		req.Header.Set("X-Apple-Store-Front", storeFrontHeader)
 		req.Header.Set("X-Dsid", acc.DirectoryServicesID)
+		req.Header.Set("iCloud-DSID", acc.DirectoryServicesID)
 		if acc.PasswordToken != "" {
 			req.Header.Set("X-Token", acc.PasswordToken)
 		}
@@ -352,20 +600,29 @@ func sendCommercePurchasesRequest(
 		return nil, 0, err
 	}
 
-	for hop := 0; (res.StatusCode == http.StatusFound || res.StatusCode == http.StatusMovedPermanently || res.StatusCode == http.StatusTemporaryRedirect) && hop < commerceMaxRedirectHops; hop++ {
+	for hop := 0; isCommerceRedirectStatus(res.StatusCode) && hop < commerceMaxRedirectHops; hop++ {
 		if headerPod := strings.TrimSpace(res.Header.Get("pod")); headerPod != "" {
 			setPod(headerPod)
 		}
 		loc := strings.TrimSpace(res.Header.Get("Location"))
+		reqURL := res.Request.URL
 		_, _ = io.Copy(io.Discard, res.Body)
 		_ = res.Body.Close()
 		if loc == "" {
 			return nil, res.StatusCode, errors.New("commerce purchase history redirect missing Location")
 		}
-		if locPod := extractPodFromURL(loc); locPod != "" {
+
+		nextURL := loc
+		if reqURL != nil {
+			if parsedLoc, parseErr := reqURL.Parse(loc); parseErr == nil {
+				nextURL = parsedLoc.String()
+			}
+		}
+
+		if locPod := extractPodFromURL(nextURL); locPod != "" {
 			setPod(locPod)
 		}
-		res, err = doGET(loc)
+		res, err = doGET(nextURL)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -386,6 +643,15 @@ func sendCommercePurchasesRequest(
 	}
 
 	return body, res.StatusCode, nil
+}
+
+func isCommerceRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
 }
 
 func extractPodFromURL(rawURL string) string {
@@ -414,16 +680,20 @@ func parseCommercePurchasesPage(rawBody []byte, seenOrders map[string]struct{}) 
 	if err := json.Unmarshal(rawBody, &payload); err != nil {
 		return nil, true, 0, false
 	}
+	if payload.Data == nil || payload.Data.Attributes == nil {
+		return nil, true, 0, false
+	}
 
+	attr := payload.Data.Attributes
 	isComplete := true
-	if payload.Data.Attributes.IsComplete != nil {
-		isComplete = *payload.Data.Attributes.IsComplete
+	if attr.IsComplete != nil {
+		isComplete = *attr.IsComplete
 	}
 
 	addedInvoices := 0
 	var apps []appstore.App
 
-	for _, inv := range payload.Data.Attributes.Purchases {
+	for _, inv := range attr.Purchases {
 		orderID := strings.TrimSpace(inv.OrderID)
 		if orderID != "" {
 			if _, exists := seenOrders[orderID]; exists {
@@ -494,9 +764,10 @@ func platformsFromCommerceKind(kind string) ([]appstore.Platform, bool) {
 	}
 
 	for _, nonApp := range []string{
-		"book", "audiobook", "song", "music", "album", "movie",
-		"ringtone", "tone", "podcast", "tv episode", "tv season",
-		"icloud", "subscription", "in-app", "in app", "pass",
+		"audiobook", "ebook", "book", "song", "music", "album", "movie",
+		"ringtone", "podcast", "tv episode", "tv season",
+		"icloud+", "icloud storage", "subscription", "in-app", "in app",
+		"подписк", "встроенн", "книг", "аудиокниг", "песн", "альбом", "фильм", "рингтон",
 	} {
 		if strings.Contains(lower, nonApp) {
 			return nil, false
@@ -512,7 +783,7 @@ func platformsFromCommerceKind(kind string) ([]appstore.Platform, bool) {
 		return []appstore.Platform{appstore.PlatformWatchOS}, true
 	case strings.Contains(lower, "tv"):
 		return []appstore.Platform{appstore.PlatformAppleTV}, true
-	case strings.Contains(lower, "universal"):
+	case strings.Contains(lower, "universal") || strings.Contains(lower, "универсал"):
 		return []appstore.Platform{appstore.PlatformIPhone, appstore.PlatformIPad}, true
 	case strings.Contains(lower, "ipad"):
 		return []appstore.Platform{appstore.PlatformIPad}, true
@@ -521,10 +792,40 @@ func platformsFromCommerceKind(kind string) ([]appstore.Platform, bool) {
 	}
 }
 
+var russianMonthsReplacer = strings.NewReplacer(
+	"января", "Jan", "февраля", "Feb", "марта", "Mar", "апреля", "Apr",
+	"мая", "May", "июня", "Jun", "июля", "Jul", "августа", "Aug",
+	"сентября", "Sep", "октября", "Oct", "ноября", "Nov", "декабря", "Dec",
+	"янв.", "Jan", "февр.", "Feb", "фев.", "Feb", "мар.", "Mar", "апр.", "Apr",
+	"июн.", "Jun", "июл.", "Jul", "авг.", "Aug", "сент.", "Sep", "сен.", "Sep",
+	"окт.", "Oct", "нояб.", "Nov", "ноя.", "Nov", "дек.", "Dec",
+	"янв", "Jan", "фев", "Feb", "мар", "Mar", "апр", "Apr",
+	"май", "May", "июн", "Jun", "июл", "Jul", "авг", "Aug",
+	"сен", "Sep", "окт", "Oct", "ноя", "Nov", "дек", "Dec",
+)
+
 func parseCommerceDate(raw string) time.Time {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return time.Time{}
+	}
+
+	normalized := strings.ToLower(raw)
+	normalized = strings.TrimSuffix(normalized, "г.")
+	normalized = strings.TrimSuffix(normalized, "г")
+	normalized = strings.TrimSpace(russianMonthsReplacer.Replace(normalized))
+	normalized = strings.Join(strings.Fields(normalized), " ")
+
+	candidates := []string{raw}
+	if normalized != "" && normalized != strings.ToLower(raw) {
+		// Title-case English month names after replacement (e.g. "10 may 2021" -> "10 May 2021")
+		words := strings.Fields(normalized)
+		for i, w := range words {
+			if len(w) == 3 {
+				words[i] = strings.ToUpper(w[:1]) + w[1:]
+			}
+		}
+		candidates = append(candidates, strings.Join(words, " "))
 	}
 
 	layouts := []string{
@@ -537,11 +838,18 @@ func parseCommerceDate(raw string) time.Time {
 		"Jan 2, 2006",
 		"January 2, 2006",
 		"2 Jan 2006",
+		"02 Jan 2006",
+		"2 January 2006",
 		"02.01.2006",
+		"02/01/2006",
+		"01/02/2006",
 	}
-	for _, layout := range layouts {
-		if parsed, err := time.Parse(layout, raw); err == nil {
-			return parsed.UTC()
+
+	for _, candidate := range candidates {
+		for _, layout := range layouts {
+			if parsed, err := time.Parse(layout, candidate); err == nil {
+				return parsed.UTC()
+			}
 		}
 	}
 
@@ -597,11 +905,32 @@ func mergePurchaseHistoryApps(daapApps, commerceApps []appstore.App) []appstore.
 	return merged
 }
 
+// enrichMissingCatalogFields populates BundleID, Version, and Name for apps
+// that came only from /commerce/account/purchases (which does not include
+// bundle identifiers). It checks the bundled removed-apps catalog first and
+// then performs batch iTunes Lookup requests across the default storefront
+// plus US/GB fallback storefronts.
 func enrichMissingCatalogFields(apps []appstore.App) {
+	if len(apps) == 0 {
+		return
+	}
+
+	removedByID := make(map[int64]removedAppEntry)
+	for _, entry := range loadRemovedApps() {
+		if entry.AppID > 0 {
+			removedByID[entry.AppID] = entry
+		}
+	}
+
 	missingIndices := make(map[int64]int)
 	missingIDs := make([]int64, 0)
 
 	for idx := range apps {
+		if entry, ok := removedByID[apps[idx].ID]; ok {
+			if apps[idx].Name == "" && entry.Name != "" {
+				apps[idx].Name = entry.Name
+			}
+		}
 		if apps[idx].ID > 0 && (apps[idx].BundleID == "" || apps[idx].Version == "") {
 			if _, exists := missingIndices[apps[idx].ID]; !exists {
 				missingIndices[apps[idx].ID] = idx
@@ -696,6 +1025,9 @@ func sortPurchasesByDate(apps []appstore.App) []appstore.App {
 	sorted := append([]appstore.App(nil), apps...)
 	sort.SliceStable(sorted, func(left, right int) bool {
 		leftDate, rightDate := sorted[left].PurchaseDate, sorted[right].PurchaseDate
+		if leftDate.IsZero() && rightDate.IsZero() {
+			return sorted[left].ID > sorted[right].ID
+		}
 		if leftDate.IsZero() {
 			return false
 		}

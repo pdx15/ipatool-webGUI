@@ -709,6 +709,15 @@ func TestParseCommercePurchasesAndMerge(t *testing.T) {
 	if len(merged) != 2 {
 		t.Fatalf("expected 2 merged apps, got %d: %+v", len(merged), merged)
 	}
+
+	if _, _, _, errOK := parseCommercePurchasesPage([]byte(`{"errors":[{"status":"401"}]}`), seen); errOK {
+		t.Fatal("expected parseCommercePurchasesPage to reject JSON without data.attributes")
+	}
+
+	ruDate := parseCommerceDate("10 мая 2021 г.")
+	if ruDate.Year() != 2021 || int(ruDate.Month()) != 5 || ruDate.Day() != 10 {
+		t.Fatalf("expected 2021-05-10 from Russian date, got %v", ruDate)
+	}
 }
 
 func TestCompareWebGUIVersions(t *testing.T) {

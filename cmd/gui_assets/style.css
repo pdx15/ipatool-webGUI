@@ -1987,3 +1987,87 @@ body {
 .batch-versions-box .versions-pager {
   margin: 4px 0 8px;
 }
+
+.purchases-hidden-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.purchases-hidden-toggle:hover {
+  border-color: rgba(239, 68, 68, 0.55);
+}
+
+.purchases-hidden-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.purchases-hidden-toggle-track {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  background: var(--bg-elevated);
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+  flex-shrink: 0;
+}
+
+.purchases-hidden-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+.purchases-hidden-toggle input:checked + .purchases-hidden-toggle-track {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.65);
+}
+
+.purchases-hidden-toggle input:checked + .purchases-hidden-toggle-track .purchases-hidden-toggle-thumb {
+  transform: translateX(16px);
+  background: #ef4444;
+}
+
+.purchases-hidden-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.purchases-hidden-toggle-label .badge-hidden-storefront {
+  margin-left: 0;
+}
+
+.purchases-hidden-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: rgba(239, 68, 68, 0.14);
+  color: #ef4444;
+}
+

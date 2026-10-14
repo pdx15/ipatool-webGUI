@@ -264,6 +264,7 @@ const i18n = {
     purchases_desc: 'Все приложения, приобретённые на этом Apple ID. Список загружается один раз при входе и обновляется по кнопке.',
     purchases_refresh: 'Обновить',
     purchases_filter_placeholder: 'Фильтр по названию, Bundle ID или App ID',
+    purchases_only_hidden: 'Только скрытые',
     purchases_export: 'Сохранить список (.txt)',
     purchases_need_auth: 'Войдите в Apple ID во вкладке «Аккаунт», чтобы увидеть историю покупок',
     purchases_loading: 'Загрузка истории покупок с серверов Apple...',
@@ -514,6 +515,7 @@ const i18n = {
     purchases_desc: 'Every app owned by this Apple ID. The list is fetched once after sign-in and refreshed on demand.',
     purchases_refresh: 'Refresh',
     purchases_filter_placeholder: 'Filter by name, Bundle ID or App ID',
+    purchases_only_hidden: 'Hidden only',
     purchases_export: 'Save list (.txt)',
     purchases_need_auth: 'Sign in to your Apple ID on the "Account" tab to see the purchase history',
     purchases_loading: 'Loading purchase history from Apple...',
@@ -2106,12 +2108,16 @@ function formatPurchaseDate(value) {
 function filteredPurchases() {
   const p = state.purchases;
   const q = (document.getElementById('purchases-filter')?.value || '').trim().toLowerCase();
-  if (!q) return p.apps;
-  return p.apps.filter(a =>
-    (a.name || '').toLowerCase().includes(q) ||
-    (a.bundleId || '').toLowerCase().includes(q) ||
-    String(a.appId || '').includes(q)
-  );
+  const onlyHidden = !!document.getElementById('purchases-only-hidden')?.checked;
+  return p.apps.filter(a => {
+    if (onlyHidden && !a.hiddenFromStorefront) return false;
+    if (!q) return true;
+    return (
+      (a.name || '').toLowerCase().includes(q) ||
+      (a.bundleId || '').toLowerCase().includes(q) ||
+      String(a.appId || '').includes(q)
+    );
+  });
 }
 
 function renderPurchases() {
@@ -2188,6 +2194,17 @@ function renderPurchases() {
   }
 
   const list = filteredPurchases();
+  const hiddenTotal = p.apps.filter(a => a.hiddenFromStorefront).length;
+  const hiddenCountEl = document.getElementById('purchases-hidden-count');
+  if (hiddenCountEl) {
+    hiddenCountEl.textContent = String(hiddenTotal);
+  }
+  const hiddenWrapEl = document.getElementById('purchases-hidden-toggle-wrap');
+  if (hiddenWrapEl) {
+    hiddenWrapEl.title = state.lang === 'en'
+      ? 'Show only apps hidden or removed from the regional App Store storefront'
+      : 'Показать только приложения, скрытые или удалённые из региональной витрины App Store';
+  }
   if (els.countBadge) {
     els.countBadge.textContent = list.length === p.apps.length
       ? `${p.apps.length}`
@@ -2218,12 +2235,19 @@ function renderPurchases() {
     const nameJs = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const bundleJs = (a.bundleId || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const appId = Number(a.appId) || 0;
-    const itemPlatform = (Array.isArray(a.platforms) && a.platforms.find(p => p && p !== 'unknown')) || 'iphone';
+    const validPlatforms = Array.isArray(a.platforms)
+      ? a.platforms.filter(pl => pl && String(pl).toLowerCase() !== 'unknown')
+      : [];
+    const itemPlatform = validPlatforms[0] || 'iphone';
+    const osLabels = [...new Set((validPlatforms.length ? validPlatforms : ['iphone']).map(pl => platformOSLabel(pl)))];
+    const osBadgesCell = osLabels
+      .map(lbl => ` <span class="badge badge-ios">${batchEscapeHtml(lbl)}</span>`)
+      .join('');
     const versionCell = a.version ? ` <span class="badge badge-version">${batchEscapeHtml(a.version)}</span>` : '';
     const hiddenCell = a.hiddenFromStorefront ? `<span class="badge-hidden-storefront" title="${hiddenTip}">!</span>` : '';
     return `
       <tr>
-        <td>${nameEsc}${hiddenCell}${versionCell}</td>
+        <td>${nameEsc}${hiddenCell}${versionCell}${osBadgesCell}</td>
         <td><code>${bundleEsc || '—'}</code></td>
         <td><code>${appId || '—'}</code></td>
         <td>${formatPurchaseDate(a.purchaseDate)}</td>
