@@ -1374,8 +1374,9 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 	uncached := make([]string, 0, len(req.VersionIDs))
 
 	if appID != 0 {
+		cacheKey := versionMetaCacheKey(appID, platform)
 		versionMetaCache.RLock()
-		appCache := versionMetaCache.m[appIDKey(appID)]
+		appCache := versionMetaCache.m[cacheKey]
 		for _, versionID := range req.VersionIDs {
 			if versionID == "" {
 				continue
@@ -1464,10 +1465,11 @@ func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[
 }
 
 func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string, appID int64, versionID string, platform appstore.Platform) (map[string]interface{}, error) {
-	// Serve from cache when available (keyed by appID:versionID).
+	// Serve from cache when available (keyed by platform+appID:versionID).
 	if appID != 0 {
+		cacheKey := versionMetaCacheKey(appID, platform)
 		versionMetaCache.RLock()
-		entry, ok := versionMetaCache.m[appIDKey(appID)][versionID]
+		entry, ok := versionMetaCache.m[cacheKey][versionID]
 		versionMetaCache.RUnlock()
 		if ok {
 			return map[string]interface{}{
@@ -1519,11 +1521,12 @@ func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string
 	releaseDate := out.ReleaseDate.Format("2006-01-02")
 
 	if appID != 0 {
+		cacheKey := versionMetaCacheKey(appID, platform)
 		versionMetaCache.Lock()
-		if versionMetaCache.m[appIDKey(appID)] == nil {
-			versionMetaCache.m[appIDKey(appID)] = map[string]versionMetaEntry{}
+		if versionMetaCache.m[cacheKey] == nil {
+			versionMetaCache.m[cacheKey] = map[string]versionMetaEntry{}
 		}
-		versionMetaCache.m[appIDKey(appID)][versionID] = versionMetaEntry{
+		versionMetaCache.m[cacheKey][versionID] = versionMetaEntry{
 			DisplayVersion:   out.DisplayVersion,
 			ReleaseDate:      releaseDate,
 			MinimumOSVersion: out.MinimumOSVersion,
@@ -1543,6 +1546,13 @@ func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string
 // appIDKey converts an app ID to its cache-map key.
 func appIDKey(id int64) string {
 	return strconv.FormatInt(id, 10)
+}
+
+func versionMetaCacheKey(id int64, platform appstore.Platform) string {
+	if platform == "" || platform == appstore.PlatformIPhone {
+		return appIDKey(id)
+	}
+	return string(platform) + ":" + appIDKey(id)
 }
 
 type openFolderPayload struct {
