@@ -1,5 +1,5 @@
 diff --git a/pkg/appstore/appstore_download_product.go b/pkg/appstore/appstore_download_product.go
-index 72b83ff..fe62232 100644
+index 72b83ff..f3b207f 100644
 --- a/pkg/appstore/appstore_download_product.go
 +++ b/pkg/appstore/appstore_download_product.go
 @@ -44,28 +44,6 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
@@ -73,25 +73,75 @@ index 72b83ff..fe62232 100644
  		}
  	}
  
-@@ -120,6 +103,10 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -120,11 +103,19 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  			platform = PlatformIPhone
  		}
  
-+		if updateErr != nil && (isEmptyDownloadProductResponse(updateRes) || isUnavailableDownloadProductResponse(updateRes)) {
++		if updateErr != nil {
 +			return tryEntDownload(updateRes, platform, updateErr)
 +		}
 +
  		return updateRes, platform, updateErr
  	}
  
-@@ -127,6 +114,10 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
- 		return redownloadRes, platform, fmt.Errorf("failed to send redownload request: %w", err)
- 	}
- 
-+	if isEmptyDownloadProductResponse(redownloadRes) || isUnavailableDownloadProductResponse(redownloadRes) {
-+		return tryEntDownload(redownloadRes, platform, nil)
+ 	if err != nil {
+-		return redownloadRes, platform, fmt.Errorf("failed to send redownload request: %w", err)
++		return tryEntDownload(redownloadRes, platform, fmt.Errorf("failed to send redownload request: %w", err))
 +	}
 +
- 	return redownloadRes, platform, nil
- }
++	if isEmptyDownloadProductResponse(redownloadRes) || isUnavailableDownloadProductResponse(redownloadRes) {
++		return tryEntDownload(redownloadRes, platform, nil)
+ 	}
  
+ 	return redownloadRes, platform, nil
+@@ -173,7 +164,7 @@ func validateVersionedDownloadResponse(res http.Result[downloadResult], app App,
+ 
+ 	metadata := res.Data.Items[0].Metadata
+ 	if fmt.Sprint(metadata["itemId"]) != fmt.Sprint(app.ID) ||
+-		fmt.Sprint(metadata["softwareVersionExternalIdentifier"]) != externalVersionID {
++		(externalVersionID != "" && fmt.Sprint(metadata["softwareVersionExternalIdentifier"]) != externalVersionID) {
+ 		return fmt.Errorf("%s response does not match the requested app or version", source)
+ 	}
+ 
+diff --git a/pkg/appstore/appstore_kbsync.go b/pkg/appstore/appstore_kbsync.go
+index ef6779b..107ee15 100644
+--- a/pkg/appstore/appstore_kbsync.go
++++ b/pkg/appstore/appstore_kbsync.go
+@@ -43,9 +43,8 @@ func (t *appstore) sendPreferredDownload(ctx context.Context, endpointURL string
+ 	}
+ 
+ 	if versionID == "" {
+-		versionID, err = t.lookupLatestExternalVersionID(acc, app, platform)
+-		if err != nil {
+-			return http.Result[downloadResult]{}, platform, fmt.Errorf("failed to resolve platform version for ent/download: %w", err)
++		if resolvedVersionID, lookupErr := t.lookupLatestExternalVersionID(acc, app, platform); lookupErr == nil {
++			versionID = resolvedVersionID
+ 		}
+ 	}
+ 
+@@ -121,14 +120,17 @@ func (t *appstore) sendEntDownloadRequest(ctx context.Context, endpoint download
+ 	request.Headers["User-Agent"] = "Configurator/2.18 (Macintosh; OS X 15.3.2; 24D81) AppleWebKit/0620.2.4.11.6"
+ 	request.Headers["X-Apple-Store-Front"] = acc.StoreFront
+ 	request.Headers["X-Token"] = acc.PasswordToken
+-	request.Payload = &http.XMLPayload{Content: map[string]interface{}{
+-		"creditDisplay":     "",
+-		"guid":              guid,
+-		"kbsync":            blob,
+-		"salableAdamId":     strconv.FormatInt(app.ID, 10),
+-		"serialNumber":      base64.StdEncoding.EncodeToString(serial),
+-		"externalVersionId": versionID,
+-	}}
++	payload := map[string]interface{}{
++		"creditDisplay": "",
++		"guid":          guid,
++		"kbsync":        blob,
++		"salableAdamId": strconv.FormatInt(app.ID, 10),
++		"serialNumber":  base64.StdEncoding.EncodeToString(serial),
++	}
++	if versionID != "" {
++		payload["externalVersionId"] = versionID
++	}
++	request.Payload = &http.XMLPayload{Content: payload}
+ 
+ 	res, err := t.downloadClient.Send(request)
+ 	if err != nil {
