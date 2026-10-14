@@ -1,5 +1,5 @@
 diff --git a/pkg/appstore/appstore_download_product.go b/pkg/appstore/appstore_download_product.go
-index 72b83ff..6337412 100644
+index 72b83ff..fe62232 100644
 --- a/pkg/appstore/appstore_download_product.go
 +++ b/pkg/appstore/appstore_download_product.go
 @@ -44,28 +44,6 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
@@ -61,7 +61,19 @@ index 72b83ff..6337412 100644
  	}
  
  	redownload, err := newDownloadEndpoint(bag.RedownloadEndpoint, redownloadProductPath)
-@@ -120,6 +104,10 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -104,9 +88,8 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+ 			platform = PlatformIPhone
+ 		}
+ 
+-		externalVersionID, err = t.lookupLatestExternalVersionID(acc, app, platform)
+-		if err != nil {
+-			return res, platform, fmt.Errorf("failed to resolve latest iOS version for redownload: %w", err)
++		if resolvedVersionID, lookupErr := t.lookupLatestExternalVersionID(acc, app, platform); lookupErr == nil {
++			externalVersionID = resolvedVersionID
+ 		}
+ 	}
+ 
+@@ -120,6 +103,10 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  			platform = PlatformIPhone
  		}
  
@@ -72,7 +84,7 @@ index 72b83ff..6337412 100644
  		return updateRes, platform, updateErr
  	}
  
-@@ -127,6 +115,10 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -127,6 +114,10 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  		return redownloadRes, platform, fmt.Errorf("failed to send redownload request: %w", err)
  	}
  
