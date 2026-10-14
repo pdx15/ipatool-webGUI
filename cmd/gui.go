@@ -1218,6 +1218,25 @@ type downloadRequestPayload struct {
 	Purchase          bool   `json:"purchase"`
 }
 
+const defaultDownloadFolderName = "apps"
+
+func defaultDownloadDir() string {
+	dir := defaultDownloadFolderName
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		dir = filepath.Join(cwd, defaultDownloadFolderName)
+	}
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
+}
+
+func resolveDownloadOutputPath(requested string) string {
+	trimmed := strings.TrimSpace(requested)
+	if trimmed == "" {
+		return defaultDownloadDir()
+	}
+	return trimmed
+}
+
 func handleAPIDownload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1241,6 +1260,8 @@ func handleAPIDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	outputPath := resolveDownloadOutputPath(req.OutputPath)
+
 	jobID := fmt.Sprintf("job_%d", time.Now().UnixNano())
 	job := &DownloadJob{
 		ID:         jobID,
@@ -1249,7 +1270,7 @@ func handleAPIDownload(w http.ResponseWriter, r *http.Request) {
 		AppName:    req.AppName,
 		Status:     "queued",
 		CreatedAt:  time.Now().Unix(),
-		OutputPath: req.OutputPath,
+		OutputPath: outputPath,
 	}
 	activeJobs.set(job)
 
@@ -1264,6 +1285,10 @@ func handleAPIDownload(w http.ResponseWriter, r *http.Request) {
 func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appstore.Account) appstore.Account {
 	platform, _ := appstore.ParsePlatform(req.Platform)
 	app := appstore.App{ID: req.AppID}
+	outputPath := resolveDownloadOutputPath(req.OutputPath)
+	if job.OutputPath == "" {
+		job.OutputPath = outputPath
+	}
 
 	if req.BundleID != "" {
 		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{
@@ -1304,7 +1329,7 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 	refreshed, out, _, err := downloadWithRetry(downloadTaskInput{
 		Account:           acc,
 		App:               app,
-		OutputPath:        req.OutputPath,
+		OutputPath:        outputPath,
 		ExternalVersionID: req.ExternalVersionID,
 		Platform:          platform,
 		Progress:          progress.bar,
@@ -1365,7 +1390,7 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 	// Explicit output filenames remain exactly as the user entered them.
 	if destination, metadata, nameErr := renameDownloadedIPAPackage(
 		out.DestinationPath,
-		req.OutputPath,
+		outputPath,
 		app.Name,
 		acc.Email,
 		platform,
@@ -1792,14 +1817,16 @@ func handleAPIOpenFolder(w http.ResponseWriter, r *http.Request) {
 	var req openFolderPayload
 	_ = json.NewDecoder(r.Body).Decode(&req)
 
-	targetPath := req.Path
+	targetPath := strings.TrimSpace(req.Path)
 	if targetPath == "" {
-		targetPath, _ = os.Getwd()
+		targetPath = defaultDownloadDir()
 	} else {
 		// If path points to a file, get parent dir
 		fi, err := os.Stat(targetPath)
 		if err == nil && !fi.IsDir() {
 			targetPath = filepath.Dir(targetPath)
+		} else if os.IsNotExist(err) && filepath.Ext(targetPath) == "" {
+			_ = os.MkdirAll(targetPath, 0o755)
 		}
 	}
 

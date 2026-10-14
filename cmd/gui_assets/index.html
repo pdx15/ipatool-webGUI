@@ -305,9 +305,10 @@
                 type="text" 
                 id="direct-output-path" 
                 class="input-control" 
-                placeholder="По умолчанию: текущая папка или Загрузки"
+                data-i18n-placeholder="output_folder_placeholder"
+                placeholder="По умолчанию: папка apps в текущей папке"
               >
-              <button type="button" class="btn btn-outline" onclick="openOutputFolder()" title="Открыть текущую папку">
+              <button type="button" class="btn btn-outline" onclick="openOutputFolder(document.getElementById('direct-output-path').value.trim())" title="Открыть папку сохранения">
                 📂 <span data-i18n="open_folder_btn">Открыть</span>
               </button>
             </div>
@@ -397,9 +398,10 @@
                   type="text"
                   id="batch-output-path"
                   class="input-control"
-                  placeholder="По умолчанию: текущая папка или Загрузки"
+                  data-i18n-placeholder="output_folder_placeholder"
+                  placeholder="По умолчанию: папка apps в текущей папке"
                 >
-                <button type="button" class="btn btn-outline" onclick="openOutputFolder()" title="Открыть текущую папку">
+                <button type="button" class="btn btn-outline" onclick="openOutputFolder(document.getElementById('batch-output-path').value.trim())" title="Открыть папку сохранения">
                   📂 <span data-i18n="open_folder_btn">Открыть</span>
                 </button>
               </div>
@@ -1006,7 +1008,7 @@
             <details class="faq-item">
               <summary class="faq-question" data-i18n="faq_q6">Где сохраняются скачанные файлы .IPA?</summary>
               <div class="faq-answer" data-i18n="faq_a6">
-                <p>По умолчанию файлы сохраняются в рабочую папку программы или в папку "Загрузки". Вы можете открыть папку в любой момент, нажав кнопку <strong>"📂 Открыть папку загрузок"</strong> во вкладке "Загрузки".</p>
+                <p>По умолчанию файлы сохраняются в папку <code>apps</code> внутри рабочей папки программы. Вы можете открыть её в любой момент, нажав кнопку <strong>"📂 Открыть папку загрузок"</strong> во вкладке "Загрузки".</p>
               </div>
             </details>
 

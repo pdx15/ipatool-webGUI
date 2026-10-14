@@ -6,3 +6,5 @@
 **/*_mock.go
 exp/__pycache__/
 *.pyc
+apps/
+

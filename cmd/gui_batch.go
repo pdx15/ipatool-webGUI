@@ -638,13 +638,15 @@ func runBatchDownloadItem(
 	acc appstore.Account,
 	stallTimeout, itemTimeout time.Duration,
 ) appstore.Account {
+	outputPath := resolveDownloadOutputPath(req.OutputPath)
+
 	downloadJob := &DownloadJob{
 		ID:         fmt.Sprintf("job_%d", time.Now().UnixNano()),
 		AppID:      item.AppID,
 		AppName:    item.Name,
 		Status:     "queued",
 		CreatedAt:  time.Now().Unix(),
-		OutputPath: req.OutputPath,
+		OutputPath: outputPath,
 	}
 	activeJobs.set(downloadJob)
 
@@ -663,7 +665,7 @@ func runBatchDownloadItem(
 		done <- executeDownloadJob(downloadJob, downloadRequestPayload{
 			AppID:             item.AppID,
 			AppName:           item.Name,
-			OutputPath:        req.OutputPath,
+			OutputPath:        outputPath,
 			ExternalVersionID: item.VersionID,
 			Platform:          req.Platform,
 			Purchase:          batchAutoPurchase(req.Purchase),
