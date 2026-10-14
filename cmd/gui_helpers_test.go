@@ -607,3 +607,55 @@ func TestAppCardsSurvivesCatalogFailure(t *testing.T) {
 		t.Fatalf("expected no artwork after a failed lookup: %+v", cards[0])
 	}
 }
+
+func TestExecuteDownloadJobMacOSSkipsReplicateSinfWithoutSinfs(t *testing.T) {
+	var purchasedPlatform appstore.Platform
+	replicateCalls := 0
+	attempts := 0
+
+	withFakeAppStore(t, &fakeAppStore{
+		download: func(input appstore.DownloadInput) (appstore.DownloadOutput, error) {
+			attempts++
+			if input.Platform != appstore.PlatformMacOS {
+				t.Errorf("download platform = %q, want %q", input.Platform, appstore.PlatformMacOS)
+			}
+			if attempts == 1 {
+				return appstore.DownloadOutput{}, appstore.ErrLicenseRequired
+			}
+			return appstore.DownloadOutput{
+				DestinationPath: "/tmp/example.pkg",
+				Sinfs:           nil,
+			}, nil
+		},
+		purchase: func(input appstore.PurchaseInput) error {
+			purchasedPlatform = input.Platform
+			return nil
+		},
+		replicateSinf: func(appstore.ReplicateSinfInput) error {
+			replicateCalls++
+			return nil
+		},
+	})
+
+	job := &DownloadJob{ID: "job-macos"}
+	executeDownloadJob(job, downloadRequestPayload{
+		AppID:    99999,
+		AppName:  "Mac App",
+		Platform: "macos",
+		Purchase: true,
+	}, appstore.Account{Email: "user@example.com"})
+
+	if job.Status != "completed" {
+		t.Fatalf("expected completed job, got status=%q error=%q", job.Status, job.Error)
+	}
+	if purchasedPlatform != appstore.PlatformMacOS {
+		t.Fatalf("expected purchase platform %q, got %q", appstore.PlatformMacOS, purchasedPlatform)
+	}
+	if replicateCalls != 0 {
+		t.Fatalf("expected 0 replicateSinf calls for macOS .pkg without sinfs, got %d", replicateCalls)
+	}
+	if job.Warning != "" {
+		t.Fatalf("expected no warning for macOS .pkg without sinfs, got %q", job.Warning)
+	}
+}
+

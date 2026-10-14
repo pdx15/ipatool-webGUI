@@ -1133,10 +1133,10 @@ function createAppCard(app, platform) {
       <button class="btn btn-primary" onclick="startAppDownload('${app.bundleId}', ${app.trackId}, '${platform}', '${app.trackName.replace(/'/g, "\\'")}', '${iconUrl || ''}')">
         ⬇️ ${dict.download_btn}
       </button>
-      <button class="btn btn-outline" onclick="purchaseApp('${app.bundleId}')" title="Получить лицензию">
+      <button class="btn btn-outline" onclick="purchaseApp('${app.bundleId}', '${platform}')" title="Получить лицензию">
         🛒 ${dict.license_btn}
       </button>
-      <button class="btn btn-outline" onclick="viewAppVersions('${app.bundleId}', ${app.trackId}, '${app.trackName.replace(/'/g, "\\'")}')" title="История версий">
+      <button class="btn btn-outline" onclick="viewAppVersions('${app.bundleId}', ${app.trackId}, '${app.trackName.replace(/'/g, "\\'")}', '${platform}')" title="История версий">
         🕒 ${dict.versions_btn}
       </button>
     </div>
@@ -1185,7 +1185,7 @@ function createRemovedAppCard(app, platform) {
       <button class="btn btn-primary" onclick="startAppDownload('', ${appId}, '${platform}', '${nameEsc}', '')">
         ⬇️ ${dict.download_btn}
       </button>
-      <button class="btn btn-outline" onclick="viewAppVersions('', ${appId}, '${nameEsc}')" title="История версий">
+      <button class="btn btn-outline" onclick="viewAppVersions('', ${appId}, '${nameEsc}', '${platform}')" title="История версий">
         🕒 ${dict.versions_btn}
       </button>
     </div>
@@ -1195,7 +1195,7 @@ function createRemovedAppCard(app, platform) {
 }
 
 // Purchase App License
-async function purchaseApp(bundleId) {
+async function purchaseApp(bundleId, platform = 'iphone') {
   if (!state.isAuthenticated) {
     showToast('Сначала необходимо войти в Apple ID во вкладке "Аккаунт"', 'error');
     switchTab('account');
@@ -1208,7 +1208,7 @@ async function purchaseApp(bundleId) {
     const res = await fetch('/api/purchase', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bundleId })
+      body: JSON.stringify({ bundleId, platform })
     });
     const data = await res.json();
 
@@ -1496,13 +1496,17 @@ async function handleDirectDownload(e) {
 // Version History Tab
 // ==========================================
 
-async function viewAppVersions(bundleId, appId, appName) {
+async function viewAppVersions(bundleId, appId, appName, platform = 'iphone') {
   switchTab('versions');
   // Remember the app name and numeric ID so /api/versions and metadata batches
   // do not need to re-run Lookup when opened from an existing app card.
   state.lastVersionsName = appName || '';
   state.lastVersionsAppId = Number(appId) || 0;
   state.lastVersionsInput = String(bundleId || appId || '').trim();
+  const platformSelect = document.getElementById('versions-platform');
+  if (platformSelect && platform) {
+    platformSelect.value = platform;
+  }
   const input = document.getElementById('versions-input');
   if (input) {
     input.value = bundleId || appId;
@@ -1512,9 +1516,9 @@ async function viewAppVersions(bundleId, appId, appName) {
 
 // Fetches the Display Version and Release Date for a single build and fills
 // the corresponding cells in the version history table.
-async function fetchVersionMetadata(bundleId, appId, versionId) {
+async function fetchVersionMetadata(bundleId, appId, versionId, platform = 'iphone') {
   try {
-    const res = await fetch(`/api/version-metadata?bundleId=${encodeURIComponent(bundleId)}&appId=${encodeURIComponent(appId)}&versionId=${encodeURIComponent(versionId)}`);
+    const res = await fetch(`/api/version-metadata?bundleId=${encodeURIComponent(bundleId)}&appId=${encodeURIComponent(appId)}&versionId=${encodeURIComponent(versionId)}&platform=${encodeURIComponent(platform)}`);
     const data = await res.json();
     const dispEl = document.getElementById(`disp-ver-${versionId}`);
     const dateEl = document.getElementById(`date-ver-${versionId}`);
@@ -1563,6 +1567,7 @@ async function handleFetchVersions(e) {
 
   const bundleId = isNumeric ? '' : parsed;
   const appId = isNumeric ? parsed : (presetAppId ? String(presetAppId) : '');
+  const platform = document.getElementById('versions-platform')?.value || 'iphone';
 
   const loading = document.getElementById('versions-loading');
   const container = document.getElementById('versions-container');
@@ -1575,7 +1580,7 @@ async function handleFetchVersions(e) {
   container.style.display = 'none';
 
   try {
-    const res = await fetch(`/api/versions?bundleId=${encodeURIComponent(bundleId)}&appId=${encodeURIComponent(appId)}`);
+    const res = await fetch(`/api/versions?bundleId=${encodeURIComponent(bundleId)}&appId=${encodeURIComponent(appId)}&platform=${encodeURIComponent(platform)}`);
     const data = await res.json();
     loading.style.display = 'none';
 
@@ -1598,7 +1603,8 @@ async function handleFetchVersions(e) {
       ctx: {
         bundleId: data.bundleID || bundleId,
         appId: resolvedAppId,
-        appName: appName || data.bundleID || parsed
+        appName: appName || data.bundleID || parsed,
+        platform
       }
     };
 
@@ -1761,7 +1767,7 @@ function renderVersionsPage() {
   const info = versionsSlice(ps.ids, ps.page);
   ps.page = info.page;
   const token = (ps.renderToken = (ps.renderToken || 0) + 1);
-  const { bundleId, appId, appName } = ps.ctx;
+  const { bundleId, appId, appName, platform = 'iphone' } = ps.ctx;
   const appNameEsc = (appName || '').replace(/'/g, "\\'");
 
   tableBody.innerHTML = '';
@@ -1773,7 +1779,7 @@ function renderVersionsPage() {
       <td id="disp-ver-${vId}">…</td>
       <td id="date-ver-${vId}">…</td>
       <td>
-        <button class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleId}', ${appId}, 'iphone', '${appNameEsc || bundleId}', '', '${vId}')">
+        <button class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleId}', ${appId}, '${platform}', '${appNameEsc || bundleId}', '', '${vId}')">
           ⬇️ ${batchText('batch_download_single')}
         </button>
       </td>
@@ -1791,7 +1797,7 @@ function renderVersionsPage() {
 
   fillVersionMetadata(
     info.ids,
-    { bundleId: bundleId || '', appId: Number(appId) || 0 },
+    { bundleId: bundleId || '', appId: Number(appId) || 0, platform },
     (vId, data) => {
       const dispEl = document.getElementById(`disp-ver-${vId}`);
       const dateEl = document.getElementById(`date-ver-${vId}`);
@@ -2044,6 +2050,7 @@ function renderPurchases() {
     const nameJs = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const bundleJs = (a.bundleId || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const appId = Number(a.appId) || 0;
+    const itemPlatform = (Array.isArray(a.platforms) && a.platforms.find(p => p && p !== 'unknown')) || 'iphone';
     const versionCell = a.version ? ` <span class="badge badge-version">${batchEscapeHtml(a.version)}</span>` : '';
     return `
       <tr>
@@ -2053,8 +2060,8 @@ function renderPurchases() {
         <td>${formatPurchaseDate(a.purchaseDate)}</td>
         <td>
           <div class="purchases-row-actions">
-            <button class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleJs}', ${appId}, 'iphone', '${nameJs}', '')">⬇️ ${dlLabel}</button>
-            <button class="btn btn-outline btn-sm" onclick="viewAppVersions('${bundleJs}', ${appId}, '${nameJs}')">🕒 ${verLabel}</button>
+            <button class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleJs}', ${appId}, '${itemPlatform}', '${nameJs}', '')">⬇️ ${dlLabel}</button>
+            <button class="btn btn-outline btn-sm" onclick="viewAppVersions('${bundleJs}', ${appId}, '${nameJs}', '${itemPlatform}')">🕒 ${verLabel}</button>
           </div>
         </td>
       </tr>`;
@@ -2636,7 +2643,7 @@ async function loadBatchVersions(item, platform, outputPath) {
     // Fall back to the version-history endpoint when the check response did
     // not carry the build list.
     try {
-      const res = await fetch(`/api/versions?appId=${item.appId}`);
+      const res = await fetch(`/api/versions?appId=${item.appId}&platform=${encodeURIComponent(platform || 'iphone')}`);
       const data = await res.json();
       if (data.success && (data.externalVersionIdentifiers || []).length > 0) {
         ids = data.externalVersionIdentifiers;
@@ -2650,7 +2657,7 @@ async function loadBatchVersions(item, platform, outputPath) {
   }
 
   const reversed = [...ids].reverse();
-  const pageState = { page: 1, renderToken: 0 };
+  const pageState = { page: 1, renderToken: 0, platform: platform || 'iphone' };
 
   // If a specific build was picked earlier, open the page that contains it.
   const picked = batchState.selectedVersions[item.appId];
@@ -2725,7 +2732,7 @@ function renderBatchVersionsPage(container, item, reversed, pageState) {
 
   fillVersionMetadata(
     info.ids,
-    { appId: Number(item.appId) || 0 },
+    { appId: Number(item.appId) || 0, platform: pageState.platform || 'iphone' },
     (vId, data) => {
       // Only the display version is filled in: unlike the version history on
       // its own tab, the batch table has no release-date column.

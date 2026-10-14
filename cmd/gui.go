@@ -939,6 +939,7 @@ func isASCIIDigit(b byte) bool {
 
 type purchaseRequestPayload struct {
 	BundleID string `json:"bundleId"`
+	Platform string `json:"platform"`
 }
 
 func handleAPIPurchase(w http.ResponseWriter, r *http.Request) {
@@ -953,6 +954,8 @@ func handleAPIPurchase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	platform, _ := appstore.ParsePlatform(req.Platform)
+
 	info, err := dependencies.AppStore.AccountInfo()
 	if err != nil {
 		jsonError(w, http.StatusUnauthorized, "you must log in to purchase apps")
@@ -962,13 +965,14 @@ func handleAPIPurchase(w http.ResponseWriter, r *http.Request) {
 	lookup, err := dependencies.AppStore.Lookup(appstore.LookupInput{
 		Account:  info.Account,
 		BundleID: req.BundleID,
+		Platform: platform,
 	})
 	if err != nil {
 		jsonError(w, http.StatusBadRequest, fmt.Sprintf("app lookup failed: %v", err))
 		return
 	}
 
-	_, alreadyOwned, purchaseErr := purchaseWithRetry(info.Account, lookup.App)
+	_, alreadyOwned, purchaseErr := purchaseWithRetry(info.Account, lookup.App, platform)
 	if purchaseErr != nil {
 		jsonError(w, http.StatusInternalServerError, purchaseErr.Error())
 		return
@@ -1109,25 +1113,28 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 	// Apple sometimes serves a package with no DRM signatures at all. Recent
 	// ipatool versions treat that as a successful, unmodified rewrite instead
 	// of returning an error, so detect it from the download output and surface
-	// the warning ourselves.
+	// the warning ourselves. macOS downloads are .pkg archives with embedded
+	// MASReceipt and do not use SINF replication when out.Sinfs is empty.
 	job.Status = "patching"
 	activeJobs.set(job)
 
-	err = dependencies.AppStore.ReplicateSinf(appstore.ReplicateSinfInput{
-		Sinfs:       out.Sinfs,
-		PackagePath: out.DestinationPath,
-	})
+	if !(platform == appstore.PlatformMacOS && len(out.Sinfs) == 0) {
+		err = dependencies.AppStore.ReplicateSinf(appstore.ReplicateSinfInput{
+			Sinfs:       out.Sinfs,
+			PackagePath: out.DestinationPath,
+		})
 
-	if err == nil && len(out.Sinfs) == 0 {
-		// Keep the downloaded file: it is a valid, complete package.
-		job.Warning = noSinfWarning
-	}
+		if err == nil && len(out.Sinfs) == 0 {
+			// Keep the downloaded file: it is a valid, complete package.
+			job.Warning = noSinfWarning
+		}
 
-	if err != nil {
-		job.Status = "error"
-		job.Error = fmt.Sprintf("failed to replicate signature: %v", err)
-		activeJobs.set(job)
-		return acc
+		if err != nil {
+			job.Status = "error"
+			job.Error = fmt.Sprintf("failed to replicate signature: %v", err)
+			activeJobs.set(job)
+			return acc
+		}
 	}
 
 	// Name GUI-managed IPA files from their own Info.plist, after download.
@@ -1229,6 +1236,7 @@ func handleAPIICloudStatus(w http.ResponseWriter, r *http.Request) {
 func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 	bundleID := r.URL.Query().Get("bundleId")
 	appIDStr := r.URL.Query().Get("appId")
+	platform, _ := appstore.ParsePlatform(r.URL.Query().Get("platform"))
 	var appID int64
 	if appIDStr != "" {
 		appID, _ = strconv.ParseInt(appIDStr, 10, 64)
@@ -1247,7 +1255,7 @@ func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 
 	app := appstore.App{ID: appID, BundleID: bundleID}
 	if appID == 0 && bundleID != "" {
-		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: bundleID})
+		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: bundleID, Platform: platform})
 		if err != nil {
 			jsonError(w, http.StatusBadRequest, fmt.Sprintf("lookup failed: %v", err))
 			return
@@ -1256,8 +1264,9 @@ func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := dependencies.AppStore.ListVersions(appstore.ListVersionsInput{
-		Account: info.Account,
-		App:     app,
+		Account:  info.Account,
+		App:      app,
+		Platform: platform,
 	})
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
@@ -1277,6 +1286,7 @@ func handleAPIVersionMetadata(w http.ResponseWriter, r *http.Request) {
 	bundleID := r.URL.Query().Get("bundleId")
 	appIDStr := r.URL.Query().Get("appId")
 	versionID := r.URL.Query().Get("versionId")
+	platform, _ := appstore.ParsePlatform(r.URL.Query().Get("platform"))
 
 	var appID int64
 	if appIDStr != "" {
@@ -1288,7 +1298,7 @@ func handleAPIVersionMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := lookupVersionMetadata(bundleID, appID, versionID)
+	result, err := lookupVersionMetadataWithAccount(nil, bundleID, appID, versionID, platform)
 	if err != nil {
 		if errors.Is(err, errNotAuthenticated) {
 			jsonError(w, http.StatusUnauthorized, "not authenticated")
@@ -1305,6 +1315,7 @@ func handleAPIVersionMetadata(w http.ResponseWriter, r *http.Request) {
 type versionMetadataBatchRequest struct {
 	BundleID   string   `json:"bundleId"`
 	AppID      int64    `json:"appId"`
+	Platform   string   `json:"platform"`
 	VersionIDs []string `json:"versionIds"`
 }
 
@@ -1342,6 +1353,8 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 		req.VersionIDs = req.VersionIDs[:versionMetadataBatchLimit]
 	}
 
+	platform, _ := appstore.ParsePlatform(req.Platform)
+
 	// Resolve account and bundle ID once for the whole batch instead of per build.
 	var account *appstore.Account
 	appID := req.AppID
@@ -1352,7 +1365,7 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		account = &info.Account
-		if lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: req.BundleID}); err == nil {
+		if lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: req.BundleID, Platform: platform}); err == nil {
 			appID = lookupResult.App.ID
 		}
 	}
@@ -1407,11 +1420,11 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(versionID string) {
 			defer wg.Done()
-			result, err := lookupVersionMetadataWithAccount(account, req.BundleID, appID, versionID)
+			result, err := lookupVersionMetadataWithAccount(account, req.BundleID, appID, versionID, platform)
 			if err != nil && isTransientAppleError(err) {
 				// One retry for gateway-style failures (502/503/504) that
 				// Apple emits under load; a second attempt usually succeeds.
-				result, err = lookupVersionMetadataWithAccount(account, req.BundleID, appID, versionID)
+				result, err = lookupVersionMetadataWithAccount(account, req.BundleID, appID, versionID, platform)
 			}
 			if err != nil {
 				result = map[string]interface{}{"success": false, "message": err.Error()}
@@ -1447,10 +1460,10 @@ func isTransientAppleError(err error) bool {
 // lookupVersionMetadata returns the JSON payload for one build, served from
 // versionMetaCache when possible and fetched from Apple otherwise.
 func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[string]interface{}, error) {
-	return lookupVersionMetadataWithAccount(nil, bundleID, appID, versionID)
+	return lookupVersionMetadataWithAccount(nil, bundleID, appID, versionID, "")
 }
 
-func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string, appID int64, versionID string) (map[string]interface{}, error) {
+func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string, appID int64, versionID string, platform appstore.Platform) (map[string]interface{}, error) {
 	// Serve from cache when available (keyed by appID:versionID).
 	if appID != 0 {
 		versionMetaCache.RLock()
@@ -1482,7 +1495,7 @@ func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string
 	// Only resolve the bundle ID into an app ID when the caller did not already
 	// supply an app ID; this avoids an extra lookup for every build.
 	if bundleID != "" && appID == 0 {
-		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: acc, BundleID: bundleID})
+		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: acc, BundleID: bundleID, Platform: platform})
 		if err == nil {
 			app = lookupResult.App
 			appID = app.ID
@@ -1496,6 +1509,7 @@ func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string
 		Account:   acc,
 		App:       app,
 		VersionID: versionID,
+		Platform:  platform,
 	})
 	elapsedMs := time.Since(started).Milliseconds()
 	if err != nil {

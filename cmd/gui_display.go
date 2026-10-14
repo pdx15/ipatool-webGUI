@@ -141,7 +141,7 @@ func fetchDisplayMetadata(apps []appstore.App) map[int64]displayMetadata {
 func lookupDisplayMetadata(ids []string) ([]displayMetadata, error) {
 	query := url.Values{}
 	query.Set("id", strings.Join(ids, ","))
-	query.Set("entity", "software")
+	query.Set("entity", "software,iPadSoftware,tvSoftware,watchSoftware,xrosSoftware,macSoftware")
 
 	res, err := displayLookupClient.Get(displayLookupURL + "?" + query.Encode())
 	if err != nil {
