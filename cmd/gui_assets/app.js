@@ -1525,7 +1525,7 @@ async function fetchVersionMetadata(bundleId, appId, versionId, platform = 'ipho
     if (!dispEl && !dateEl) return;
 
     if (data.success) {
-      if (dispEl) dispEl.innerHTML = renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion);
+      if (dispEl) dispEl.innerHTML = renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion, platform);
       if (dateEl) dateEl.textContent = data.releaseDate || '—';
     } else {
       if (dispEl) dispEl.textContent = '—';
@@ -1539,15 +1539,45 @@ async function fetchVersionMetadata(bundleId, appId, versionId, platform = 'ipho
   }
 }
 
+function platformOSLabel(platform) {
+  switch (String(platform || '').toLowerCase()) {
+    case 'ipad':
+    case 'ipados':
+      return 'iPadOS';
+    case 'appletv':
+    case 'apple-tv':
+    case 'tvos':
+      return 'tvOS';
+    case 'watch':
+    case 'watchos':
+    case 'applewatch':
+    case 'apple-watch':
+      return 'watchOS';
+    case 'vision':
+    case 'visionos':
+    case 'visionpro':
+    case 'xros':
+    case 'realitydevice':
+      return 'visionOS';
+    case 'mac':
+    case 'macos':
+    case 'osx':
+      return 'macOS';
+    default:
+      return 'iOS';
+  }
+}
+
 // Builds the inner HTML of a "Display Version" table cell: the app version and,
-// when known, a small iOS badge showing the minimum supported OS version from
-// the selected build's IPA Info.plist.
-function renderDisplayVersionCell(displayVersion, minimumOSVersion) {
+// when known, a small OS badge showing the minimum supported OS version from
+// the selected build's Info.plist / package metadata.
+function renderDisplayVersionCell(displayVersion, minimumOSVersion, platform = 'iphone') {
   const version = batchEscapeHtml(displayVersion || '—');
   const minOS = String(minimumOSVersion || '').trim();
   if (!minOS) return version;
-  const title = batchText('min_ios_badge_title');
-  return `${version} <span class="badge badge-ios" title="${batchEscapeHtml(title)}">iOS ${batchEscapeHtml(minOS)}</span>`;
+  const osLabel = platformOSLabel(platform);
+  const title = batchText('min_ios_badge_title').replace(/\biOS\b/g, osLabel);
+  return `${version} <span class="badge badge-ios" title="${batchEscapeHtml(title)}">${batchEscapeHtml(osLabel)} ${batchEscapeHtml(minOS)}</span>`;
 }
 
 async function handleFetchVersions(e) {
@@ -1801,7 +1831,7 @@ function renderVersionsPage() {
     (vId, data) => {
       const dispEl = document.getElementById(`disp-ver-${vId}`);
       const dateEl = document.getElementById(`date-ver-${vId}`);
-      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion) : '—';
+      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion, platform) : '—';
       if (dateEl) dateEl.textContent = data ? (data.releaseDate || '—') : '—';
     },
     () => ps.renderToken !== token
@@ -2737,7 +2767,7 @@ function renderBatchVersionsPage(container, item, reversed, pageState) {
       // Only the display version is filled in: unlike the version history on
       // its own tab, the batch table has no release-date column.
       const dispEl = document.getElementById(`batch-disp-${item.appId}-${vId}`);
-      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion) : '—';
+      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion, pageState.platform) : '—';
     },
     () => pageState.renderToken !== token
   );
