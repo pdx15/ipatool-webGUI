@@ -1,0 +1,150 @@
+name: Build Windows WebGUI (Test)
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_version:
+        description: 'Version (e.g. 2.7.0, 2.7.0b, or 2.7.1). Leave blank for latest release'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  get_version:
+    name: Determine version
+    runs-on: ubuntu-latest
+    outputs:
+      raw_version: ${{ steps.version.outputs.raw_version }}
+      upstream_tag: ${{ steps.version.outputs.upstream_tag }}
+      release_version: ${{ steps.version.outputs.release_version }}
+    steps:
+      - name: Fetch version
+        id: version
+        run: |
+          CUSTOM_VER="${{ github.event.inputs.upstream_version }}"
+          if [ -n "$CUSTOM_VER" ]; then
+            RAW_VER=$(echo "$CUSTOM_VER" | sed 's/^v//' | sed 's/-webGUI$//')
+            UPSTREAM_VER=$(echo "$RAW_VER" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+)[a-zA-Z].*$/\1/')
+            UPSTREAM_TAG="v${UPSTREAM_VER}"
+          else
+            LATEST_TAG=$(curl -s https://api.github.com/repos/majd/ipatool/releases/latest | jq -r '.tag_name // empty')
+            if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
+              LATEST_TAG="v2.7.0"
+            fi
+            RAW_VER="${LATEST_TAG#v}"
+            UPSTREAM_TAG="$LATEST_TAG"
+          fi
+
+          RELEASE_VER="${RAW_VER}-webGUI"
+
+          echo "raw_version=${RAW_VER}" >> $GITHUB_OUTPUT
+          echo "upstream_tag=${UPSTREAM_TAG}" >> $GITHUB_OUTPUT
+          echo "release_version=${RELEASE_VER}" >> $GITHUB_OUTPUT
+
+          echo "Upstream Tag: $UPSTREAM_TAG"
+          echo "Build Version: $RELEASE_VER"
+
+  build_windows:
+    name: Build Windows package with WebGUI & libimobiledevice tools
+    runs-on: ubuntu-latest
+    needs: [get_version]
+    steps:
+      - name: Checkout WebGUI repository
+        uses: actions/checkout@v4
+        with:
+          path: webgui
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+          cache: false
+
+      - name: Clone upstream majd/ipatool
+        run: |
+          UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
+          echo "Cloning majd/ipatool @ $UPSTREAM_TAG"
+          git clone --depth 1 --branch "$UPSTREAM_TAG" https://github.com/majd/ipatool.git ipatool || \
+          git clone --depth 1 https://github.com/majd/ipatool.git ipatool
+
+      - name: Add the WebGUI sources to the upstream tree
+        run: |
+          cd ipatool
+          GUI_PATCH="../webgui/patches/register-gui.patch"
+          METADATA_PATCH="../webgui/patches/minimum-os-version.patch"
+          PRIORITY_PATCH="../webgui/patches/download-product-priority.patch"
+          UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
+
+          for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH"; do
+            if [ ! -f "$PATCH" ]; then
+              echo "::error::Required upstream patch is missing: $PATCH"
+              exit 1
+            fi
+            if ! git apply --check "$PATCH"; then
+              echo "::error::$PATCH does not apply to ipatool $UPSTREAM_TAG; refresh the integration patch for that upstream tag."
+              exit 1
+            fi
+          done
+
+          git apply "$GUI_PATCH"
+          git apply "$METADATA_PATCH"
+          git apply "$PRIORITY_PATCH"
+          cp -r ../webgui/cmd/gui* ./cmd/
+          cp -r ../webgui/cmd/gui_assets ./cmd/
+          mkdir -p ./resources
+          cp -r ../webgui/resources/* ./resources/ 2>/dev/null || true
+
+      - name: Verify the GUI builds with the minimal upstream metadata extension
+        run: |
+          cd ipatool
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip|download_product|kbsync)\.go$' || true)
+          if [ -n "$unexpected_pkg_changes" ]; then
+            echo "::error::Unexpected changes to upstream package sources:"
+            echo "$unexpected_pkg_changes"
+            git diff --stat -- pkg/
+            exit 1
+          fi
+          GOOS=windows go build ./...
+
+      - name: Build Windows binary (AMD64)
+        run: |
+          cd ipatool
+          VERSION="${{ needs.get_version.outputs.release_version }}"
+          GOOS=windows GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
+            -o "../ipatool.exe" .
+
+      - name: Download and extract libimobiledevice suite for Windows
+        run: |
+          mkdir -p libimobile-suite tools
+          SUITE_URL=$(curl -s https://api.github.com/repos/L1ghtmann/libimobiledevice/releases/latest | jq -r '.assets[] | select(.name | endswith(".tar.xz")) | .browser_download_url' | head -n 1)
+          if [ -z "$SUITE_URL" ] || [ "$SUITE_URL" = "null" ]; then
+            SUITE_URL="https://github.com/L1ghtmann/libimobiledevice/releases/download/suite-exe-21d57a9/libimobile-suite-latest_x86_64-mingw64.tar.xz"
+          fi
+          echo "Downloading libimobiledevice from $SUITE_URL"
+          curl -fsSL -o suite.tar.xz "$SUITE_URL"
+          tar -xf suite.tar.xz -C libimobile-suite/
+
+          find libimobile-suite/ -type f \( -name "*.exe" -o -name "*.dll" \) -exec cp {} tools/ \;
+          ls -la tools/
+
+      - name: Assemble Windows distribution zip
+        run: |
+          DIST="ipatool-${{ needs.get_version.outputs.release_version }}-windows"
+          mkdir -p "$DIST"
+
+          cp ipatool.exe "$DIST/ipatool.exe"
+          cp -r tools "$DIST/"
+          cp webgui/ipatool-gui.bat "$DIST/"
+          cp webgui/resources/Apps_ID_List.txt "$DIST/"
+
+          zip -r "${DIST}.zip" "$DIST"
+
+      - name: Upload Windows package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-windows.zip
+          path: ipatool-*-windows.zip
+          if-no-files-found: error
