@@ -31,8 +31,7 @@ upstream `ipatool` maintainers.
   to a text file.
 - **Version history** for downloading older builds of an app.
 - **Install to device** through `libimobiledevice` (`ideviceinstaller`).
-- Built-in **Apple ID login** with 2FA support and an alternative macOS login
-  path (`Sign In Apple ID SKIP`).
+- Built-in **Apple ID login** with 2FA support.
 - The GUI automatically creates and reuses ipatool's local keychain passphrase,
   so file-backed storage does not prompt in the terminal. The passphrase stays
   in the per-user ipatool state directory and is never sent to Apple or the
