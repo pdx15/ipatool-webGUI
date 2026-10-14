@@ -65,6 +65,10 @@ type displayLookupResponse struct {
 // default storefront catalog (delisted apps), the card keeps the icon and
 // developer placeholders the frontend already renders.
 func appCards(apps []appstore.App) []appCard {
+	return appCardsForPlatform(apps, appstore.PlatformIPhone)
+}
+
+func appCardsForPlatform(apps []appstore.App, platform appstore.Platform) []appCard {
 	cards := make([]appCard, len(apps))
 
 	for i, app := range apps {
@@ -75,7 +79,7 @@ func appCards(apps []appstore.App) []appCard {
 		return cards
 	}
 
-	metadata := fetchDisplayMetadata(apps)
+	metadata := fetchDisplayMetadata(apps, platform)
 
 	for i := range cards {
 		entry, ok := metadata[cards[i].ID]
@@ -100,19 +104,37 @@ func appCards(apps []appstore.App) []appCard {
 	return cards
 }
 
+func displayLookupEntities(platform appstore.Platform) []string {
+	switch platform {
+	case appstore.PlatformIPad:
+		return []string{"iPadSoftware", "software"}
+	case appstore.PlatformAppleTV:
+		return []string{"tvSoftware", "software"}
+	case appstore.PlatformWatchOS:
+		return []string{"software", "watchSoftware"}
+	case appstore.PlatformVisionOS:
+		return []string{"xrosSoftware", "software", "iPadSoftware"}
+	case appstore.PlatformMacOS:
+		return []string{"macSoftware"}
+	default:
+		return []string{"software"}
+	}
+}
+
 // fetchDisplayMetadata looks the given apps up in the public catalog, in
 // batches, and returns them keyed by track ID. Failures return whatever was
 // collected so far: app cards without an icon still work.
-func fetchDisplayMetadata(apps []appstore.App) map[int64]displayMetadata {
-	ids := make([]string, 0, len(apps))
+func fetchDisplayMetadata(apps []appstore.App, platform appstore.Platform) map[int64]displayMetadata {
+	ids := make([]int64, 0, len(apps))
 
 	for _, app := range apps {
 		if app.ID > 0 {
-			ids = append(ids, strconv.FormatInt(app.ID, 10))
+			ids = append(ids, app.ID)
 		}
 	}
 
 	metadata := make(map[int64]displayMetadata, len(ids))
+	entities := displayLookupEntities(platform)
 
 	const batchSize = 100
 
@@ -122,15 +144,35 @@ func fetchDisplayMetadata(apps []appstore.App) map[int64]displayMetadata {
 			end = len(ids)
 		}
 
-		batch, err := lookupDisplayMetadata(ids[start:end])
-		if err != nil {
-			break
-		}
-
-		for _, entry := range batch {
-			if entry.TrackID != 0 {
-				metadata[entry.TrackID] = entry
+		remaining := ids[start:end]
+		for _, entity := range entities {
+			if len(remaining) == 0 {
+				break
 			}
+
+			strIDs := make([]string, len(remaining))
+			for i, id := range remaining {
+				strIDs[i] = strconv.FormatInt(id, 10)
+			}
+
+			batch, err := lookupDisplayMetadata(strIDs, entity)
+			if err != nil {
+				break
+			}
+
+			for _, entry := range batch {
+				if entry.TrackID != 0 {
+					metadata[entry.TrackID] = entry
+				}
+			}
+
+			missing := make([]int64, 0, len(remaining))
+			for _, id := range remaining {
+				if _, ok := metadata[id]; !ok {
+					missing = append(missing, id)
+				}
+			}
+			remaining = missing
 		}
 	}
 
@@ -138,10 +180,10 @@ func fetchDisplayMetadata(apps []appstore.App) map[int64]displayMetadata {
 }
 
 // lookupDisplayMetadata performs one catalog lookup for up to a batch of app IDs.
-func lookupDisplayMetadata(ids []string) ([]displayMetadata, error) {
+func lookupDisplayMetadata(ids []string, entity string) ([]displayMetadata, error) {
 	query := url.Values{}
 	query.Set("id", strings.Join(ids, ","))
-	query.Set("entity", "software,iPadSoftware,tvSoftware,watchSoftware,xrosSoftware,macSoftware")
+	query.Set("entity", entity)
 
 	res, err := displayLookupClient.Get(displayLookupURL + "?" + query.Encode())
 	if err != nil {

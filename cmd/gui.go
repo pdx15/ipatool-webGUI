@@ -633,7 +633,8 @@ func handleAPISearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, err := appStoreSearch(term, searchPlatform(r), searchLimit(r, 25))
+	platform := searchPlatform(r)
+	out, err := appStoreSearch(term, platform, searchLimit(r, 25))
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -642,7 +643,7 @@ func handleAPISearch(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success": true,
 		"count":   out.Count,
-		"results": appCards(out.Results),
+		"results": appCardsForPlatform(out.Results, platform),
 	})
 }
 
@@ -679,7 +680,7 @@ func handleAPISearchAll(w http.ResponseWriter, r *http.Request) {
 
 	official := map[string]interface{}{
 		"count":   out.Count,
-		"results": appCards(out.Results),
+		"results": appCardsForPlatform(out.Results, platform),
 	}
 
 	if searchErr != nil {

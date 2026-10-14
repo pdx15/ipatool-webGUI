@@ -540,6 +540,9 @@ func TestAppCardsMergesCatalogDisplayMetadata(t *testing.T) {
 		if got := r.URL.Query().Get("id"); got != "111,222" {
 			t.Errorf("lookup requested IDs %q", got)
 		}
+		if got := r.URL.Query().Get("entity"); got != "software" {
+			t.Errorf("lookup requested entity %q, want %q", got, "software")
+		}
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"resultCount":1,"results":[
