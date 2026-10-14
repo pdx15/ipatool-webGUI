@@ -310,6 +310,10 @@ func guiCmd() *cobra.Command {
 }
 
 func runGUIServer(host string, port int, noBrowser bool) error {
+	if dir := appWorkingDir(); dir != "" && dir != "." {
+		_ = os.Chdir(dir)
+	}
+
 	// Setup asset filesystem
 	assetsSub, err := fs.Sub(embeddedAssets, "gui_assets")
 	if err != nil {
@@ -1237,37 +1241,18 @@ func isTestOrSystemExecDir(exe string, dir string) bool {
 }
 
 func appWorkingDir() string {
-	homeDir, _ := os.UserHomeDir()
-	cleanHome := filepath.Clean(homeDir)
-
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		if resolved, evalErr := filepath.EvalSymlinks(exe); evalErr == nil && resolved != "" {
 			exe = resolved
 		}
 		exeDir := filepath.Clean(filepath.Dir(exe))
 		if exeDir != "" && exeDir != "." && !isTestOrSystemExecDir(exe, exeDir) {
-			if runtime.GOOS == "darwin" {
-				if exeDir == cleanHome || exeDir == "/" {
-					if cleanHome != "" && cleanHome != "." {
-						return filepath.Join(cleanHome, "ipatool-webGUI")
-					}
-				}
-				return exeDir
-			}
+			return exeDir
 		}
 	}
 
-	cwd, err := os.Getwd()
-	if err == nil && cwd != "" {
-		cleanCwd := filepath.Clean(cwd)
-		if runtime.GOOS == "darwin" && (cleanCwd == cleanHome || cleanCwd == "/") && cleanHome != "" && cleanHome != "." {
-			return filepath.Join(cleanHome, "ipatool-webGUI")
-		}
-		return cleanCwd
-	}
-
-	if runtime.GOOS == "darwin" && cleanHome != "" && cleanHome != "." {
-		return filepath.Join(cleanHome, "ipatool-webGUI")
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		return filepath.Clean(cwd)
 	}
 
 	return "."
