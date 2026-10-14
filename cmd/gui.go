@@ -360,6 +360,7 @@ func runGUIServer(host string, port int, noBrowser bool) error {
 
 	// API Handlers
 	mux.HandleFunc("/api/status", handleAPIStatus)
+	mux.HandleFunc("/api/update-check", handleAPIUpdateCheck)
 	mux.HandleFunc("/api/auth/login", handleAPILogin)
 	mux.HandleFunc("/api/auth/login/mzfinance", handleAPILoginMZFinance)
 	mux.HandleFunc("/api/auth/revoke", handleAPIRevoke)
@@ -497,6 +498,228 @@ func handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 		"version": version,
 		"os":      runtime.GOOS,
 	})
+}
+
+const (
+	webGUIRepoReleasesURL       = "https://github.com/pdx15/ipatool-webGUI/releases"
+	webGUIRepoLatestRedirectURL = "https://github.com/pdx15/ipatool-webGUI/releases/latest"
+	webGUIRepoLatestAPIURL      = "https://api.github.com/repos/pdx15/ipatool-webGUI/releases/latest"
+	updateCheckCacheTTL         = 15 * time.Minute
+)
+
+var updateCheckState = struct {
+	sync.Mutex
+	latestTag  string
+	releaseURL string
+	checkedAt  time.Time
+}{}
+
+func handleAPIUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	currentClean := normalizeWebGUIVersion(version)
+	latestTag, releaseURL := fetchLatestWebGUIRelease(r.URL.Query().Get("force") == "1")
+	latestClean := normalizeWebGUIVersion(latestTag)
+	if releaseURL == "" {
+		releaseURL = webGUIRepoReleasesURL
+	}
+
+	updateAvailable := false
+	if currentClean != "" && currentClean != "dev" && latestClean != "" {
+		updateAvailable = compareWebGUIVersions(latestClean, currentClean) > 0
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"success":         true,
+		"currentVersion":  version,
+		"displayVersion":  currentClean,
+		"latestTag":       latestTag,
+		"latestVersion":   latestClean,
+		"updateAvailable": updateAvailable,
+		"releasesUrl":     releaseURL,
+	})
+}
+
+func fetchLatestWebGUIRelease(force bool) (string, string) {
+	updateCheckState.Lock()
+	if !force && updateCheckState.latestTag != "" && time.Since(updateCheckState.checkedAt) < updateCheckCacheTTL {
+		tag, relURL := updateCheckState.latestTag, updateCheckState.releaseURL
+		updateCheckState.Unlock()
+		return tag, relURL
+	}
+	updateCheckState.Unlock()
+
+	tag, relURL := queryGitHubLatestReleaseAPI()
+	if tag == "" {
+		tag, relURL = queryGitHubLatestReleaseRedirect()
+	}
+
+	if tag != "" {
+		updateCheckState.Lock()
+		updateCheckState.latestTag = tag
+		updateCheckState.releaseURL = relURL
+		updateCheckState.checkedAt = time.Now()
+		updateCheckState.Unlock()
+	}
+
+	return tag, relURL
+}
+
+func queryGitHubLatestReleaseAPI() (string, string) {
+	client := &http.Client{Timeout: 6 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, webGUIRepoLatestAPIURL, nil)
+	if err != nil {
+		return "", ""
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "ipatool-webGUI-update-checker")
+
+	res, err := client.Do(req)
+	if err != nil {
+		return "", ""
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+	}()
+
+	if res.StatusCode != http.StatusOK {
+		return "", ""
+	}
+
+	var payload struct {
+		TagName string `json:"tag_name"`
+		HTMLURL string `json:"html_url"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		return "", ""
+	}
+
+	return strings.TrimSpace(payload.TagName), strings.TrimSpace(payload.HTMLURL)
+}
+
+func queryGitHubLatestReleaseRedirect() (string, string) {
+	client := &http.Client{
+		Timeout: 6 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest(http.MethodGet, webGUIRepoLatestRedirectURL, nil)
+	if err != nil {
+		return "", ""
+	}
+	req.Header.Set("User-Agent", "ipatool-webGUI-update-checker")
+
+	res, err := client.Do(req)
+	if err != nil {
+		return "", ""
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, res.Body)
+		_ = res.Body.Close()
+	}()
+
+	loc := strings.TrimSpace(res.Header.Get("Location"))
+	if idx := strings.LastIndex(loc, "/releases/tag/"); idx >= 0 {
+		tag := strings.TrimSpace(loc[idx+len("/releases/tag/"):])
+		if tag != "" {
+			return tag, loc
+		}
+	}
+
+	return "", ""
+}
+
+func normalizeWebGUIVersion(raw string) string {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return ""
+	}
+	v = strings.TrimPrefix(strings.TrimPrefix(v, "v"), "V")
+	lower := strings.ToLower(v)
+	if idx := strings.Index(lower, "-webgui"); idx >= 0 {
+		v = v[:idx]
+	}
+	return strings.TrimSpace(v)
+}
+
+func parseWebGUIVersionParts(v string) ([]int, string, bool) {
+	clean := normalizeWebGUIVersion(v)
+	if clean == "" || strings.EqualFold(clean, "dev") {
+		return nil, "", false
+	}
+
+	idx := len(clean)
+	for idx > 0 {
+		ch := clean[idx-1]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+			idx--
+		} else {
+			break
+		}
+	}
+
+	numPart := clean[:idx]
+	suffix := strings.ToLower(clean[idx:])
+	rawParts := strings.Split(numPart, ".")
+	if len(rawParts) == 0 {
+		return nil, "", false
+	}
+
+	nums := make([]int, 0, 3)
+	for _, p := range rawParts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return nil, "", false
+		}
+		nums = append(nums, n)
+	}
+	for len(nums) < 3 {
+		nums = append(nums, 0)
+	}
+
+	return nums, suffix, true
+}
+
+func compareWebGUIVersions(a, b string) int {
+	aNums, aSuffix, aOK := parseWebGUIVersionParts(a)
+	bNums, bSuffix, bOK := parseWebGUIVersionParts(b)
+	if !aOK || !bOK {
+		return 0
+	}
+
+	maxLen := len(aNums)
+	if len(bNums) > maxLen {
+		maxLen = len(bNums)
+	}
+	for i := 0; i < maxLen; i++ {
+		var av, bv int
+		if i < len(aNums) {
+			av = aNums[i]
+		}
+		if i < len(bNums) {
+			bv = bNums[i]
+		}
+		if av != bv {
+			if av > bv {
+				return 1
+			}
+			return -1
+		}
+	}
+
+	if aSuffix != bSuffix {
+		if aSuffix > bSuffix {
+			return 1
+		}
+		return -1
+	}
+
+	return 0
 }
 
 type loginRequestPayload struct {

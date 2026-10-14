@@ -709,4 +709,20 @@ func TestParseCommercePurchasesAndMerge(t *testing.T) {
 	}
 }
 
+func TestCompareWebGUIVersions(t *testing.T) {
+	if got := normalizeWebGUIVersion("v2.7.0c-webGUI"); got != "2.7.0c" {
+		t.Fatalf("expected 2.7.0c, got %q", got)
+	}
+	if compareWebGUIVersions("2.7.0c-webGUI", "2.7.0-webGUI") <= 0 {
+		t.Fatalf("expected 2.7.0c-webGUI > 2.7.0-webGUI")
+	}
+	if compareWebGUIVersions("2.7.1-webGUI", "2.7.0c-webGUI") <= 0 {
+		t.Fatalf("expected 2.7.1-webGUI > 2.7.0c-webGUI")
+	}
+	if compareWebGUIVersions("2.7.0c-webGUI", "2.7.0c") != 0 {
+		t.Fatalf("expected 2.7.0c-webGUI == 2.7.0c")
+	}
+}
+
+
 
