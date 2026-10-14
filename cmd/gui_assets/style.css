@@ -144,6 +144,92 @@ body {
   letter-spacing: 0.01em;
 }
 
+.brand-version {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: opacity 0.2s ease, transform 0.2s ease, filter 0.2s ease;
+}
+
+.brand-version:hover {
+  opacity: 0.85;
+}
+
+.brand-version.has-update {
+  background: linear-gradient(90deg, #f59e0b, #ef4444, #ec4899, #f59e0b);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: brandVersionShimmer 2.6s linear infinite;
+  filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.45));
+}
+
+.brand-update-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #fff;
+  text-decoration: none;
+  background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%);
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.65), 0 4px 12px rgba(239, 68, 68, 0.4);
+  animation: brandUpdatePulse 1.8s infinite;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.brand-update-pill:hover {
+  transform: translateY(-1px) scale(1.03);
+  filter: brightness(1.08);
+}
+
+@keyframes brandVersionShimmer {
+  0% {
+    background-position: 0% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+@keyframes brandUpdatePulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.65), 0 4px 12px rgba(239, 68, 68, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0), 0 4px 14px rgba(245, 158, 11, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0), 0 4px 12px rgba(239, 68, 68, 0.4);
+  }
+}
+
+.badge-hidden-storefront {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.16);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  font-size: 0.75rem;
+  font-weight: 900;
+  line-height: 1;
+  vertical-align: middle;
+  cursor: help;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.25);
+}
+
 .brand-subtitle {
   font-size: 0.8rem;
   color: var(--text-secondary);

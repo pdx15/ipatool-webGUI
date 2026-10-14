@@ -9,6 +9,8 @@ const state = {
   theme: localStorage.getItem('ipatool_theme') || 'dark',
   activeTab: 'search',
   os: null, // 'windows' | 'darwin' | 'linux' | ..., from /api/status
+  version: null,
+  updateInfo: null,
   account: null,
   isAuthenticated: false,
   activeDownloads: new Map(), // jobId -> job object
@@ -562,6 +564,7 @@ function applyLanguage() {
 
   // Update account status pill
   updateAccountStatusPill();
+  renderBrandVersion();
 
   // Re-run iCloud presence check so its text follows the selected language.
   checkICloudStatus();
@@ -741,7 +744,12 @@ async function fetchStatus() {
     state.isAuthenticated = data.authenticated;
     state.account = data.account || null;
     state.os = data.os || null;
+    if (data.version) {
+      state.version = data.version;
+    }
 
+    renderBrandVersion();
+    checkAppUpdate();
     applyPlatformVisibility();
     updateAccountUI();
     onAuthStateChanged();
@@ -750,6 +758,128 @@ async function fetchStatus() {
     state.isAuthenticated = false;
     state.account = null;
     updateAccountUI();
+  }
+}
+
+function cleanWebGUIVersion(raw) {
+  if (!raw) return '';
+  return String(raw)
+    .trim()
+    .replace(/^[vV]/, '')
+    .replace(/-webgui$/i, '')
+    .trim();
+}
+
+function compareWebGUIVersionStrings(a, b) {
+  const parse = (val) => {
+    const clean = cleanWebGUIVersion(val);
+    if (!clean || clean.toLowerCase() === 'dev') return null;
+    const m = clean.match(/^(\d+(?:\.\d+)*)([a-zA-Z]*)$/);
+    if (!m) return null;
+    const nums = m[1].split('.').map(n => parseInt(n, 10));
+    while (nums.length < 3) nums.push(0);
+    return { nums, suffix: (m[2] || '').toLowerCase() };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return 0;
+  const len = Math.max(pa.nums.length, pb.nums.length);
+  for (let i = 0; i < len; i++) {
+    const av = pa.nums[i] || 0;
+    const bv = pb.nums[i] || 0;
+    if (av !== bv) return av > bv ? 1 : -1;
+  }
+  if (pa.suffix !== pb.suffix) {
+    return pa.suffix > pb.suffix ? 1 : -1;
+  }
+  return 0;
+}
+
+let updateCheckDone = false;
+
+async function checkAppUpdate() {
+  if (updateCheckDone) return;
+  updateCheckDone = true;
+
+  try {
+    const res = await fetch('/api/update-check');
+    const data = await res.json();
+    if (res.ok && data && data.success) {
+      if (data.currentVersion && !state.version) {
+        state.version = data.currentVersion;
+      }
+      if (data.latestVersion) {
+        state.updateInfo = {
+          latestVersion: cleanWebGUIVersion(data.latestVersion),
+          updateAvailable: !!data.updateAvailable,
+          releasesUrl: data.releasesUrl || 'https://github.com/pdx15/ipatool-webGUI/releases'
+        };
+        renderBrandVersion();
+        return;
+      }
+    }
+  } catch (_) {
+    // Fall back to direct GitHub API check below
+  }
+
+  try {
+    const ghRes = await fetch('https://api.github.com/repos/pdx15/ipatool-webGUI/releases/latest');
+    if (!ghRes.ok) return;
+    const ghData = await ghRes.json();
+    const latestClean = cleanWebGUIVersion(ghData.tag_name || ghData.name || '');
+    const currentClean = cleanWebGUIVersion(state.version || '');
+    if (latestClean) {
+      state.updateInfo = {
+        latestVersion: latestClean,
+        updateAvailable: !!(currentClean && currentClean.toLowerCase() !== 'dev' && compareWebGUIVersionStrings(latestClean, currentClean) > 0),
+        releasesUrl: ghData.html_url || 'https://github.com/pdx15/ipatool-webGUI/releases'
+      };
+      renderBrandVersion();
+    }
+  } catch (_) {
+    // Ignore offline / rate-limit errors
+  }
+}
+
+function renderBrandVersion() {
+  const verEl = document.getElementById('brand-version');
+  const pillEl = document.getElementById('brand-update-pill');
+  if (!verEl) return;
+
+  const displayVer = cleanWebGUIVersion(state.version || '');
+  if (!displayVer) {
+    verEl.style.display = 'none';
+    if (pillEl) pillEl.style.display = 'none';
+    return;
+  }
+
+  const releasesUrl = (state.updateInfo && state.updateInfo.releasesUrl) || 'https://github.com/pdx15/ipatool-webGUI/releases';
+  verEl.textContent = displayVer;
+  verEl.href = releasesUrl;
+  verEl.style.display = 'inline-block';
+
+  const hasUpdate = !!(state.updateInfo && state.updateInfo.updateAvailable && state.updateInfo.latestVersion);
+  verEl.classList.toggle('has-update', hasUpdate);
+
+  if (hasUpdate) {
+    const latest = state.updateInfo.latestVersion;
+    const tip = state.lang === 'en'
+      ? `New version available: ${latest} (current: ${displayVer}) — click to open Releases`
+      : `Доступна новая версия: ${latest} (текущая: ${displayVer}) — нажмите, чтобы открыть страницу релизов`;
+    verEl.title = tip;
+    if (pillEl) {
+      pillEl.href = releasesUrl;
+      pillEl.title = tip;
+      pillEl.textContent = state.lang === 'en' ? `⬆️ New: ${latest}` : `⬆️ Новая: ${latest}`;
+      pillEl.style.display = 'inline-flex';
+    }
+  } else {
+    verEl.title = state.lang === 'en'
+      ? `Current version: ${displayVer}`
+      : `Текущая версия: ${displayVer}`;
+    if (pillEl) {
+      pillEl.style.display = 'none';
+    }
   }
 }
 
@@ -1934,7 +2064,8 @@ function normalizePurchaseItem(item) {
     bundleId: item.bundleId ?? item.bundleID ?? item.bundleIdentifier ?? '',
     name: item.name ?? item.trackName ?? '',
     version: item.version ?? item.displayVersion ?? '',
-    purchaseDate: item.purchaseDate ?? item.date ?? ''
+    purchaseDate: item.purchaseDate ?? item.date ?? '',
+    hiddenFromStorefront: !!(item.hiddenFromStorefront || item.delisted)
   };
 }
 
@@ -2072,6 +2203,11 @@ function renderPurchases() {
   const dlLabel = batchEscapeHtml(batchText('purchases_download'));
   const verLabel = batchEscapeHtml(batchText('purchases_versions'));
   const unknown = batchText('purchases_unknown_app');
+  const hiddenTip = batchEscapeHtml(
+    state.lang === 'en'
+      ? 'Hidden or removed from the regional App Store storefront'
+      : 'Скрыто или удалено из региональной витрины App Store'
+  );
 
   const rows = list.map(a => {
     const name = a.name || unknown;
@@ -2082,9 +2218,10 @@ function renderPurchases() {
     const appId = Number(a.appId) || 0;
     const itemPlatform = (Array.isArray(a.platforms) && a.platforms.find(p => p && p !== 'unknown')) || 'iphone';
     const versionCell = a.version ? ` <span class="badge badge-version">${batchEscapeHtml(a.version)}</span>` : '';
+    const hiddenCell = a.hiddenFromStorefront ? `<span class="badge-hidden-storefront" title="${hiddenTip}">!</span>` : '';
     return `
       <tr>
-        <td>${nameEsc}${versionCell}</td>
+        <td>${nameEsc}${hiddenCell}${versionCell}</td>
         <td><code>${bundleEsc || '—'}</code></td>
         <td><code>${appId || '—'}</code></td>
         <td>${formatPurchaseDate(a.purchaseDate)}</td>

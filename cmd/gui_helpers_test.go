@@ -662,3 +662,67 @@ func TestExecuteDownloadJobMacOSSkipsReplicateSinfWithoutSinfs(t *testing.T) {
 	}
 }
 
+func TestParseCommercePurchasesAndMerge(t *testing.T) {
+	rawJSON := []byte(`{
+		"data": {
+			"attributes": {
+				"is-complete": true,
+				"purchases": [
+					{
+						"order-id": "M100",
+						"invoice-date": "2021-05-10T12:34:56Z",
+						"items": [
+							{
+								"item-id": "568903335",
+								"item-name": "1Password 7 - Password Manager",
+								"price": "0.00",
+								"purchase-date": "2021-05-10T12:34:56Z",
+								"kind": "iOS App"
+							},
+							{
+								"item-id": "999999999",
+								"item-name": "Some Book",
+								"kind": "Book"
+							}
+						]
+					}
+				]
+			}
+		}
+	}`)
+
+	seen := make(map[string]struct{})
+	apps, isComplete, added, ok := parseCommercePurchasesPage(rawJSON, seen)
+	if !ok || !isComplete || added != 1 {
+		t.Fatalf("unexpected parse result: ok=%v isComplete=%v added=%d", ok, isComplete, added)
+	}
+	if len(apps) != 1 || apps[0].ID != 568903335 || apps[0].Name != "1Password 7 - Password Manager" {
+		t.Fatalf("unexpected parsed apps: %+v", apps)
+	}
+
+	daapApps := []appstore.App{
+		{ID: 111, BundleID: "com.example.active", Name: "Active App", Version: "1.0", Platforms: []appstore.Platform{appstore.PlatformIPhone}},
+	}
+	merged := mergePurchaseHistoryApps(daapApps, apps)
+	if len(merged) != 2 {
+		t.Fatalf("expected 2 merged apps, got %d: %+v", len(merged), merged)
+	}
+}
+
+func TestCompareWebGUIVersions(t *testing.T) {
+	if got := normalizeWebGUIVersion("v2.7.0c-webGUI"); got != "2.7.0c" {
+		t.Fatalf("expected 2.7.0c, got %q", got)
+	}
+	if compareWebGUIVersions("2.7.0c-webGUI", "2.7.0-webGUI") <= 0 {
+		t.Fatalf("expected 2.7.0c-webGUI > 2.7.0-webGUI")
+	}
+	if compareWebGUIVersions("2.7.1-webGUI", "2.7.0c-webGUI") <= 0 {
+		t.Fatalf("expected 2.7.1-webGUI > 2.7.0c-webGUI")
+	}
+	if compareWebGUIVersions("2.7.0c-webGUI", "2.7.0c") != 0 {
+		t.Fatalf("expected 2.7.0c-webGUI == 2.7.0c")
+	}
+}
+
+
+
