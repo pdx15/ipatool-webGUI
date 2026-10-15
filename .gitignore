@@ -7,4 +7,5 @@
 exp/__pycache__/
 *.pyc
 apps/
+purchases_cache.json
 

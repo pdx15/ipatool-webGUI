@@ -5,10 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/majd/ipatool/v2/pkg/appstore"
 	"github.com/schollz/progressbar/v3"
 )
+
+var accountRefreshMu sync.Mutex
 
 // downloadTaskInput carries the values needed by the App Store download API
 // together with the ipatool progress bar the GUI samples for its job status.
@@ -36,15 +40,38 @@ func refreshAccount(account appstore.Account) (appstore.Account, error) {
 		return account, errors.New("password token is expired and no password is stored; log in again to refresh the session")
 	}
 
-	output, err := dependencies.AppStore.Login(appstore.LoginInput{
-		Email:    account.Email,
-		Password: account.Password,
-	})
-	if err != nil {
-		return account, fmt.Errorf("failed to refresh Apple ID session: %w", err)
+	accountRefreshMu.Lock()
+	defer accountRefreshMu.Unlock()
+
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		output, err := dependencies.AppStore.Login(appstore.LoginInput{
+			Email:    account.Email,
+			Password: account.Password,
+		})
+		if err == nil {
+			return output.Account, nil
+		}
+		lastErr = err
+		if attempt < 2 && isTransientRefreshError(err) {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		break
 	}
 
-	return output.Account, nil
+	return account, fmt.Errorf("failed to refresh Apple ID session: %w", lastErr)
+}
+
+func isTransientRefreshError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "eof")
 }
 
 // purchaseWithRetry attempts to acquire a license, refreshing the account once

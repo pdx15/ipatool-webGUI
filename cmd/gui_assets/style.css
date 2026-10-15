@@ -1889,6 +1889,11 @@ body {
   color: var(--text-muted);
 }
 
+.purchases-updated.is-stale {
+  color: #ef4444 !important;
+  font-weight: 600;
+}
+
 .purchases-toolbar {
   display: flex;
   align-items: center;

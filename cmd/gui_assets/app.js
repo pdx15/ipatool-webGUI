@@ -2130,6 +2130,7 @@ function normalizePurchaseItem(item) {
     bundleId: item.bundleId ?? item.bundleID ?? item.bundleIdentifier ?? '',
     name: item.name ?? item.trackName ?? '',
     version: item.version ?? item.displayVersion ?? '',
+    tvosVersion: item.tvosVersion ?? '',
     purchaseDate: item.purchaseDate ?? item.date ?? '',
     hiddenFromStorefront: !!(item.hiddenFromStorefront || item.delisted)
   };
@@ -2230,8 +2231,18 @@ function renderPurchases() {
       let txt = batchText('purchases_updated_at', { time: formatPurchaseDate(p.fetchedAt.toISOString()) });
       if (p.fromCache) txt += ` (${batchText('purchases_from_cache')})`;
       els.updated.textContent = txt;
+      const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+      const isStale = (Date.now() - p.fetchedAt.getTime()) > sevenDaysMs;
+      els.updated.classList.toggle('is-stale', isStale);
+      els.updated.title = isStale
+        ? (state.lang === 'en'
+            ? 'Purchase history cache has not been updated for more than 7 days'
+            : 'Кэш истории покупок не обновлялся более 7 дней')
+        : '';
     } else {
       els.updated.textContent = '';
+      els.updated.classList.remove('is-stale');
+      els.updated.title = '';
     }
   }
 
@@ -2319,10 +2330,18 @@ function renderPurchases() {
       : '';
     const itemPlatform = matchedPlatform || validPlatforms[0] || 'iphone';
     const osLabels = purchaseAppOSLabels(a);
+    const displayVer = (osFilter === 'tvOS' || (osLabels.length === 1 && osLabels[0] === 'tvOS'))
+      ? (a.tvosVersion || a.version)
+      : (a.version || a.tvosVersion);
     const osBadgesCell = osLabels
-      .map(lbl => ` <span class="badge badge-ios">${batchEscapeHtml(lbl)}</span>`)
+      .map(lbl => {
+        if (lbl === 'tvOS' && osFilter !== 'tvOS' && a.tvosVersion && a.version && a.tvosVersion !== a.version) {
+          return ` <span class="badge badge-ios">${batchEscapeHtml(`tvOS ${a.tvosVersion}`)}</span>`;
+        }
+        return ` <span class="badge badge-ios">${batchEscapeHtml(lbl)}</span>`;
+      })
       .join('');
-    const versionCell = a.version ? ` <span class="badge badge-version">${batchEscapeHtml(a.version)}</span>` : '';
+    const versionCell = displayVer ? ` <span class="badge badge-version">${batchEscapeHtml(displayVer)}</span>` : '';
     const hiddenCell = a.hiddenFromStorefront ? `<span class="badge-hidden-storefront" title="${hiddenTip}">!</span>` : '';
     return `
       <tr>
