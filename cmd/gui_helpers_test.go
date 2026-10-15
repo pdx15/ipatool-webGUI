@@ -764,6 +764,69 @@ func TestSanitizeTxtFilename(t *testing.T) {
 	}
 }
 
+func TestPurchasesDiskCacheRoundTrip(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	acc := appstore.Account{
+		DirectoryServicesID: "123456789",
+		Email:               "user@example.com",
+	}
+	apps := []appstore.App{
+		{
+			ID:       1451612172,
+			BundleID: "ru.mts.tvh",
+			Name:     "KION",
+			Version:  "5.20.3",
+			Platforms: []appstore.Platform{
+				appstore.PlatformIPhone,
+				appstore.PlatformIPad,
+				appstore.PlatformAppleTV,
+			},
+		},
+	}
+	hiddenIDs := map[int64]bool{1451612172: true}
+	tvosVerByID := map[int64]string{1451612172: "3.12.1"}
+	fetchedAt := time.Unix(1760486400, 0).UTC()
+
+	cachePath := purchasesCacheFilePath(acc)
+	if filepath.Base(cachePath) != "purchases_cache_user@example.com.json" {
+		t.Fatalf("unexpected cache filename: %q", cachePath)
+	}
+	if filepath.Base(filepath.Dir(cachePath)) != guiConfigDirectoryName {
+		t.Fatalf("expected cache in %q directory, got %q", guiConfigDirectoryName, cachePath)
+	}
+
+	writePurchasesDiskCache(acc, apps, hiddenIDs, tvosVerByID, fetchedAt)
+
+	gotApps, gotHidden, gotTVOS, gotAt, ok := readPurchasesDiskCache(acc)
+	if !ok {
+		t.Fatalf("expected readPurchasesDiskCache to succeed")
+	}
+	if len(gotApps) != 1 || gotApps[0].ID != 1451612172 || gotApps[0].BundleID != "ru.mts.tvh" {
+		t.Fatalf("unexpected apps from disk cache: %+v", gotApps)
+	}
+	if !gotHidden[1451612172] {
+		t.Fatalf("expected hidden flag to round-trip")
+	}
+	if gotTVOS[1451612172] != "3.12.1" {
+		t.Fatalf("expected tvOS version 3.12.1, got %q", gotTVOS[1451612172])
+	}
+	if gotAt.Unix() != fetchedAt.Unix() {
+		t.Fatalf("expected fetchedAt %d, got %d", fetchedAt.Unix(), gotAt.Unix())
+	}
+
+	otherAcc := appstore.Account{
+		DirectoryServicesID: "999999999",
+		Email:               "other@example.com",
+	}
+	if _, _, _, _, ok := readPurchasesDiskCache(otherAcc); ok {
+		t.Fatalf("expected cache for another account not to exist yet")
+	}
+}
+
+
 
 
 

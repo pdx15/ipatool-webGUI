@@ -29,6 +29,7 @@ const (
 	commerceMaxRedirectHops    = 5
 	commerceYearConcurrency    = 2
 	commerceCatalogBatchSize   = 100
+	tvosLookupConcurrency      = 4
 )
 
 // guiPersistentCookieJar wraps juju/persistent-cookiejar so Apple session
@@ -185,20 +186,30 @@ func (j *guiPersistentCookieJar) Save() error {
 // client asks for a fresh copy explicitly with ?refresh=1.
 type purchasesCache struct {
 	sync.Mutex
-	dsid      string
-	apps      []appstore.App
-	hiddenIDs map[int64]bool
-	fetchedAt time.Time
+	dsid        string
+	apps        []appstore.App
+	hiddenIDs   map[int64]bool
+	tvosVerByID map[int64]string
+	fetchedAt   time.Time
 	// inflight collapses concurrent loads (e.g. a refresh click while the
 	// initial load is still running) into one Apple round-trip.
 	inflight *purchasesLoad
 }
 
 type purchasesLoad struct {
-	done      chan struct{}
-	apps      []appstore.App
-	hiddenIDs map[int64]bool
-	err       error
+	done        chan struct{}
+	apps        []appstore.App
+	hiddenIDs   map[int64]bool
+	tvosVerByID map[int64]string
+	err         error
+}
+
+type purchasesDiskCache struct {
+	DSID      string         `json:"dsid,omitempty"`
+	Email     string         `json:"email,omitempty"`
+	FetchedAt int64          `json:"fetchedAt"`
+	UpdatedAt string         `json:"updatedAt,omitempty"`
+	Items     []purchaseItem `json:"items"`
 }
 
 var purchasesState = &purchasesCache{}
@@ -211,6 +222,7 @@ type purchaseItem struct {
 	BundleID             string              `json:"bundleId"`
 	Name                 string              `json:"name"`
 	Version              string              `json:"version,omitempty"`
+	TVOSVersion          string              `json:"tvosVersion,omitempty"`
 	PurchaseDate         string              `json:"purchaseDate,omitempty"`
 	Platforms            []appstore.Platform `json:"platforms,omitempty"`
 	HiddenFromStorefront bool                `json:"hiddenFromStorefront,omitempty"`
@@ -241,10 +253,12 @@ type commercePurchaseItem struct {
 }
 
 type catalogEnrichmentItem struct {
-	TrackID  int64  `json:"trackId"`
-	BundleID string `json:"bundleId"`
-	Version  string `json:"version"`
-	Name     string `json:"trackName"`
+	TrackID          int64    `json:"trackId"`
+	BundleID         string   `json:"bundleId"`
+	Version          string   `json:"version"`
+	Name             string   `json:"trackName"`
+	Kind             string   `json:"kind"`
+	SupportedDevices []string `json:"supportedDevices"`
 }
 
 type catalogEnrichmentResponse struct {
@@ -294,12 +308,13 @@ func fetchDAAPOwnedApps(acc appstore.Account) (regionalApps []appstore.App, fall
 	return regionalApps, fallbackApps, nil
 }
 
-func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, error) {
+func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string, error) {
 	var (
 		regionalDAAPApps []appstore.App
 		fallbackDAAPApps []appstore.App
 		daapErr          error
 		commerceApps     []appstore.App
+		commercePod      string
 		commerceErr      error
 		wg               sync.WaitGroup
 	)
@@ -311,25 +326,48 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, er
 	}()
 	go func() {
 		defer wg.Done()
-		commerceApps, commerceErr = fetchCommercePurchaseHistoryWithRelogin(acc)
+		commerceApps, commercePod, commerceErr = fetchCommercePurchaseHistoryOnce(acc)
 	}()
 	wg.Wait()
 
+	if commerceErr == nil {
+		persistAccountPodIfChanged(acc, commercePod)
+	}
+
+	// If DAAP failed due to an expired password token, let ownedAppsWithRetry
+	// perform a single refreshAccount (which refreshes both PasswordToken and
+	// web cookies) and retry the whole fetch cleanly.
 	if daapErr != nil && errors.Is(daapErr, appstore.ErrPasswordTokenExpired) {
-		if len(commerceApps) == 0 {
-			return nil, nil, daapErr
+		return nil, nil, nil, daapErr
+	}
+
+	// If DAAP succeeded and only the short-lived web cookies for
+	// /commerce/account/purchases expired, refresh once now (after DAAP has
+	// finished, avoiding any race) and retry commerce. If that refresh fails
+	// (e.g. transient fpinit timeout), keep the DAAP apps rather than failing.
+	if daapErr == nil && commerceErr != nil && errors.Is(commerceErr, appstore.ErrPasswordTokenExpired) && acc.Password != "" {
+		commerceRefreshMu.Lock()
+		refreshedAcc, refreshErr := refreshAccount(acc)
+		commerceRefreshMu.Unlock()
+		if refreshErr == nil {
+			if retriedApps, retriedPod, retryErr := fetchCommercePurchaseHistoryOnce(refreshedAcc); retryErr == nil {
+				persistAccountPodIfChanged(refreshedAcc, retriedPod)
+				commerceApps = retriedApps
+				commerceErr = nil
+			}
 		}
 	}
 
 	if daapErr != nil && len(regionalDAAPApps) == 0 {
 		if commerceErr == nil && len(commerceApps) > 0 {
 			enrichMissingCatalogFields(commerceApps)
-			return sortPurchasesByDate(commerceApps), nil, nil
+			tvosVerByID := enrichTVOSCatalog(acc, commerceApps)
+			return sortPurchasesByDate(commerceApps), nil, tvosVerByID, nil
 		}
 		if errors.Is(commerceErr, appstore.ErrPasswordTokenExpired) {
-			return nil, nil, commerceErr
+			return nil, nil, nil, commerceErr
 		}
-		return nil, nil, daapErr
+		return nil, nil, nil, daapErr
 	}
 
 	daapSeen := make(map[int64]struct{}, len(regionalDAAPApps))
@@ -352,8 +390,9 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, er
 
 	merged := mergePurchaseHistoryApps(regionalDAAPApps, extraApps)
 	enrichMissingCatalogFields(merged)
+	tvosVerByID := enrichTVOSCatalog(acc, merged)
 
-	return sortPurchasesByDate(merged), hiddenIDs, nil
+	return sortPurchasesByDate(merged), hiddenIDs, tvosVerByID, nil
 }
 
 func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.App, error) {
@@ -981,6 +1020,11 @@ func enrichMissingCatalogFields(apps []appstore.App) {
 					if apps[idx].Name == "" && entry.Name != "" {
 						apps[idx].Name = entry.Name
 					}
+					for _, p := range platformsFromCatalogEnrichment(entry) {
+						if !slices.Contains(apps[idx].Platforms, p) {
+							apps[idx].Platforms = append(apps[idx].Platforms, p)
+						}
+					}
 				}
 			}
 
@@ -995,10 +1039,173 @@ func enrichMissingCatalogFields(apps []appstore.App) {
 	}
 }
 
+func platformsFromCatalogEnrichment(entry catalogEnrichmentItem) []appstore.Platform {
+	var platforms []appstore.Platform
+	for _, family := range []struct {
+		prefix   string
+		platform appstore.Platform
+	}{
+		{"iPhone", appstore.PlatformIPhone},
+		{"iPod", appstore.PlatformIPhone},
+		{"iPad", appstore.PlatformIPad},
+		{"AppleTV", appstore.PlatformAppleTV},
+		{"Watch", appstore.PlatformWatchOS},
+		{"RealityDevice", appstore.PlatformVisionOS},
+		{"Mac", appstore.PlatformMacOS},
+	} {
+		for _, dev := range entry.SupportedDevices {
+			if strings.HasPrefix(dev, family.prefix) && !slices.Contains(platforms, family.platform) {
+				platforms = append(platforms, family.platform)
+			}
+		}
+	}
+	if entry.Kind == "mac-software" && !slices.Contains(platforms, appstore.PlatformMacOS) {
+		platforms = append(platforms, appstore.PlatformMacOS)
+	}
+	if entry.Kind == "tv-software" && !slices.Contains(platforms, appstore.PlatformAppleTV) {
+		platforms = append(platforms, appstore.PlatformAppleTV)
+	}
+	return platforms
+}
+
+func storefrontCountryOrDefault(storeFront string) string {
+	trimmed := strings.TrimSpace(storeFront)
+	if idx := strings.IndexAny(trimmed, "-, "); idx > 0 {
+		trimmed = trimmed[:idx]
+	}
+	switch trimmed {
+	case "143469":
+		return "ru"
+	case "143441":
+		return "us"
+	case "143444":
+		return "gb"
+	case "143517":
+		return "kz"
+	case "143565":
+		return "by"
+	case "143524":
+		return "am"
+	case "143566":
+		return "uz"
+	default:
+		return "ru"
+	}
+}
+
+// enrichTVOSCatalog performs batched iTunes Lookup queries with entity=tvSoftware
+// across the account's storefront and fallback storefronts so owned apps that
+// have an Apple TV release (such as KION or Okko) receive the tvOS platform
+// badge and their tvOS-specific version string.
+func enrichTVOSCatalog(acc appstore.Account, apps []appstore.App) map[int64]string {
+	tvosVerByID := make(map[int64]string)
+	if len(apps) == 0 {
+		return tvosVerByID
+	}
+
+	idxByID := make(map[int64]int, len(apps))
+	allIDs := make([]int64, 0, len(apps))
+	for idx, app := range apps {
+		if app.ID > 0 {
+			if _, exists := idxByID[app.ID]; !exists {
+				idxByID[app.ID] = idx
+				allIDs = append(allIDs, app.ID)
+			}
+		}
+	}
+	if len(allIDs) == 0 {
+		return tvosVerByID
+	}
+
+	primaryCC := storefrontCountryOrDefault(acc.StoreFront)
+	countries := []string{primaryCC}
+	for _, fallback := range []string{"ru", "us"} {
+		if !slices.Contains(countries, fallback) {
+			countries = append(countries, fallback)
+		}
+	}
+
+	type batchRange struct {
+		start int
+		end   int
+	}
+	var batches []batchRange
+	for start := 0; start < len(allIDs); start += commerceCatalogBatchSize {
+		end := start + commerceCatalogBatchSize
+		if end > len(allIDs) {
+			end = len(allIDs)
+		}
+		batches = append(batches, batchRange{start: start, end: end})
+	}
+
+	var (
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+		sem = make(chan struct{}, tvosLookupConcurrency)
+	)
+
+	for _, b := range batches {
+		wg.Add(1)
+		go func(ids []int64) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			strIDs := make([]string, len(ids))
+			for i, id := range ids {
+				strIDs[i] = strconv.FormatInt(id, 10)
+			}
+
+			for _, country := range countries {
+				items, err := lookupCatalogWithEntity(strIDs, country, "tvSoftware")
+				if err != nil || len(items) == 0 {
+					continue
+				}
+
+				mu.Lock()
+				for _, entry := range items {
+					if entry.TrackID == 0 {
+						continue
+					}
+					idx, ok := idxByID[entry.TrackID]
+					if !ok {
+						continue
+					}
+					if !slices.Contains(apps[idx].Platforms, appstore.PlatformAppleTV) {
+						apps[idx].Platforms = append(apps[idx].Platforms, appstore.PlatformAppleTV)
+					}
+					if len(apps[idx].Platforms) > 1 {
+						apps[idx].Platforms = slices.DeleteFunc(apps[idx].Platforms, func(p appstore.Platform) bool {
+							return p == appstore.PlatformUnknown
+						})
+					}
+					if entry.Version != "" && tvosVerByID[entry.TrackID] == "" {
+						tvosVerByID[entry.TrackID] = entry.Version
+					}
+					if apps[idx].BundleID == "" && entry.BundleID != "" {
+						apps[idx].BundleID = entry.BundleID
+					}
+					if apps[idx].Name == "" && entry.Name != "" {
+						apps[idx].Name = entry.Name
+					}
+				}
+				mu.Unlock()
+			}
+		}(allIDs[b.start:b.end])
+	}
+
+	wg.Wait()
+	return tvosVerByID
+}
+
 func lookupCatalogEnrichment(ids []string, country string) ([]catalogEnrichmentItem, error) {
+	return lookupCatalogWithEntity(ids, country, "software,iPadSoftware,macSoftware")
+}
+
+func lookupCatalogWithEntity(ids []string, country, entity string) ([]catalogEnrichmentItem, error) {
 	query := url.Values{}
 	query.Set("id", strings.Join(ids, ","))
-	query.Set("entity", "software,iPadSoftware,macSoftware")
+	query.Set("entity", entity)
 	if country != "" {
 		query.Set("country", country)
 	}
@@ -1043,23 +1250,23 @@ func sortPurchasesByDate(apps []appstore.App) []appstore.App {
 // session once when Apple reports an expired password token.
 //
 //nolint:wrapcheck
-func ownedAppsWithRetry(acc appstore.Account) (appstore.Account, []appstore.App, map[int64]bool, error) {
+func ownedAppsWithRetry(acc appstore.Account) (appstore.Account, []appstore.App, map[int64]bool, map[int64]string, error) {
 	refreshed := false
 
 	for attempt := 0; attempt < 2; attempt++ {
-		apps, hiddenIDs, err := fetchAllOwnedApps(acc)
+		apps, hiddenIDs, tvosVerByID, err := fetchAllOwnedApps(acc)
 		if err == nil {
-			return acc, apps, hiddenIDs, nil
+			return acc, apps, hiddenIDs, tvosVerByID, nil
 		}
 
 		if errors.Is(err, appstore.ErrPasswordTokenExpired) && !refreshed {
 			if acc.Password == "" {
-				return acc, nil, nil, errors.New("password token is expired and no password is stored; log in again to refresh the session")
+				return acc, nil, nil, nil, errors.New("password token is expired and no password is stored; log in again to refresh the session")
 			}
 
 			refreshedAcc, refreshErr := refreshAccount(acc)
 			if refreshErr != nil {
-				return acc, nil, nil, refreshErr
+				return acc, nil, nil, nil, refreshErr
 			}
 
 			acc = refreshedAcc
@@ -1067,34 +1274,193 @@ func ownedAppsWithRetry(acc appstore.Account) (appstore.Account, []appstore.App,
 			continue
 		}
 
-		return acc, nil, nil, err
+		return acc, nil, nil, nil, err
 	}
 
-	return acc, nil, nil, errors.New("failed to load purchase history after re-authentication")
+	return acc, nil, nil, nil, errors.New("failed to load purchase history after re-authentication")
+}
+
+func guiPurchasesCacheDirectory() string {
+	if dependencies.OS != nil && dependencies.Machine != nil {
+		if stateDir, err := prepareGUIStateDirectory(dependencies.OS, dependencies.Machine.HomeDirectory()); err == nil && stateDir != "" {
+			return stateDir
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		stateDir := filepath.Join(home, guiConfigDirectoryName)
+		if err := os.MkdirAll(stateDir, 0o700); err == nil {
+			return stateDir
+		}
+	}
+	stateDir := guiConfigDirectoryName
+	_ = os.MkdirAll(stateDir, 0o700)
+	return stateDir
+}
+
+func sanitizeAccountCacheKey(acc appstore.Account) string {
+	raw := strings.TrimSpace(strings.ToLower(acc.Email))
+	if raw == "" {
+		raw = strings.TrimSpace(acc.DirectoryServicesID)
+	}
+	if raw == "" {
+		raw = strings.TrimSpace(strings.ToLower(acc.Name))
+	}
+	var b strings.Builder
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' || r == '@' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	cleaned := strings.Trim(b.String(), "._-")
+	if cleaned == "" {
+		return "default"
+	}
+	return cleaned
+}
+
+func purchasesCacheFilePath(acc appstore.Account) string {
+	filename := fmt.Sprintf("purchases_cache_%s.json", sanitizeAccountCacheKey(acc))
+	return filepath.Join(guiPurchasesCacheDirectory(), filename)
+}
+
+func buildPurchaseItems(apps []appstore.App, hiddenIDs map[int64]bool, tvosVerByID map[int64]string) []purchaseItem {
+	items := make([]purchaseItem, 0, len(apps))
+	for _, app := range apps {
+		purchaseDate := ""
+		if !app.PurchaseDate.IsZero() {
+			purchaseDate = app.PurchaseDate.Format("2006-01-02 15:04:05")
+		}
+
+		items = append(items, purchaseItem{
+			AppID:                app.ID,
+			BundleID:             app.BundleID,
+			Name:                 app.Name,
+			Version:              app.Version,
+			TVOSVersion:          tvosVerByID[app.ID],
+			PurchaseDate:         purchaseDate,
+			Platforms:            app.Platforms,
+			HiddenFromStorefront: hiddenIDs[app.ID],
+		})
+	}
+	return items
+}
+
+func parsePurchaseItemsToApps(items []purchaseItem) ([]appstore.App, map[int64]bool, map[int64]string) {
+	apps := make([]appstore.App, 0, len(items))
+	hiddenIDs := make(map[int64]bool)
+	tvosVerByID := make(map[int64]string)
+	for _, item := range items {
+		apps = append(apps, appstore.App{
+			ID:           item.AppID,
+			BundleID:     item.BundleID,
+			Name:         item.Name,
+			Version:      item.Version,
+			PurchaseDate: parseCommerceDate(item.PurchaseDate),
+			Platforms:    item.Platforms,
+		})
+		if item.HiddenFromStorefront && item.AppID > 0 {
+			hiddenIDs[item.AppID] = true
+		}
+		if item.TVOSVersion != "" && item.AppID > 0 {
+			tvosVerByID[item.AppID] = item.TVOSVersion
+		}
+	}
+	return apps, hiddenIDs, tvosVerByID
+}
+
+func readPurchasesDiskCache(acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string, time.Time, bool) {
+	path := purchasesCacheFilePath(acc)
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return nil, nil, nil, time.Time{}, false
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil || len(bytes.TrimSpace(data)) == 0 {
+		return nil, nil, nil, time.Time{}, false
+	}
+
+	var payload purchasesDiskCache
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, nil, nil, time.Time{}, false
+	}
+
+	if payload.DSID != "" && acc.DirectoryServicesID != "" && payload.DSID != acc.DirectoryServicesID {
+		return nil, nil, nil, time.Time{}, false
+	}
+
+	if payload.Items == nil {
+		return nil, nil, nil, time.Time{}, false
+	}
+
+	fetchedAt := info.ModTime()
+	if payload.FetchedAt > 0 {
+		fetchedAt = time.Unix(payload.FetchedAt, 0)
+	} else if payload.UpdatedAt != "" {
+		if parsed, parseErr := time.Parse(time.RFC3339, payload.UpdatedAt); parseErr == nil {
+			fetchedAt = parsed
+		}
+	}
+
+	apps, hiddenIDs, tvosVerByID := parsePurchaseItemsToApps(payload.Items)
+	return apps, hiddenIDs, tvosVerByID, fetchedAt, true
+}
+
+func writePurchasesDiskCache(acc appstore.Account, apps []appstore.App, hiddenIDs map[int64]bool, tvosVerByID map[int64]string, fetchedAt time.Time) {
+	if fetchedAt.IsZero() {
+		fetchedAt = time.Now()
+	}
+	payload := purchasesDiskCache{
+		DSID:      acc.DirectoryServicesID,
+		Email:     acc.Email,
+		FetchedAt: fetchedAt.Unix(),
+		UpdatedAt: fetchedAt.UTC().Format(time.RFC3339),
+		Items:     buildPurchaseItems(apps, hiddenIDs, tvosVerByID),
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(purchasesCacheFilePath(acc), data, 0o600)
 }
 
 // loadPurchases returns the cached purchase list for acc, loading it from
-// Apple when the cache is empty, belongs to another account, or force is set.
-func loadPurchases(acc appstore.Account, force bool) ([]appstore.App, map[int64]bool, time.Time, bool, error) {
+// purchases_cache.json in the current folder when available, or fetching from
+// Apple when the file does not exist, belongs to another account, or force is set.
+func loadPurchases(acc appstore.Account, force bool) ([]appstore.App, map[int64]bool, map[int64]string, time.Time, bool, error) {
 	purchasesState.Lock()
 
 	if !force && purchasesState.dsid == acc.DirectoryServicesID && purchasesState.apps != nil {
-		apps, hiddenIDs, at := purchasesState.apps, purchasesState.hiddenIDs, purchasesState.fetchedAt
+		apps, hiddenIDs, tvosVerByID, at := purchasesState.apps, purchasesState.hiddenIDs, purchasesState.tvosVerByID, purchasesState.fetchedAt
 		purchasesState.Unlock()
-		return apps, hiddenIDs, at, true, nil
+		return apps, hiddenIDs, tvosVerByID, at, true, nil
+	}
+
+	if !force {
+		if diskApps, diskHidden, diskTVOS, diskAt, ok := readPurchasesDiskCache(acc); ok {
+			purchasesState.dsid = acc.DirectoryServicesID
+			purchasesState.apps = diskApps
+			purchasesState.hiddenIDs = diskHidden
+			purchasesState.tvosVerByID = diskTVOS
+			purchasesState.fetchedAt = diskAt
+			purchasesState.Unlock()
+			return diskApps, diskHidden, diskTVOS, diskAt, true, nil
+		}
 	}
 
 	if load := purchasesState.inflight; load != nil {
 		purchasesState.Unlock()
 		<-load.done
-		return load.apps, load.hiddenIDs, time.Now(), false, load.err
+		return load.apps, load.hiddenIDs, load.tvosVerByID, time.Now(), false, load.err
 	}
 
 	load := &purchasesLoad{done: make(chan struct{})}
 	purchasesState.inflight = load
 	purchasesState.Unlock()
 
-	_, apps, hiddenIDs, err := ownedAppsWithRetry(acc)
+	_, apps, hiddenIDs, tvosVerByID, err := ownedAppsWithRetry(acc)
 
 	purchasesState.Lock()
 	purchasesState.inflight = nil
@@ -1103,22 +1469,25 @@ func loadPurchases(acc appstore.Account, force bool) ([]appstore.App, map[int64]
 		purchasesState.dsid = acc.DirectoryServicesID
 		purchasesState.apps = apps
 		purchasesState.hiddenIDs = hiddenIDs
+		purchasesState.tvosVerByID = tvosVerByID
 		purchasesState.fetchedAt = now
+		writePurchasesDiskCache(acc, apps, hiddenIDs, tvosVerByID, now)
 	}
 	purchasesState.Unlock()
 
-	load.apps, load.hiddenIDs, load.err = apps, hiddenIDs, err
+	load.apps, load.hiddenIDs, load.tvosVerByID, load.err = apps, hiddenIDs, tvosVerByID, err
 	close(load.done)
 
-	return apps, hiddenIDs, now, false, err
+	return apps, hiddenIDs, tvosVerByID, now, false, err
 }
 
-// invalidatePurchasesCache drops the cached list, e.g. after logout.
+// invalidatePurchasesCache drops the in-memory cached list, e.g. after logout.
 func invalidatePurchasesCache() {
 	purchasesState.Lock()
 	purchasesState.dsid = ""
 	purchasesState.apps = nil
 	purchasesState.hiddenIDs = nil
+	purchasesState.tvosVerByID = nil
 	purchasesState.fetchedAt = time.Time{}
 	purchasesState.Unlock()
 }
@@ -1137,29 +1506,13 @@ func handleAPIPurchases(w http.ResponseWriter, r *http.Request) {
 
 	force := r.URL.Query().Get("refresh") == "1"
 
-	apps, hiddenIDs, fetchedAt, cached, err := loadPurchases(info.Account, force)
+	apps, hiddenIDs, tvosVerByID, fetchedAt, cached, err := loadPurchases(info.Account, force)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	items := make([]purchaseItem, 0, len(apps))
-	for _, app := range apps {
-		purchaseDate := ""
-		if !app.PurchaseDate.IsZero() {
-			purchaseDate = app.PurchaseDate.Format("2006-01-02 15:04:05")
-		}
-
-		items = append(items, purchaseItem{
-			AppID:                app.ID,
-			BundleID:             app.BundleID,
-			Name:                 app.Name,
-			Version:              app.Version,
-			PurchaseDate:         purchaseDate,
-			Platforms:            app.Platforms,
-			HiddenFromStorefront: hiddenIDs[app.ID],
-		})
-	}
+	items := buildPurchaseItems(apps, hiddenIDs, tvosVerByID)
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success":   true,
