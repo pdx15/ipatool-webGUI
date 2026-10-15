@@ -1780,11 +1780,9 @@ async function handleFetchVersions(e) {
   const matchedPreset = state.lastVersionsInput && (rawInput === state.lastVersionsInput || parsed === state.lastVersionsInput);
   const presetName = matchedPreset ? (state.lastVersionsName || '') : '';
   const presetAppId = matchedPreset ? (Number(state.lastVersionsAppId) || 0) : 0;
-  if (!matchedPreset) {
-    state.lastVersionsName = '';
-    state.lastVersionsAppId = 0;
-    state.lastVersionsInput = '';
-  }
+  state.lastVersionsName = '';
+  state.lastVersionsAppId = 0;
+  state.lastVersionsInput = '';
 
   const bundleId = isNumeric ? '' : parsed;
   const appId = isNumeric ? parsed : (presetAppId ? String(presetAppId) : '');
@@ -1813,9 +1811,6 @@ async function handleFetchVersions(e) {
     const versions = data.externalVersionIdentifiers || [];
     const appName = data.name || presetName || '';
     const resolvedAppId = Number(data.appID || appId) || 0;
-    if (resolvedAppId) state.lastVersionsAppId = resolvedAppId;
-    if (appName) state.lastVersionsName = appName;
-    state.lastVersionsInput = parsed;
     titleEl.textContent = appName || data.bundleID || parsed;
     bundleEl.textContent = `Bundle ID: ${data.bundleID || parsed}`;
     badgeEl.textContent = `${versions.length} версий`;
@@ -2286,6 +2281,7 @@ function renderPurchases() {
     return;
   }
 
+  const dlLabel = batchEscapeHtml(batchText('purchases_download'));
   const verLabel = batchEscapeHtml(batchText('purchases_versions'));
   const unknown = batchText('purchases_unknown_app');
   const hiddenTip = batchEscapeHtml(
@@ -2314,6 +2310,7 @@ function renderPurchases() {
         <td>${formatPurchaseDate(a.purchaseDate)}</td>
         <td>
           <div class="purchases-row-actions">
+            <button class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleJs}', ${appId}, '${itemPlatform}', '${nameJs}', '')">⬇️ ${dlLabel}</button>
             <button class="btn btn-outline btn-sm" onclick="viewAppVersions('${bundleJs}', ${appId}, '${nameJs}', '${itemPlatform}')">🕒 ${verLabel}</button>
           </div>
         </td>
