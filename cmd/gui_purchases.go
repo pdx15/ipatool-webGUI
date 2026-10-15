@@ -674,7 +674,7 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 	}
 
 	extraApps := mergePurchaseHistoryApps(fallbackDAAPApps, commerceApps)
-	if len(prevHiddenApps) > 0 {
+	if (commerceErr != nil || len(commerceApps) == 0) && len(prevHiddenApps) > 0 {
 		extraApps = mergePurchaseHistoryApps(extraApps, prevHiddenApps)
 	}
 
@@ -696,7 +696,6 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 		}
 	}
 
-	merged, hiddenIDs, tvosVerByID, _ = deduplicatePurchaseHistoryApps(merged, hiddenIDs, tvosVerByID)
 	return sortPurchasesByDate(merged), hiddenIDs, tvosVerByID, nil
 }
 
@@ -1686,83 +1685,6 @@ func buildPurchaseItems(apps []appstore.App, hiddenIDs map[int64]bool, tvosVerBy
 	return items
 }
 
-func deduplicatePurchaseHistoryApps(apps []appstore.App, hiddenIDs map[int64]bool, tvosVerByID map[int64]string) ([]appstore.App, map[int64]bool, map[int64]string, bool) {
-	if len(apps) <= 1 {
-		return apps, hiddenIDs, tvosVerByID, false
-	}
-
-	nonHiddenBundles := make(map[string]int64)
-	nonHiddenNameDates := make(map[string]int64)
-	for _, app := range apps {
-		if app.ID <= 0 || hiddenIDs[app.ID] {
-			continue
-		}
-		if b := strings.ToLower(strings.TrimSpace(app.BundleID)); b != "" {
-			nonHiddenBundles[b] = app.ID
-		}
-		if n := strings.ToLower(strings.TrimSpace(app.Name)); n != "" && !app.PurchaseDate.IsZero() {
-			key := n + "|" + app.PurchaseDate.UTC().Format("2006-01-02 15:04:05")
-			nonHiddenNameDates[key] = app.ID
-		}
-	}
-
-	seenBundles := make(map[string]int64)
-	seenIDs := make(map[int64]struct{}, len(apps))
-	cleaned := make([]appstore.App, 0, len(apps))
-	changed := false
-
-	for _, app := range apps {
-		if app.ID > 0 {
-			if _, dupID := seenIDs[app.ID]; dupID {
-				changed = true
-				continue
-			}
-		}
-
-		b := strings.ToLower(strings.TrimSpace(app.BundleID))
-		nameDateKey := ""
-		if n := strings.ToLower(strings.TrimSpace(app.Name)); n != "" && !app.PurchaseDate.IsZero() {
-			nameDateKey = n + "|" + app.PurchaseDate.UTC().Format("2006-01-02 15:04:05")
-		}
-
-		if hiddenIDs[app.ID] {
-			if b != "" {
-				if realID, ok := nonHiddenBundles[b]; ok && realID != app.ID {
-					delete(hiddenIDs, app.ID)
-					delete(tvosVerByID, app.ID)
-					changed = true
-					continue
-				}
-			}
-			if nameDateKey != "" {
-				if realID, ok := nonHiddenNameDates[nameDateKey]; ok && realID != app.ID {
-					delete(hiddenIDs, app.ID)
-					delete(tvosVerByID, app.ID)
-					changed = true
-					continue
-				}
-			}
-		}
-
-		if b != "" {
-			if prevID, ok := seenBundles[b]; ok && prevID != app.ID {
-				delete(hiddenIDs, app.ID)
-				delete(tvosVerByID, app.ID)
-				changed = true
-				continue
-			}
-			seenBundles[b] = app.ID
-		}
-
-		if app.ID > 0 {
-			seenIDs[app.ID] = struct{}{}
-		}
-		cleaned = append(cleaned, app)
-	}
-
-	return cleaned, hiddenIDs, tvosVerByID, changed
-}
-
 func parsePurchaseItemsToApps(items []purchaseItem) ([]appstore.App, map[int64]bool, map[int64]string) {
 	apps := make([]appstore.App, 0, len(items))
 	hiddenIDs := make(map[int64]bool)
@@ -1786,7 +1708,6 @@ func parsePurchaseItemsToApps(items []purchaseItem) ([]appstore.App, map[int64]b
 			recordAppTVOSSeed(item.AppID, item.TVOSExternalVersionID, item.TVOSVersion, item.RedownloadVersionIDs)
 		}
 	}
-	apps, hiddenIDs, tvosVerByID, _ = deduplicatePurchaseHistoryApps(apps, hiddenIDs, tvosVerByID)
 	return apps, hiddenIDs, tvosVerByID
 }
 
@@ -1824,11 +1745,7 @@ func readPurchasesDiskCache(acc appstore.Account) ([]appstore.App, map[int64]boo
 		}
 	}
 
-	rawCount := len(payload.Items)
 	apps, hiddenIDs, tvosVerByID := parsePurchaseItemsToApps(payload.Items)
-	if len(apps) < rawCount {
-		writePurchasesDiskCache(acc, apps, hiddenIDs, tvosVerByID, fetchedAt)
-	}
 	return apps, hiddenIDs, tvosVerByID, fetchedAt, true
 }
 
