@@ -1333,9 +1333,17 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 			BundleID: req.BundleID,
 			Platform: platform,
 		})
+		if err != nil && platform != "" {
+			lookupResult, err = dependencies.AppStore.Lookup(appstore.LookupInput{
+				Account:  acc,
+				BundleID: req.BundleID,
+			})
+		}
 		if err == nil {
 			app = lookupResult.App
 			job.AppName = app.Name
+		} else if req.AppName != "" {
+			app.Name = req.AppName
 		}
 	} else if req.AppID > 0 && req.AppName == "" {
 		// Lookup by AppID if no BundleID and no AppName provided
@@ -1542,6 +1550,9 @@ func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 	app := appstore.App{ID: appID, BundleID: bundleID}
 	if appID == 0 && bundleID != "" {
 		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: bundleID, Platform: platform})
+		if err != nil && platform != "" {
+			lookupResult, err = dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: bundleID})
+		}
 		if err != nil {
 			jsonError(w, http.StatusBadRequest, fmt.Sprintf("lookup failed: %v", err))
 			return
