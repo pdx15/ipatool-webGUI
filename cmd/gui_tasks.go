@@ -231,8 +231,12 @@ func listVersionsWithRetry(account appstore.Account, app appstore.App, platform 
 					LatestExternalVersionID:    latestID,
 				}, nil
 			}
-			if tvErr != nil && (errors.Is(tvErr, appstore.ErrPasswordTokenExpired) || errors.Is(tvErr, appstore.ErrLicenseRequired)) {
-				err = tvErr
+			if tvErr != nil {
+				if errors.Is(tvErr, appstore.ErrPasswordTokenExpired) || errors.Is(tvErr, appstore.ErrLicenseRequired) {
+					err = tvErr
+				} else {
+					err = fmt.Errorf("%w (%v)", err, tvErr)
+				}
 			}
 		}
 
