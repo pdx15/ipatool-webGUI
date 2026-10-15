@@ -931,7 +931,7 @@ func enrichMissingCatalogFields(apps []appstore.App) {
 				apps[idx].Name = entry.Name
 			}
 		}
-		if apps[idx].ID > 0 && apps[idx].BundleID == "" {
+		if apps[idx].ID > 0 && (apps[idx].BundleID == "" || apps[idx].Version == "") {
 			if _, exists := missingIndices[apps[idx].ID]; !exists {
 				missingIndices[apps[idx].ID] = idx
 				missingIDs = append(missingIDs, apps[idx].ID)

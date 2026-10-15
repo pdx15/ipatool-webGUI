@@ -640,6 +640,18 @@
           <div class="search-input-wrapper">
             <input type="text" id="purchases-filter" data-i18n-placeholder="purchases_filter_placeholder" placeholder="Фильтр по названию, Bundle ID или App ID" oninput="renderPurchases()">
           </div>
+          <div class="option-group purchases-os-filter-group">
+            <label for="purchases-os-filter" data-i18n="purchases_os_label">ОС:</label>
+            <select id="purchases-os-filter" class="select-control" onchange="renderPurchases()">
+              <option value="all" data-i18n="purchases_os_all" selected>Все ОС</option>
+              <option value="iOS">iOS</option>
+              <option value="iPadOS">iPadOS</option>
+              <option value="macOS">macOS</option>
+              <option value="tvOS">tvOS</option>
+              <option value="watchOS">watchOS</option>
+              <option value="visionOS">visionOS</option>
+            </select>
+          </div>
           <label class="purchases-hidden-toggle" id="purchases-hidden-toggle-wrap" title="Показать только приложения, скрытые или удалённые из региональной витрины App Store">
             <input type="checkbox" id="purchases-only-hidden" onchange="renderPurchases()">
             <span class="purchases-hidden-toggle-track"><span class="purchases-hidden-toggle-thumb"></span></span>
