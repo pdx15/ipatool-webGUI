@@ -897,7 +897,7 @@ index 7bab12c..8db39cc 100644
  
  func macOSExternalVersionID(body []byte, app App) (string, error) {
 diff --git a/pkg/appstore/appstore_platform_version_lookup.go b/pkg/appstore/appstore_platform_version_lookup.go
-index c2b583f..b7d74aa 100644
+index c2b583f..84f5088 100644
 --- a/pkg/appstore/appstore_platform_version_lookup.go
 +++ b/pkg/appstore/appstore_platform_version_lookup.go
 @@ -1,15 +1,26 @@
@@ -905,9 +905,9 @@ index c2b583f..b7d74aa 100644
  
  import (
 +	"archive/zip"
-+	"bytes"
 +	"context"
 +	"encoding/binary"
++	"encoding/hex"
  	"encoding/json"
  	"errors"
  	"fmt"
@@ -949,7 +949,7 @@ index c2b583f..b7d74aa 100644
  	if platform == PlatformVisionOS {
  		return t.lookupLatestVisionOSExternalVersionID(app.ID, countryCode)
  	}
-@@ -199,3 +225,1072 @@ func externalVersionIDFromBuyParams(buyParams string) (string, error) {
+@@ -199,3 +225,1086 @@ func externalVersionIDFromBuyParams(buyParams string) (string, error) {
  
  	return values.Get("appExtVrsId"), nil
  }
@@ -1487,9 +1487,23 @@ index c2b583f..b7d74aa 100644
 +		return nil, "", false
 +	}
 +
-+	kbsync, err := t.readKBSync(acc, guid, PlatformAppleTV, kbsyncTransactionTypeDownload)
-+	if err != nil || len(kbsync) == 0 {
++	hardwareID, err := hex.DecodeString(guid)
++	if err != nil || len(hardwareID) != 6 {
 +		return nil, "", false
++	}
++
++	dsid, err := strconv.ParseUint(strings.TrimSpace(acc.DirectoryServicesID), 10, 64)
++	if err != nil || dsid == 0 {
++		return nil, "", false
++	}
++
++	kbsync := t.cachedKBSync(dsid, guid)
++	if kbsync == "" {
++		kbsync, err = t.generateKBSync(ctx, hardwareID, dsid)
++		if err != nil || kbsync == "" {
++			return nil, "", false
++		}
++		t.storeKBSync(dsid, guid, kbsync)
 +	}
 +
 +	sfBase, _, _ := strings.Cut(strings.TrimSpace(acc.StoreFront), ",")
