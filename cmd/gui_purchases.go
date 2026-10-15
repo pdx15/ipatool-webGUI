@@ -274,7 +274,18 @@ func fetchDAAPOwnedAppsForAccount(acc appstore.Account) ([]appstore.App, error) 
 			Page:    page,
 			Limit:   appstore.MaxOwnedAppsLimit,
 		})
+		if err != nil && page == 1 && !errors.Is(err, appstore.ErrPasswordTokenExpired) {
+			time.Sleep(500 * time.Millisecond)
+			out, err = dependencies.AppStore.OwnedApps(appstore.OwnedAppsInput{
+				Account: acc,
+				Page:    page,
+				Limit:   appstore.MaxOwnedAppsLimit,
+			})
+		}
 		if err != nil {
+			if len(allApps) > 0 {
+				return allApps, nil
+			}
 			return nil, err
 		}
 		allApps = append(allApps, out.Results...)
@@ -286,54 +297,58 @@ func fetchDAAPOwnedAppsForAccount(acc appstore.Account) ([]appstore.App, error) 
 	return allApps, nil
 }
 
-// fetchDAAPOwnedApps queries the user's primary regional storefront and, when
-// the account is outside the US/GB storefronts, also probes the US storefront
-// so purchased apps hidden only in the regional storefront are discovered via
-// DAAP as well.
+// fetchDAAPOwnedApps queries the user's primary regional storefront.
 func fetchDAAPOwnedApps(acc appstore.Account) (regionalApps []appstore.App, fallbackApps []appstore.App, err error) {
 	regionalApps, err = fetchDAAPOwnedAppsForAccount(acc)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	trimmedSF := strings.TrimSpace(acc.StoreFront)
-	if !strings.HasPrefix(trimmedSF, "143441") {
-		usAcc := acc
-		usAcc.StoreFront = "143441-1,29"
-		if usApps, usErr := fetchDAAPOwnedAppsForAccount(usAcc); usErr == nil && len(usApps) > 0 {
-			fallbackApps = append(fallbackApps, usApps...)
+	return regionalApps, nil, nil
+}
+
+func previousPurchasesBaseline(acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string) {
+	purchasesState.Lock()
+	if purchasesState.dsid == acc.DirectoryServicesID && purchasesState.apps != nil {
+		prevApps := append([]appstore.App(nil), purchasesState.apps...)
+		prevHidden := make(map[int64]bool, len(purchasesState.hiddenIDs))
+		for k, v := range purchasesState.hiddenIDs {
+			prevHidden[k] = v
 		}
+		prevTVOS := make(map[int64]string, len(purchasesState.tvosVerByID))
+		for k, v := range purchasesState.tvosVerByID {
+			prevTVOS[k] = v
+		}
+		purchasesState.Unlock()
+		return prevApps, prevHidden, prevTVOS
+	}
+	purchasesState.Unlock()
+
+	if diskApps, diskHidden, diskTVOS, _, ok := readPurchasesDiskCache(acc); ok {
+		return diskApps, diskHidden, diskTVOS
 	}
 
-	return regionalApps, fallbackApps, nil
+	return nil, nil, nil
+}
+
+func lookupCachedPurchaseApp(acc appstore.Account, appID int64, bundleID string) (appstore.App, bool) {
+	bundleID = strings.TrimSpace(bundleID)
+	apps, _, _ := previousPurchasesBaseline(acc)
+	for _, item := range apps {
+		if appID > 0 && item.ID == appID {
+			return item, true
+		}
+		if bundleID != "" && strings.EqualFold(strings.TrimSpace(item.BundleID), bundleID) {
+			return item, true
+		}
+	}
+	return appstore.App{}, false
 }
 
 func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string, error) {
-	var (
-		regionalDAAPApps []appstore.App
-		fallbackDAAPApps []appstore.App
-		daapErr          error
-		commerceApps     []appstore.App
-		commercePod      string
-		commerceErr      error
-		wg               sync.WaitGroup
-	)
+	prevApps, prevHiddenIDs, prevTVOS := previousPurchasesBaseline(acc)
 
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		regionalDAAPApps, fallbackDAAPApps, daapErr = fetchDAAPOwnedApps(acc)
-	}()
-	go func() {
-		defer wg.Done()
-		commerceApps, commercePod, commerceErr = fetchCommercePurchaseHistoryOnce(acc)
-	}()
-	wg.Wait()
-
-	if commerceErr == nil {
-		persistAccountPodIfChanged(acc, commercePod)
-	}
-
+	regionalDAAPApps, fallbackDAAPApps, daapErr := fetchDAAPOwnedApps(acc)
 	// If DAAP failed due to an expired password token, let ownedAppsWithRetry
 	// perform a single refreshAccount (which refreshes both PasswordToken and
 	// web cookies) and retry the whole fetch cleanly.
@@ -341,28 +356,48 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 		return nil, nil, nil, daapErr
 	}
 
+	commerceApps, _, commerceErr := fetchCommercePurchaseHistoryOnce(acc)
+
 	// If DAAP succeeded and only the short-lived web cookies for
 	// /commerce/account/purchases expired, refresh once now (after DAAP has
 	// finished, avoiding any race) and retry commerce. If that refresh fails
 	// (e.g. transient fpinit timeout), keep the DAAP apps rather than failing.
-	if daapErr == nil && commerceErr != nil && errors.Is(commerceErr, appstore.ErrPasswordTokenExpired) && acc.Password != "" {
+	if commerceErr != nil && errors.Is(commerceErr, appstore.ErrPasswordTokenExpired) && acc.Password != "" {
 		commerceRefreshMu.Lock()
 		refreshedAcc, refreshErr := refreshAccount(acc)
 		commerceRefreshMu.Unlock()
 		if refreshErr == nil {
-			if retriedApps, retriedPod, retryErr := fetchCommercePurchaseHistoryOnce(refreshedAcc); retryErr == nil {
-				persistAccountPodIfChanged(refreshedAcc, retriedPod)
+			if retriedApps, _, retryErr := fetchCommercePurchaseHistoryOnce(refreshedAcc); retryErr == nil {
 				commerceApps = retriedApps
 				commerceErr = nil
 			}
 		}
 	}
 
+	var prevHiddenApps []appstore.App
+	for _, pApp := range prevApps {
+		if pApp.ID > 0 && prevHiddenIDs[pApp.ID] {
+			prevHiddenApps = append(prevHiddenApps, pApp)
+		}
+	}
+
 	if daapErr != nil && len(regionalDAAPApps) == 0 {
 		if commerceErr == nil && len(commerceApps) > 0 {
-			enrichMissingCatalogFields(commerceApps)
-			tvosVerByID := enrichTVOSCatalog(acc, commerceApps)
-			return sortPurchasesByDate(commerceApps), nil, tvosVerByID, nil
+			combined := mergePurchaseHistoryApps(commerceApps, prevHiddenApps)
+			enrichMissingCatalogFields(combined)
+			tvosVerByID := enrichTVOSCatalog(acc, combined)
+			for id, ver := range prevTVOS {
+				if tvosVerByID[id] == "" && ver != "" {
+					tvosVerByID[id] = ver
+				}
+			}
+			hiddenIDs := make(map[int64]bool, len(prevHiddenIDs))
+			for id, hidden := range prevHiddenIDs {
+				if hidden {
+					hiddenIDs[id] = true
+				}
+			}
+			return sortPurchasesByDate(combined), hiddenIDs, tvosVerByID, nil
 		}
 		if errors.Is(commerceErr, appstore.ErrPasswordTokenExpired) {
 			return nil, nil, nil, commerceErr
@@ -378,6 +413,9 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 	}
 
 	extraApps := mergePurchaseHistoryApps(fallbackDAAPApps, commerceApps)
+	if len(prevHiddenApps) > 0 {
+		extraApps = mergePurchaseHistoryApps(extraApps, prevHiddenApps)
+	}
 
 	hiddenIDs := make(map[int64]bool)
 	for _, app := range extraApps {
@@ -391,14 +429,18 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 	merged := mergePurchaseHistoryApps(regionalDAAPApps, extraApps)
 	enrichMissingCatalogFields(merged)
 	tvosVerByID := enrichTVOSCatalog(acc, merged)
+	for id, ver := range prevTVOS {
+		if tvosVerByID[id] == "" && ver != "" {
+			tvosVerByID[id] = ver
+		}
+	}
 
 	return sortPurchasesByDate(merged), hiddenIDs, tvosVerByID, nil
 }
 
 func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.App, error) {
-	apps, updatedPod, err := fetchCommercePurchaseHistoryOnce(acc)
+	apps, _, err := fetchCommercePurchaseHistoryOnce(acc)
 	if err == nil {
-		persistAccountPodIfChanged(acc, updatedPod)
 		return apps, nil
 	}
 
@@ -410,26 +452,14 @@ func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.A
 		refreshedAcc, refreshErr := refreshAccount(acc)
 		commerceRefreshMu.Unlock()
 		if refreshErr == nil {
-			apps, updatedPod, err = fetchCommercePurchaseHistoryOnce(refreshedAcc)
+			apps, _, err = fetchCommercePurchaseHistoryOnce(refreshedAcc)
 			if err == nil {
-				persistAccountPodIfChanged(refreshedAcc, updatedPod)
 				return apps, nil
 			}
 		}
 	}
 
 	return nil, err
-}
-
-func persistAccountPodIfChanged(acc appstore.Account, newPod string) {
-	newPod = strings.TrimSpace(newPod)
-	if newPod == "" || newPod == strings.TrimSpace(acc.Pod) || dependencies.Keychain == nil {
-		return
-	}
-	acc.Pod = newPod
-	if data, err := json.Marshal(acc); err == nil {
-		_ = dependencies.Keychain.Set("account", data)
-	}
 }
 
 func newCommerceHTTPClient() *http.Client {
@@ -459,7 +489,7 @@ func fetchCommercePurchaseHistoryOnce(acc appstore.Account) ([]appstore.App, str
 	client := newCommerceHTTPClient()
 
 	podMu := sync.Mutex{}
-	activePod := strings.TrimSpace(acc.Pod)
+	activePod := ""
 	getPod := func() string {
 		podMu.Lock()
 		defer podMu.Unlock()
@@ -484,6 +514,9 @@ func fetchCommercePurchaseHistoryOnce(acc appstore.Account) ([]appstore.App, str
 		return nil, getPod(), appstore.ErrPasswordTokenExpired
 	}
 	if err != nil {
+		if strings.Contains(err.Error(), "unexpected commerce purchase history response") {
+			return nil, getPod(), appstore.ErrPasswordTokenExpired
+		}
 		return nil, getPod(), err
 	}
 

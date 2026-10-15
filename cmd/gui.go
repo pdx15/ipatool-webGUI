@@ -1327,7 +1327,28 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 		job.OutputPath = outputPath
 	}
 
-	if req.BundleID != "" {
+	if req.AppID > 0 {
+		app.ID = req.AppID
+		if cachedApp, ok := lookupCachedPurchaseApp(acc, req.AppID, req.BundleID); ok && cachedApp.Name != "" {
+			app.Name = cachedApp.Name
+			job.AppName = cachedApp.Name
+		} else if req.AppName != "" && req.AppName != strconv.FormatInt(req.AppID, 10) {
+			app.Name = req.AppName
+			job.AppName = req.AppName
+		} else if req.AppName == "" {
+			if lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{
+				Account:  acc,
+				BundleID: "",
+				AppID:    req.AppID,
+				Platform: platform,
+			}); err == nil {
+				app.Name = lookupResult.App.Name
+				job.AppName = app.Name
+			}
+		} else {
+			app.Name = req.AppName
+		}
+	} else if req.BundleID != "" {
 		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{
 			Account:  acc,
 			BundleID: req.BundleID,
@@ -1336,21 +1357,13 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 		if err == nil {
 			app = lookupResult.App
 			job.AppName = app.Name
-		}
-	} else if req.AppID > 0 && req.AppName == "" {
-		// Lookup by AppID if no BundleID and no AppName provided
-		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{
-			Account:  acc,
-			BundleID: "",
-			AppID:    req.AppID,
-			Platform: platform,
-		})
-		if err == nil {
-			app = lookupResult.App
-			job.AppName = app.Name
+		} else if cachedApp, ok := lookupCachedPurchaseApp(acc, 0, req.BundleID); ok && cachedApp.ID > 0 {
+			app = appstore.App{ID: cachedApp.ID, Name: cachedApp.Name}
+			if cachedApp.Name != "" {
+				job.AppName = cachedApp.Name
+			}
 		}
 	} else if req.AppName != "" {
-		// Use provided AppName if no lookup was done
 		app.Name = req.AppName
 	}
 
@@ -1539,21 +1552,42 @@ func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	app := appstore.App{ID: appID, BundleID: bundleID}
+	displayBundle := bundleID
+	displayName := ""
+	app := appstore.App{ID: appID}
 	if appID == 0 && bundleID != "" {
-		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: bundleID, Platform: platform})
-		if err != nil {
-			jsonError(w, http.StatusBadRequest, fmt.Sprintf("lookup failed: %v", err))
+		lookupResult, lookupErr := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: bundleID, Platform: platform})
+		if lookupErr == nil {
+			app = lookupResult.App
+			displayName = app.Name
+			if app.BundleID != "" {
+				displayBundle = app.BundleID
+			}
+		} else if cachedApp, ok := lookupCachedPurchaseApp(info.Account, 0, bundleID); ok && cachedApp.ID > 0 {
+			app = appstore.App{ID: cachedApp.ID}
+			displayName = cachedApp.Name
+			if cachedApp.BundleID != "" {
+				displayBundle = cachedApp.BundleID
+			}
+		} else {
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("lookup failed: %v", lookupErr))
 			return
 		}
-		app = lookupResult.App
+	} else if appID > 0 {
+		if cachedApp, ok := lookupCachedPurchaseApp(info.Account, appID, bundleID); ok {
+			displayName = cachedApp.Name
+			if displayBundle == "" && cachedApp.BundleID != "" {
+				displayBundle = cachedApp.BundleID
+			}
+		}
 	}
 
-	out, err := dependencies.AppStore.ListVersions(appstore.ListVersionsInput{
-		Account:  info.Account,
-		App:      app,
-		Platform: platform,
-	})
+	acc, out, err := listVersionsWithRetry(info.Account, app, platform)
+	if errors.Is(err, appstore.ErrLicenseRequired) {
+		if updatedAcc, _, purchaseErr := purchaseWithRetry(acc, app, platform); purchaseErr == nil {
+			_, out, err = listVersionsWithRetry(updatedAcc, app, platform)
+		}
+	}
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1562,8 +1596,8 @@ func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success":                    true,
 		"appID":                      app.ID,
-		"name":                       app.Name,
-		"bundleID":                   app.BundleID,
+		"name":                       displayName,
+		"bundleID":                   displayBundle,
 		"externalVersionIdentifiers": out.ExternalVersionIdentifiers,
 	})
 }
@@ -1653,6 +1687,8 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 		account = &info.Account
 		if lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: req.BundleID, Platform: platform}); err == nil {
 			appID = lookupResult.App.ID
+		} else if cachedApp, ok := lookupCachedPurchaseApp(info.Account, 0, req.BundleID); ok && cachedApp.ID > 0 {
+			appID = cachedApp.ID
 		}
 	}
 
@@ -1779,7 +1815,10 @@ func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string
 		acc = info.Account
 	}
 
-	app := appstore.App{ID: appID, BundleID: bundleID}
+	app := appstore.App{ID: appID}
+	if platform == appstore.PlatformMacOS || appID == 0 {
+		app.BundleID = bundleID
+	}
 	// Only resolve the bundle ID into an app ID when the caller did not already
 	// supply an app ID; this avoids an extra lookup for every build.
 	if bundleID != "" && appID == 0 {
@@ -1787,6 +1826,12 @@ func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string
 		if err == nil {
 			app = lookupResult.App
 			appID = app.ID
+		} else if cachedApp, ok := lookupCachedPurchaseApp(acc, 0, bundleID); ok && cachedApp.ID > 0 {
+			app = appstore.App{ID: cachedApp.ID}
+			if platform == appstore.PlatformMacOS {
+				app.BundleID = cachedApp.BundleID
+			}
+			appID = cachedApp.ID
 		}
 	}
 

@@ -119,7 +119,7 @@ jobs:
           # The only permitted package changes are the metadata implementation,
           # its test, exposing MinimumOSVersion from the IPA Info.plist, and the
           # volumeStore priority patch.
-          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip|download(_product)?|list_versions|kbsync|lookup|(ios|macos|platform)_version_lookup)\.go$' || true)
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip|download(_product)?|kbsync|lookup|(macos|platform)_version_lookup)\.go$' || true)
           if [ -n "$unexpected_pkg_changes" ]; then
             echo "::error::Unexpected changes to upstream package sources:"
             echo "$unexpected_pkg_changes"
@@ -227,7 +227,7 @@ jobs:
       - name: Verify the GUI builds with the minimal upstream metadata extension
         run: |
           cd ipatool
-          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip|download(_product)?|list_versions|kbsync|lookup|(ios|macos|platform)_version_lookup)\.go$' || true)
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/appstore_(get_version_metadata(_test)?|partial_zip|download(_product)?|kbsync|lookup|(macos|platform)_version_lookup)\.go$' || true)
           if [ -n "$unexpected_pkg_changes" ]; then
             echo "::error::Unexpected changes to upstream package sources:"
             echo "$unexpected_pkg_changes"
