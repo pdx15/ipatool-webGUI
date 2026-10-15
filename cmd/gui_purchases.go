@@ -419,7 +419,7 @@ func inspectLocalIPATVOSeed(ipaPath string) (int64, string, string, bool) {
 }
 
 func scanLocalIPATVOSeeds() {
-	dirs := []string{resolveDefaultDownloadDir()}
+	dirs := []string{defaultDownloadDir()}
 	if wd, err := os.Getwd(); err == nil && wd != "" {
 		dirs = append(dirs, wd, filepath.Join(wd, "apps"))
 	}
