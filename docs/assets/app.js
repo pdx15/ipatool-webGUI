@@ -9,6 +9,8 @@ const state = {
   theme: localStorage.getItem('ipatool_theme') || 'dark',
   activeTab: 'search',
   os: null, // 'windows' | 'darwin' | 'linux' | ..., from /api/status
+  version: null,
+  updateInfo: null,
   account: null,
   isAuthenticated: false,
   activeDownloads: new Map(), // jobId -> job object
@@ -104,6 +106,7 @@ const i18n = {
     direct_id_hint: 'Вы можете указать Bundle Identifier (например com.example.app), цифровой Track ID (например 686449807) или ссылку на страницу в App Store.',
     version_id_label: 'ID версии (необязательно):',
     output_folder_label: 'Папка для сохранения:',
+    output_folder_placeholder: 'По умолчанию: папка apps в текущей папке',
     open_folder_btn: 'Открыть',
     auto_purchase_title: 'Автоматически получить лицензию (Purchase)',
     auto_purchase_desc: 'Необходимо, если приложение ещё ни разу не скачивалось с этого Apple ID (только для бесплатных)',
@@ -141,8 +144,6 @@ const i18n = {
     login_password_label: 'Пароль Apple ID:',
     login_security_hint: 'Пароль передается напрямую на защищенные серверы Apple (SRP-6a/GSA) и не сохраняется третьими лицами.',
     login_btn: 'Войти в Apple ID',
-    login_test_btn: 'Войти в Apple ID SKIP',
-    login_test_hint: 'Если при авторизации через «Войти в Apple ID» возникают ошибки (HTTP 403, «An unknown error has occurred», ошибки GSA/SRP или проблемы с 2FA), используйте альтернативный метод авторизации через «Войти в Apple ID SKIP».',
     anisette_card_title: '⚙️ Проверка iCloud для Windows',
     anisette_card_desc: 'Проверьте, установлена ли нужная версия iCloud на этом компьютере',
     anisette_alert_title: 'Для Windows-версии ipatool:',
@@ -166,7 +167,7 @@ const i18n = {
     faq_q5: 'Как скачать старую версию приложения?',
     faq_a5: 'Перейдите во вкладку <strong>"История версий"</strong> (или нажмите кнопку "Версии" на карточке приложения). Программа отобразит все когда-либо выпущенные версии приложения. Выберите нужную сборку и нажмите "Скачать".',
     faq_q6: 'Где сохраняются скачанные файлы .IPA?',
-    faq_a6: 'По умолчанию файлы сохраняются в рабочую папку программы или в папку "Загрузки". Вы можете открыть папку в любой момент, нажав кнопку <strong>"📂 Открыть папку загрузок"</strong> во вкладке "Загрузки".',
+    faq_a6: 'По умолчанию файлы сохраняются в папку <code>apps</code> внутри рабочей папки программы. Вы можете открыть её в любой момент, нажав кнопку <strong>"📂 Открыть папку загрузок"</strong> во вкладке "Загрузки".',
     faq_q7: 'Что делать, если при скачивании появляется ошибка "invalid response"?',
     faq_a7: '<p>Если вы получаете ошибку <code>invalid response: Apple Media Services Terms and Conditions have changed</code>, это означает, что Apple обновила условия использования, и ваш аккаунт ещё не принял новые условия.</p><p><strong data-i18n="faq_a7_fix_title">Как исправить:</strong></p><ol><li data-i18n="faq_a7_step1">Откройте App Store на вашем iPhone, iPad или Mac</li><li data-i18n="faq_a7_step2">Войдите в тот же Apple ID, если потребуется</li><li data-i18n="faq_a7_step3">Начните скачивание любого приложения (можно попробовать то, с которым была ошибка, например Insta360) - это должно вызвать окно с новыми условиями</li><li data-i18n="faq_a7_step4">Примите новые условия и соглашения при появлении запроса</li><li data-i18n="faq_a7_step5">После принятия условий ipatool должен снова работать нормально</li></ol><p data-i18n="faq_a7_note">Это стандартная процедура Apple при обновлении их юридических условий. После принятия через официальное приложение Apple ошибка будет устранена.</p>',
     faq_a7_fix_title: 'Как исправить:',
@@ -184,10 +185,14 @@ const i18n = {
     open_in_explorer_btn: 'Показать в проводнике',
     step_license: 'Проверка лицензии / Покупка',
     step_download: 'Загрузка пакета .IPA из App Store',
+    step_download_pkg: 'Загрузка пакета .PKG из App Store',
     step_sinf: 'Применение цифровой подписи (sinf)',
     step_complete: 'Готово к установке',
+    dl_completed_ipa: 'Пакет .IPA успешно скачан!',
+    dl_completed_pkg: 'Пакет .PKG успешно скачан!',
     free_price: 'Бесплатно',
     download_btn: 'Скачать IPA',
+    download_btn_pkg: 'Скачать PKG',
     license_btn: 'Лицензия',
     versions_btn: 'Версии',
     copied_toast: 'Скопировано в буфер обмена',
@@ -263,7 +268,12 @@ const i18n = {
     purchases_desc: 'Все приложения, приобретённые на этом Apple ID. Список загружается один раз при входе и обновляется по кнопке.',
     purchases_refresh: 'Обновить',
     purchases_filter_placeholder: 'Фильтр по названию, Bundle ID или App ID',
+    purchases_os_label: 'ОС:',
+    purchases_os_all: 'Все ОС',
+    purchases_only_hidden: 'Только скрытые',
     purchases_export: 'Сохранить список (.txt)',
+    purchases_saved_toast: 'Список сохранён: {path}',
+    purchases_save_failed: 'Не удалось сохранить список в файл',
     purchases_need_auth: 'Войдите в Apple ID во вкладке «Аккаунт», чтобы увидеть историю покупок',
     purchases_loading: 'Загрузка истории покупок с серверов Apple...',
     purchases_retry: 'Повторить',
@@ -355,6 +365,7 @@ const i18n = {
     direct_id_hint: 'You can provide a Bundle Identifier (e.g. com.example.app), numeric Track ID (e.g. 686449807), or an App Store web link.',
     version_id_label: 'Version ID (optional):',
     output_folder_label: 'Output Folder:',
+    output_folder_placeholder: 'Default: apps folder in current directory',
     open_folder_btn: 'Open',
     auto_purchase_title: 'Auto-acquire license (Purchase)',
     auto_purchase_desc: 'Required if this app was never downloaded with this Apple ID before (free apps only)',
@@ -392,8 +403,6 @@ const i18n = {
     login_password_label: 'Apple ID Password:',
     login_security_hint: 'Your password is sent directly to Apple secure servers (SRP-6a/GSA) over HTTPS and is never stored unencrypted.',
     login_btn: 'Sign In',
-    login_test_btn: 'Sign In Apple ID SKIP',
-    login_test_hint: 'If you get errors while signing in via "Sign In" (e.g. HTTP 403, "An unknown error has occurred", GSA/SRP login failures, or 2FA code issues), use the alternative method "Sign In Apple ID SKIP".',
     anisette_card_title: '⚙️ iCloud Check for Windows',
     anisette_card_desc: 'Verify that the required iCloud version is installed on this computer',
     anisette_alert_title: 'For Windows users of ipatool:',
@@ -417,7 +426,7 @@ const i18n = {
     faq_q5: 'How to download an old version of an app?',
     faq_a5: 'Go to the <strong>"Version History"</strong> tab (or click the "Versions" button on the app card). The program will display all ever released versions of the app. Select the desired build and click "Download".',
     faq_q6: 'Where are downloaded .IPA files saved?',
-    faq_a6: 'By default, files are saved to the program\'s working folder or the "Downloads" folder. You can open the folder at any time by clicking the <strong>"📂 Open downloads folder"</strong> button in the "Downloads" tab.',
+    faq_a6: 'By default, files are saved to the <code>apps</code> folder inside the program\'s working directory. You can open the folder at any time by clicking the <strong>"📂 Open downloads folder"</strong> button in the "Downloads" tab.',
     faq_q7: 'What to do if "invalid response" error occurs during download?',
     faq_a7: '<p>If you get the error <code>invalid response: Apple Media Services Terms and Conditions have changed</code>, it means Apple has updated their terms of use and your account has not accepted the new terms yet.</p><p><strong data-i18n="faq_a7_fix_title">How to fix:</strong></p><ol><li data-i18n="faq_a7_step1">Open the App Store on your iPhone, iPad, or Mac</li><li data-i18n="faq_a7_step2">Sign in with the same Apple ID if prompted</li><li data-i18n="faq_a7_step3">Start downloading any app (you can try the one that gave you the error, e.g., Insta360) - this should trigger the new terms popup</li><li data-i18n="faq_a7_step4">Accept the new terms and conditions when prompted</li><li data-i18n="faq_a7_step5">After accepting the terms, ipatool should work normally again</li></ol><p data-i18n="faq_a7_note">This is a standard Apple procedure when they update their legal terms. Once you accept them through an official Apple app, the error will be resolved.</p>',
     faq_a7_fix_title: 'How to fix:',
@@ -435,10 +444,14 @@ const i18n = {
     open_in_explorer_btn: 'Show in Explorer',
     step_license: 'License Verification / Purchase',
     step_download: 'Downloading .IPA package from App Store',
+    step_download_pkg: 'Downloading .PKG package from App Store',
     step_sinf: 'Applying digital signature (sinf replication)',
     step_complete: 'Ready for installation',
+    dl_completed_ipa: 'Package .IPA downloaded successfully!',
+    dl_completed_pkg: 'Package .PKG downloaded successfully!',
     free_price: 'Free',
     download_btn: 'Download IPA',
+    download_btn_pkg: 'Download PKG',
     license_btn: 'License',
     versions_btn: 'Versions',
     copied_toast: 'Copied to clipboard',
@@ -514,7 +527,12 @@ const i18n = {
     purchases_desc: 'Every app owned by this Apple ID. The list is fetched once after sign-in and refreshed on demand.',
     purchases_refresh: 'Refresh',
     purchases_filter_placeholder: 'Filter by name, Bundle ID or App ID',
+    purchases_os_label: 'OS:',
+    purchases_os_all: 'All OS',
+    purchases_only_hidden: 'Hidden only',
     purchases_export: 'Save list (.txt)',
+    purchases_saved_toast: 'List saved: {path}',
+    purchases_save_failed: 'Failed to save list to file',
     purchases_need_auth: 'Sign in to your Apple ID on the "Account" tab to see the purchase history',
     purchases_loading: 'Loading purchase history from Apple...',
     purchases_retry: 'Retry',
@@ -566,6 +584,7 @@ function applyLanguage() {
 
   // Update account status pill
   updateAccountStatusPill();
+  renderBrandVersion();
 
   // Re-run iCloud presence check so its text follows the selected language.
   checkICloudStatus();
@@ -694,18 +713,12 @@ function togglePasswordVisibility(inputId) {
 // ==========================================
 
 // Shows/hides platform-specific pieces of the UI once the server-reported OS
-// is known. The iCloud-for-Windows card is hidden on macOS, and the alternative
-// "Войти в Apple ID SKIP" (GSA -> MZFinance) button is shown only on macOS.
+// is known. The iCloud-for-Windows card is hidden on macOS.
 function applyPlatformVisibility() {
   const isMac = state.os === 'darwin';
 
   const icloudCard = document.getElementById('icloud-presence-card');
   if (icloudCard) icloudCard.style.display = isMac ? 'none' : '';
-
-  const testBtn = document.getElementById('login-test-btn');
-  const testHint = document.getElementById('login-test-hint');
-  if (testBtn) testBtn.style.display = isMac ? 'inline-flex' : 'none';
-  if (testHint) testHint.style.display = isMac ? '' : 'none';
 }
 
 async function checkICloudStatus() {
@@ -751,7 +764,12 @@ async function fetchStatus() {
     state.isAuthenticated = data.authenticated;
     state.account = data.account || null;
     state.os = data.os || null;
+    if (data.version) {
+      state.version = data.version;
+    }
 
+    renderBrandVersion();
+    checkAppUpdate();
     applyPlatformVisibility();
     updateAccountUI();
     onAuthStateChanged();
@@ -760,6 +778,128 @@ async function fetchStatus() {
     state.isAuthenticated = false;
     state.account = null;
     updateAccountUI();
+  }
+}
+
+function cleanWebGUIVersion(raw) {
+  if (!raw) return '';
+  return String(raw)
+    .trim()
+    .replace(/^[vV]/, '')
+    .replace(/-webgui$/i, '')
+    .trim();
+}
+
+function compareWebGUIVersionStrings(a, b) {
+  const parse = (val) => {
+    const clean = cleanWebGUIVersion(val);
+    if (!clean || clean.toLowerCase() === 'dev') return null;
+    const m = clean.match(/^(\d+(?:\.\d+)*)([a-zA-Z]*)$/);
+    if (!m) return null;
+    const nums = m[1].split('.').map(n => parseInt(n, 10));
+    while (nums.length < 3) nums.push(0);
+    return { nums, suffix: (m[2] || '').toLowerCase() };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return 0;
+  const len = Math.max(pa.nums.length, pb.nums.length);
+  for (let i = 0; i < len; i++) {
+    const av = pa.nums[i] || 0;
+    const bv = pb.nums[i] || 0;
+    if (av !== bv) return av > bv ? 1 : -1;
+  }
+  if (pa.suffix !== pb.suffix) {
+    return pa.suffix > pb.suffix ? 1 : -1;
+  }
+  return 0;
+}
+
+let updateCheckDone = false;
+
+async function checkAppUpdate() {
+  if (updateCheckDone) return;
+  updateCheckDone = true;
+
+  try {
+    const res = await fetch('/api/update-check');
+    const data = await res.json();
+    if (res.ok && data && data.success) {
+      if (data.currentVersion && !state.version) {
+        state.version = data.currentVersion;
+      }
+      if (data.latestVersion) {
+        state.updateInfo = {
+          latestVersion: cleanWebGUIVersion(data.latestVersion),
+          updateAvailable: !!data.updateAvailable,
+          releasesUrl: data.releasesUrl || 'https://github.com/pdx15/ipatool-webGUI/releases'
+        };
+        renderBrandVersion();
+        return;
+      }
+    }
+  } catch (_) {
+    // Fall back to direct GitHub API check below
+  }
+
+  try {
+    const ghRes = await fetch('https://api.github.com/repos/pdx15/ipatool-webGUI/releases/latest');
+    if (!ghRes.ok) return;
+    const ghData = await ghRes.json();
+    const latestClean = cleanWebGUIVersion(ghData.tag_name || ghData.name || '');
+    const currentClean = cleanWebGUIVersion(state.version || '');
+    if (latestClean) {
+      state.updateInfo = {
+        latestVersion: latestClean,
+        updateAvailable: !!(currentClean && currentClean.toLowerCase() !== 'dev' && compareWebGUIVersionStrings(latestClean, currentClean) > 0),
+        releasesUrl: ghData.html_url || 'https://github.com/pdx15/ipatool-webGUI/releases'
+      };
+      renderBrandVersion();
+    }
+  } catch (_) {
+    // Ignore offline / rate-limit errors
+  }
+}
+
+function renderBrandVersion() {
+  const verEl = document.getElementById('brand-version');
+  const pillEl = document.getElementById('brand-update-pill');
+  if (!verEl) return;
+
+  const displayVer = cleanWebGUIVersion(state.version || '');
+  if (!displayVer) {
+    verEl.style.display = 'none';
+    if (pillEl) pillEl.style.display = 'none';
+    return;
+  }
+
+  const releasesUrl = (state.updateInfo && state.updateInfo.releasesUrl) || 'https://github.com/pdx15/ipatool-webGUI/releases';
+  verEl.textContent = displayVer;
+  verEl.href = releasesUrl;
+  verEl.style.display = 'inline-block';
+
+  const hasUpdate = !!(state.updateInfo && state.updateInfo.updateAvailable && state.updateInfo.latestVersion);
+  verEl.classList.toggle('has-update', hasUpdate);
+
+  if (hasUpdate) {
+    const latest = state.updateInfo.latestVersion;
+    const tip = state.lang === 'en'
+      ? `New version available: ${latest} (current: ${displayVer}) — click to open Releases`
+      : `Доступна новая версия: ${latest} (текущая: ${displayVer}) — нажмите, чтобы открыть страницу релизов`;
+    verEl.title = tip;
+    if (pillEl) {
+      pillEl.href = releasesUrl;
+      pillEl.title = tip;
+      pillEl.textContent = state.lang === 'en' ? `⬆️ New: ${latest}` : `⬆️ Новая: ${latest}`;
+      pillEl.style.display = 'inline-flex';
+    }
+  } else {
+    verEl.title = state.lang === 'en'
+      ? `Current version: ${displayVer}`
+      : `Текущая версия: ${displayVer}`;
+    if (pillEl) {
+      pillEl.style.display = 'none';
+    }
   }
 }
 
@@ -810,7 +950,7 @@ function updateAccountUI() {
   }
 }
 
-// Handle Login (standard path: GSA -> native/fast -> MZFinance)
+// Handle Login
 async function handleLogin(e) {
   e.preventDefault();
   const email = document.getElementById('login-email').value.trim();
@@ -829,28 +969,7 @@ async function handleLogin(e) {
   await submitLogin('/api/auth/login', email, password, '', submitBtn, originalHtml);
 }
 
-// Handle Test Login (macOS-only diagnostic: GSA -> MZFinance directly)
-async function handleTestLogin(e) {
-  e.preventDefault();
-  const email = document.getElementById('login-email').value.trim();
-  const password = document.getElementById('login-password').value;
-  const submitBtn = document.getElementById('login-test-btn');
-
-  if (!email || !password) {
-    showToast('Заполните Email и Пароль', 'error');
-    return;
-  }
-
-  const originalHtml = submitBtn.innerHTML;
-  submitBtn.disabled = true;
-  submitBtn.textContent = 'Авторизация (MZFinance)...';
-
-  await submitLogin('/api/auth/login/mzfinance', email, password, '', submitBtn, originalHtml);
-}
-
-// Shared login submission for both the standard and the test (MZFinance) paths.
-// Remembering the endpoint in lastPendingLogin lets the 2FA retry reuse the
-// exact same flow that was in progress.
+// Login submission helper (reused for 2FA retry).
 async function submitLogin(endpoint, email, password, authCode, submitBtn, originalHtml) {
   try {
     const res = await fetch(endpoint, {
@@ -1127,6 +1246,7 @@ function createAppCard(app, platform) {
   const iconUrl = app.artworkUrl512 || app.artworkUrl100 || app.artworkUrl60;
   const priceText = app.price === 0 || !app.price ? (i18n[state.lang]?.free_price || 'Бесплатно') : (app.formattedPrice || `$${app.price}`);
   const dict = i18n[state.lang] || i18n.ru;
+  const dlBtnText = platformOSLabel(platform) === 'macOS' ? (dict.download_btn_pkg || dict.download_btn) : dict.download_btn;
 
   card.innerHTML = `
     <div class="app-main-info">
@@ -1162,12 +1282,12 @@ function createAppCard(app, platform) {
 
     <div class="app-actions">
       <button class="btn btn-primary" onclick="startAppDownload('${app.bundleId}', ${app.trackId}, '${platform}', '${app.trackName.replace(/'/g, "\\'")}', '${iconUrl || ''}')">
-        ⬇️ ${dict.download_btn}
+        ⬇️ ${dlBtnText}
       </button>
-      <button class="btn btn-outline" onclick="purchaseApp('${app.bundleId}')" title="Получить лицензию">
+      <button class="btn btn-outline" onclick="purchaseApp('${app.bundleId}', '${platform}')" title="Получить лицензию">
         🛒 ${dict.license_btn}
       </button>
-      <button class="btn btn-outline" onclick="viewAppVersions('${app.bundleId}', ${app.trackId}, '${app.trackName.replace(/'/g, "\\'")}')" title="История версий">
+      <button class="btn btn-outline" onclick="viewAppVersions('${app.bundleId}', ${app.trackId}, '${app.trackName.replace(/'/g, "\\'")}', '${platform}')" title="История версий">
         🕒 ${dict.versions_btn}
       </button>
     </div>
@@ -1185,6 +1305,7 @@ function createRemovedAppCard(app, platform) {
   card.className = 'app-card removed-app-card';
 
   const dict = i18n[state.lang] || i18n.ru;
+  const dlBtnText = platformOSLabel(platform) === 'macOS' ? (dict.download_btn_pkg || dict.download_btn) : dict.download_btn;
   const name = app.name || String(app.appId);
   const nameEsc = String(name).replace(/'/g, "\\'");
   const appId = Number(app.appId) || 0;
@@ -1214,9 +1335,9 @@ function createRemovedAppCard(app, platform) {
 
     <div class="app-actions">
       <button class="btn btn-primary" onclick="startAppDownload('', ${appId}, '${platform}', '${nameEsc}', '')">
-        ⬇️ ${dict.download_btn}
+        ⬇️ ${dlBtnText}
       </button>
-      <button class="btn btn-outline" onclick="viewAppVersions('', ${appId}, '${nameEsc}')" title="История версий">
+      <button class="btn btn-outline" onclick="viewAppVersions('', ${appId}, '${nameEsc}', '${platform}')" title="История версий">
         🕒 ${dict.versions_btn}
       </button>
     </div>
@@ -1226,7 +1347,7 @@ function createRemovedAppCard(app, platform) {
 }
 
 // Purchase App License
-async function purchaseApp(bundleId) {
+async function purchaseApp(bundleId, platform = 'iphone') {
   if (!state.isAuthenticated) {
     showToast('Сначала необходимо войти в Apple ID во вкладке "Аккаунт"', 'error');
     switchTab('account');
@@ -1239,7 +1360,7 @@ async function purchaseApp(bundleId) {
     const res = await fetch('/api/purchase', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bundleId })
+      body: JSON.stringify({ bundleId, platform })
     });
     const data = await res.json();
 
@@ -1275,7 +1396,7 @@ async function startAppDownload(bundleId, appId, platform, appName, iconUrl, ver
   state.isDownloading = true;
 
   // Open download progress modal
-  openDownloadModal(appName, bundleId, iconUrl);
+  openDownloadModal(appName, bundleId, iconUrl, platform);
 
   try {
     const res = await fetch('/api/download', {
@@ -1300,14 +1421,24 @@ async function startAppDownload(bundleId, appId, platform, appName, iconUrl, ver
     }
 
     state.currentJobId = data.jobId;
-    trackDownloadProgress(data.jobId, appName, bundleId, iconUrl);
+    trackDownloadProgress(data.jobId, appName, bundleId, iconUrl, platform);
   } catch (err) {
     state.isDownloading = false;
     updateDownloadModalError('Ошибка запуска загрузки');
   }
 }
 
-function openDownloadModal(title, subtitle, iconUrl) {
+function updateDownloadModalStepLabels(platform) {
+  const isMac = platformOSLabel(platform) === 'macOS';
+  const stepDownloadText = document.querySelector('#step-download .step-text');
+  if (stepDownloadText) {
+    const key = isMac ? 'step_download_pkg' : 'step_download';
+    stepDownloadText.setAttribute('data-i18n', key);
+    stepDownloadText.textContent = batchText(key);
+  }
+}
+
+function openDownloadModal(title, subtitle, iconUrl, platform = 'iphone') {
   const modal = document.getElementById('download-modal');
   const titleEl = document.getElementById('dl-modal-title');
   const subEl = document.getElementById('dl-modal-subtitle');
@@ -1339,6 +1470,7 @@ function openDownloadModal(title, subtitle, iconUrl) {
 
   // Reset steps
   document.querySelectorAll('.dl-step').forEach(step => step.className = 'dl-step');
+  updateDownloadModalStepLabels(platform);
   const stepLicense = document.getElementById('step-license');
   if (stepLicense) stepLicense.classList.add('active');
 
@@ -1378,7 +1510,7 @@ function closeDownloadModal() {
   if (modal) modal.style.display = 'none';
 }
 
-function trackDownloadProgress(jobId, appName, bundleId, iconUrl) {
+function trackDownloadProgress(jobId, appName, bundleId, iconUrl, platform = 'iphone') {
   const fillEl = document.getElementById('dl-progress-bar-fill');
   const percentEl = document.getElementById('dl-progress-percent');
   const bytesEl = document.getElementById('dl-progress-bytes');
@@ -1402,6 +1534,10 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl) {
         handling = false;
         return;
       }
+
+      const effectivePlatform = job.platform || platform || 'iphone';
+      const isMac = platformOSLabel(effectivePlatform) === 'macOS' || /\.pkg$/i.test(job.outputPath || '');
+      updateDownloadModalStepLabels(isMac ? 'macos' : effectivePlatform);
 
       // Update state
       state.activeDownloads.set(jobId, job);
@@ -1443,7 +1579,7 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl) {
 
         document.getElementById('step-sinf')?.classList.add('completed');
         document.getElementById('step-complete')?.classList.add('completed');
-        if (subEl) subEl.textContent = 'Пакет .IPA успешно скачан!';
+        if (subEl) subEl.textContent = batchText(isMac ? 'dl_completed_pkg' : 'dl_completed_ipa');
         if (fillEl) fillEl.style.width = '100%';
         if (percentEl) percentEl.textContent = '100%';
         if (openBtn) {
@@ -1527,11 +1663,17 @@ async function handleDirectDownload(e) {
 // Version History Tab
 // ==========================================
 
-async function viewAppVersions(bundleId, appId, appName) {
+async function viewAppVersions(bundleId, appId, appName, platform = 'iphone') {
   switchTab('versions');
-  // Remember the app name so it can be shown in the version-history header
-  // even before /api/versions resolves it.
+  // Remember the app name and numeric ID so /api/versions and metadata batches
+  // do not need to re-run Lookup when opened from an existing app card.
   state.lastVersionsName = appName || '';
+  state.lastVersionsAppId = Number(appId) || 0;
+  state.lastVersionsInput = String(bundleId || appId || '').trim();
+  const platformSelect = document.getElementById('versions-platform');
+  if (platformSelect && platform) {
+    platformSelect.value = platform;
+  }
   const input = document.getElementById('versions-input');
   if (input) {
     input.value = bundleId || appId;
@@ -1541,16 +1683,16 @@ async function viewAppVersions(bundleId, appId, appName) {
 
 // Fetches the Display Version and Release Date for a single build and fills
 // the corresponding cells in the version history table.
-async function fetchVersionMetadata(bundleId, appId, versionId) {
+async function fetchVersionMetadata(bundleId, appId, versionId, platform = 'iphone') {
   try {
-    const res = await fetch(`/api/version-metadata?bundleId=${encodeURIComponent(bundleId)}&appId=${encodeURIComponent(appId)}&versionId=${encodeURIComponent(versionId)}`);
+    const res = await fetch(`/api/version-metadata?bundleId=${encodeURIComponent(bundleId)}&appId=${encodeURIComponent(appId)}&versionId=${encodeURIComponent(versionId)}&platform=${encodeURIComponent(platform)}`);
     const data = await res.json();
     const dispEl = document.getElementById(`disp-ver-${versionId}`);
     const dateEl = document.getElementById(`date-ver-${versionId}`);
     if (!dispEl && !dateEl) return;
 
     if (data.success) {
-      if (dispEl) dispEl.innerHTML = renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion);
+      if (dispEl) dispEl.innerHTML = renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion, platform);
       if (dateEl) dateEl.textContent = data.releaseDate || '—';
     } else {
       if (dispEl) dispEl.textContent = '—';
@@ -1564,15 +1706,67 @@ async function fetchVersionMetadata(bundleId, appId, versionId) {
   }
 }
 
+function platformOSLabel(platform) {
+  switch (String(platform || '').toLowerCase()) {
+    case 'ipad':
+    case 'ipados':
+      return 'iPadOS';
+    case 'appletv':
+    case 'apple-tv':
+    case 'tvos':
+      return 'tvOS';
+    case 'watch':
+    case 'watchos':
+    case 'applewatch':
+    case 'apple-watch':
+      return 'watchOS';
+    case 'vision':
+    case 'visionos':
+    case 'visionpro':
+    case 'xros':
+    case 'realitydevice':
+      return 'visionOS';
+    case 'mac':
+    case 'macos':
+    case 'osx':
+      return 'macOS';
+    default:
+      return 'iOS';
+  }
+}
+
+function parseMinimumOSBadge(minimumOSVersion, fallbackPlatform = 'iphone') {
+  const raw = String(minimumOSVersion || '').trim();
+  if (!raw) return null;
+  const osMap = {
+    ios: { label: 'iOS', platform: 'iphone' },
+    ipados: { label: 'iPadOS', platform: 'ipad' },
+    tvos: { label: 'tvOS', platform: 'appletv' },
+    watchos: { label: 'watchOS', platform: 'watchos' },
+    visionos: { label: 'visionOS', platform: 'visionos' },
+    macos: { label: 'macOS', platform: 'macos' }
+  };
+  const m = raw.match(/^(iOS|iPadOS|tvOS|watchOS|visionOS|macOS)(?:\s+(.+))?$/i);
+  if (m) {
+    const hit = osMap[m[1].toLowerCase()];
+    if (hit) {
+      return { osLabel: hit.label, minOS: (m[2] || '').trim(), platform: hit.platform };
+    }
+  }
+  return { osLabel: platformOSLabel(fallbackPlatform), minOS: raw, platform: fallbackPlatform || 'iphone' };
+}
+
 // Builds the inner HTML of a "Display Version" table cell: the app version and,
-// when known, a small "iOS x.y" badge showing the minimum supported iOS
-// version (read from the IPA Info.plist MinimumOSVersion key).
-function renderDisplayVersionCell(displayVersion, minimumOSVersion) {
+// when known, a small OS badge showing the minimum supported OS version from
+// the selected build's Info.plist / package metadata.
+function renderDisplayVersionCell(displayVersion, minimumOSVersion, platform = 'iphone') {
   const version = batchEscapeHtml(displayVersion || '—');
-  const minOS = (minimumOSVersion || '').trim();
-  if (!minOS) return version;
-  const title = batchText('min_ios_badge_title');
-  return `${version} <span class="badge badge-ios" title="${batchEscapeHtml(title)}">iOS ${batchEscapeHtml(minOS)}</span>`;
+  const parsed = parseMinimumOSBadge(minimumOSVersion, platform);
+  if (!parsed) return version;
+  const osLabel = parsed.osLabel;
+  const badgeText = parsed.minOS ? `${osLabel} ${parsed.minOS}` : osLabel;
+  const title = batchText('min_ios_badge_title').replace(/\biOS\b/g, osLabel);
+  return `${version} <span class="badge badge-ios" title="${batchEscapeHtml(title)}">${batchEscapeHtml(badgeText)}</span>`;
 }
 
 async function handleFetchVersions(e) {
@@ -1580,14 +1774,19 @@ async function handleFetchVersions(e) {
   const rawInput = document.getElementById('versions-input').value.trim();
   if (!rawInput) return;
 
-  // Reset lastVersionsName to avoid showing name from previous search
-  state.lastVersionsName = '';
-
   const parsed = parseAppStoreUrl(rawInput);
   const isNumeric = /^\d+$/.test(parsed);
 
+  const matchedPreset = state.lastVersionsInput && (rawInput === state.lastVersionsInput || parsed === state.lastVersionsInput);
+  const presetName = matchedPreset ? (state.lastVersionsName || '') : '';
+  const presetAppId = matchedPreset ? (Number(state.lastVersionsAppId) || 0) : 0;
+  state.lastVersionsName = '';
+  state.lastVersionsAppId = 0;
+  state.lastVersionsInput = '';
+
   const bundleId = isNumeric ? '' : parsed;
-  const appId = isNumeric ? parsed : '';
+  const appId = isNumeric ? parsed : (presetAppId ? String(presetAppId) : '');
+  const platform = document.getElementById('versions-platform')?.value || 'iphone';
 
   const loading = document.getElementById('versions-loading');
   const container = document.getElementById('versions-container');
@@ -1600,7 +1799,7 @@ async function handleFetchVersions(e) {
   container.style.display = 'none';
 
   try {
-    const res = await fetch(`/api/versions?bundleId=${encodeURIComponent(bundleId)}&appId=${encodeURIComponent(appId)}`);
+    const res = await fetch(`/api/versions?bundleId=${encodeURIComponent(bundleId)}&appId=${encodeURIComponent(appId)}&platform=${encodeURIComponent(platform)}`);
     const data = await res.json();
     loading.style.display = 'none';
 
@@ -1610,7 +1809,8 @@ async function handleFetchVersions(e) {
     }
 
     const versions = data.externalVersionIdentifiers || [];
-    const appName = data.name || state.lastVersionsName || '';
+    const appName = data.name || presetName || '';
+    const resolvedAppId = Number(data.appID || appId) || 0;
     titleEl.textContent = appName || data.bundleID || parsed;
     bundleEl.textContent = `Bundle ID: ${data.bundleID || parsed}`;
     badgeEl.textContent = `${versions.length} версий`;
@@ -1621,8 +1821,9 @@ async function handleFetchVersions(e) {
       page: 1,
       ctx: {
         bundleId: data.bundleID || bundleId,
-        appId: Number(appId) || 0,
-        appName: appName || data.bundleID || parsed
+        appId: resolvedAppId,
+        appName: appName || data.bundleID || parsed,
+        platform
       }
     };
 
@@ -1732,30 +1933,46 @@ function buildVersionsPager(info, onPage, onSize) {
 // not exceed versionMetadataBatchLimit in cmd/gui.go.
 // `fill(vId, data|null)` writes one result into the table; `isStale()` lets
 // the caller abort when the user already moved to another page.
-const METADATA_BATCH_SIZE = 10;
+const METADATA_BATCH_SIZE = 5;
+const METADATA_CONCURRENCY = 2;
 
 async function fillVersionMetadata(ids, params, fill, isStale) {
+  const chunks = [];
   for (let i = 0; i < ids.length; i += METADATA_BATCH_SIZE) {
-    if (isStale && isStale()) return;
-    const chunk = ids.slice(i, i + METADATA_BATCH_SIZE);
-    let results = {};
-    try {
-      const res = await fetch('/api/version-metadata/batch', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...params, versionIds: chunk }),
-      });
-      const data = await res.json();
-      results = (data && data.results) || {};
-    } catch (err) {
-      results = {};
-    }
-    if (isStale && isStale()) return;
-    chunk.forEach(vId => {
-      const item = results[vId];
-      fill(vId, item && item.success ? item : null);
-    });
+    chunks.push(ids.slice(i, i + METADATA_BATCH_SIZE));
   }
+
+  let nextIdx = 0;
+  const worker = async () => {
+    while (nextIdx < chunks.length) {
+      if (isStale && isStale()) return;
+      const chunk = chunks[nextIdx++];
+      let results = {};
+      try {
+        const res = await fetch('/api/version-metadata/batch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...params, versionIds: chunk }),
+        });
+        const data = await res.json();
+        results = (data && data.results) || {};
+      } catch (err) {
+        results = {};
+      }
+      if (isStale && isStale()) return;
+      chunk.forEach(vId => {
+        const item = results[vId];
+        fill(vId, item && item.success ? item : null);
+      });
+    }
+  };
+
+  const workers = [];
+  const workerCount = Math.min(METADATA_CONCURRENCY, chunks.length);
+  for (let w = 0; w < workerCount; w++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
 }
 
 // Renders the current page of the Version History tab.
@@ -1769,7 +1986,7 @@ function renderVersionsPage() {
   const info = versionsSlice(ps.ids, ps.page);
   ps.page = info.page;
   const token = (ps.renderToken = (ps.renderToken || 0) + 1);
-  const { bundleId, appId, appName } = ps.ctx;
+  const { bundleId, appId, appName, platform = 'iphone' } = ps.ctx;
   const appNameEsc = (appName || '').replace(/'/g, "\\'");
 
   tableBody.innerHTML = '';
@@ -1781,7 +1998,7 @@ function renderVersionsPage() {
       <td id="disp-ver-${vId}">…</td>
       <td id="date-ver-${vId}">…</td>
       <td>
-        <button class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleId}', ${appId}, 'iphone', '${appNameEsc || bundleId}', '', '${vId}')">
+        <button id="dl-ver-${vId}" class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleId}', ${appId}, '${platform}', '${appNameEsc || bundleId}', '', '${vId}')">
           ⬇️ ${batchText('batch_download_single')}
         </button>
       </td>
@@ -1799,12 +2016,19 @@ function renderVersionsPage() {
 
   fillVersionMetadata(
     info.ids,
-    { bundleId: bundleId || '', appId: Number(appId) || 0 },
+    { bundleId: bundleId || '', appId: Number(appId) || 0, platform },
     (vId, data) => {
       const dispEl = document.getElementById(`disp-ver-${vId}`);
       const dateEl = document.getElementById(`date-ver-${vId}`);
-      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion) : '—';
+      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion, platform) : '—';
       if (dateEl) dateEl.textContent = data ? (data.releaseDate || '—') : '—';
+      if (data && data.minimumOSVersion) {
+        const parsedOS = parseMinimumOSBadge(data.minimumOSVersion, platform);
+        const dlBtn = document.getElementById(`dl-ver-${vId}`);
+        if (parsedOS && dlBtn && parsedOS.platform) {
+          dlBtn.setAttribute('onclick', `startAppDownload('${bundleId}', ${appId}, '${parsedOS.platform}', '${appNameEsc || bundleId}', '', '${vId}')`);
+        }
+      }
     },
     () => ps.renderToken !== token
   );
@@ -1906,7 +2130,9 @@ function normalizePurchaseItem(item) {
     bundleId: item.bundleId ?? item.bundleID ?? item.bundleIdentifier ?? '',
     name: item.name ?? item.trackName ?? '',
     version: item.version ?? item.displayVersion ?? '',
-    purchaseDate: item.purchaseDate ?? item.date ?? ''
+    tvosVersion: item.tvosVersion ?? '',
+    purchaseDate: item.purchaseDate ?? item.date ?? '',
+    hiddenFromStorefront: !!(item.hiddenFromStorefront || item.delisted)
   };
 }
 
@@ -1942,15 +2168,28 @@ function formatPurchaseDate(value) {
   });
 }
 
+function purchaseAppOSLabels(a) {
+  const validPlatforms = Array.isArray(a?.platforms)
+    ? a.platforms.filter(pl => pl && String(pl).toLowerCase() !== 'unknown')
+    : [];
+  return [...new Set((validPlatforms.length ? validPlatforms : ['iphone']).map(pl => platformOSLabel(pl)))];
+}
+
 function filteredPurchases() {
   const p = state.purchases;
   const q = (document.getElementById('purchases-filter')?.value || '').trim().toLowerCase();
-  if (!q) return p.apps;
-  return p.apps.filter(a =>
-    (a.name || '').toLowerCase().includes(q) ||
-    (a.bundleId || '').toLowerCase().includes(q) ||
-    String(a.appId || '').includes(q)
-  );
+  const osFilter = document.getElementById('purchases-os-filter')?.value || 'all';
+  const onlyHidden = !!document.getElementById('purchases-only-hidden')?.checked;
+  return p.apps.filter(a => {
+    if (onlyHidden && !a.hiddenFromStorefront) return false;
+    if (osFilter && osFilter !== 'all' && !purchaseAppOSLabels(a).includes(osFilter)) return false;
+    if (!q) return true;
+    return (
+      (a.name || '').toLowerCase().includes(q) ||
+      (a.bundleId || '').toLowerCase().includes(q) ||
+      String(a.appId || '').includes(q)
+    );
+  });
 }
 
 function renderPurchases() {
@@ -1992,8 +2231,18 @@ function renderPurchases() {
       let txt = batchText('purchases_updated_at', { time: formatPurchaseDate(p.fetchedAt.toISOString()) });
       if (p.fromCache) txt += ` (${batchText('purchases_from_cache')})`;
       els.updated.textContent = txt;
+      const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+      const isStale = (Date.now() - p.fetchedAt.getTime()) > sevenDaysMs;
+      els.updated.classList.toggle('is-stale', isStale);
+      els.updated.title = isStale
+        ? (state.lang === 'en'
+            ? 'Purchase history cache has not been updated for more than 7 days'
+            : 'Кэш истории покупок не обновлялся более 7 дней')
+        : '';
     } else {
       els.updated.textContent = '';
+      els.updated.classList.remove('is-stale');
+      els.updated.title = '';
     }
   }
 
@@ -2027,6 +2276,22 @@ function renderPurchases() {
   }
 
   const list = filteredPurchases();
+  const osFilter = document.getElementById('purchases-os-filter')?.value || 'all';
+  const hiddenTotal = p.apps.filter(a => {
+    if (!a.hiddenFromStorefront) return false;
+    if (osFilter && osFilter !== 'all' && !purchaseAppOSLabels(a).includes(osFilter)) return false;
+    return true;
+  }).length;
+  const hiddenCountEl = document.getElementById('purchases-hidden-count');
+  if (hiddenCountEl) {
+    hiddenCountEl.textContent = String(hiddenTotal);
+  }
+  const hiddenWrapEl = document.getElementById('purchases-hidden-toggle-wrap');
+  if (hiddenWrapEl) {
+    hiddenWrapEl.title = state.lang === 'en'
+      ? 'Show only apps hidden or removed from the regional App Store storefront'
+      : 'Показать только приложения, скрытые или удалённые из региональной витрины App Store';
+  }
   if (els.countBadge) {
     els.countBadge.textContent = list.length === p.apps.length
       ? `${p.apps.length}`
@@ -2044,6 +2309,11 @@ function renderPurchases() {
   const dlLabel = batchEscapeHtml(batchText('purchases_download'));
   const verLabel = batchEscapeHtml(batchText('purchases_versions'));
   const unknown = batchText('purchases_unknown_app');
+  const hiddenTip = batchEscapeHtml(
+    state.lang === 'en'
+      ? 'Hidden or removed from the regional App Store storefront'
+      : 'Скрыто или удалено из региональной витрины App Store'
+  );
 
   const rows = list.map(a => {
     const name = a.name || unknown;
@@ -2052,17 +2322,37 @@ function renderPurchases() {
     const nameJs = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const bundleJs = (a.bundleId || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     const appId = Number(a.appId) || 0;
-    const versionCell = a.version ? ` <span class="badge badge-version">${batchEscapeHtml(a.version)}</span>` : '';
+    const validPlatforms = Array.isArray(a.platforms)
+      ? a.platforms.filter(pl => pl && String(pl).toLowerCase() !== 'unknown')
+      : [];
+    const matchedPlatform = (osFilter && osFilter !== 'all')
+      ? validPlatforms.find(pl => platformOSLabel(pl) === osFilter)
+      : '';
+    const itemPlatform = matchedPlatform || validPlatforms[0] || 'iphone';
+    const osLabels = purchaseAppOSLabels(a);
+    const displayVer = (osFilter === 'tvOS' || (osLabels.length === 1 && osLabels[0] === 'tvOS'))
+      ? (a.tvosVersion || a.version)
+      : (a.version || a.tvosVersion);
+    const osBadgesCell = osLabels
+      .map(lbl => {
+        if (lbl === 'tvOS' && osFilter !== 'tvOS' && a.tvosVersion && a.version && a.tvosVersion !== a.version) {
+          return ` <span class="badge badge-ios">${batchEscapeHtml(`tvOS ${a.tvosVersion}`)}</span>`;
+        }
+        return ` <span class="badge badge-ios">${batchEscapeHtml(lbl)}</span>`;
+      })
+      .join('');
+    const versionCell = displayVer ? ` <span class="badge badge-version">${batchEscapeHtml(displayVer)}</span>` : '';
+    const hiddenCell = a.hiddenFromStorefront ? `<span class="badge-hidden-storefront" title="${hiddenTip}">!</span>` : '';
     return `
       <tr>
-        <td>${nameEsc}${versionCell}</td>
+        <td>${nameEsc}${hiddenCell}${versionCell}${osBadgesCell}</td>
         <td><code>${bundleEsc || '—'}</code></td>
         <td><code>${appId || '—'}</code></td>
         <td>${formatPurchaseDate(a.purchaseDate)}</td>
         <td>
           <div class="purchases-row-actions">
-            <button class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleJs}', ${appId}, 'iphone', '${nameJs}', '')">⬇️ ${dlLabel}</button>
-            <button class="btn btn-outline btn-sm" onclick="viewAppVersions('${bundleJs}', ${appId}, '${nameJs}')">🕒 ${verLabel}</button>
+            <button class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleJs}', ${appId}, '${itemPlatform}', '${nameJs}', '')">⬇️ ${dlLabel}</button>
+            <button class="btn btn-outline btn-sm" onclick="viewAppVersions('${bundleJs}', ${appId}, '${nameJs}', '${itemPlatform}')">🕒 ${verLabel}</button>
           </div>
         </td>
       </tr>`;
@@ -2072,8 +2362,8 @@ function renderPurchases() {
 }
 
 // Saves the (filtered) purchase list in the same "Name: AppID" format the
-// mass-download tab accepts, so it can be fed straight back into it.
-function exportPurchasesList() {
+// mass-download tab accepts, directly to the current working folder.
+async function exportPurchasesList() {
   const list = filteredPurchases();
   if (!list.length) {
     showToast(batchText('purchases_nothing_to_export'), 'error');
@@ -2084,16 +2374,24 @@ function exportPurchasesList() {
     .map(a => `${(a.name || a.bundleId || a.appId)}: ${a.appId}`)
     .join('\n') + '\n';
 
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
   const who = state.account ? (state.account.email || 'apple').replace(/[^\w.@-]+/g, '_') : 'apple';
-  a.download = `purchases-${who}.txt`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
+  const filename = `purchases-${who}.txt`;
+
+  try {
+    const res = await fetch('/api/save-list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, content })
+    });
+    const data = await res.json();
+    if (data && data.success) {
+      showToast(batchText('purchases_saved_toast', { path: data.path || filename }), 'success');
+      return;
+    }
+    showToast((data && data.message) || batchText('purchases_save_failed'), 'error');
+  } catch (err) {
+    showToast(batchText('purchases_save_failed'), 'error');
+  }
 }
 
 // ==========================================
@@ -2644,7 +2942,7 @@ async function loadBatchVersions(item, platform, outputPath) {
     // Fall back to the version-history endpoint when the check response did
     // not carry the build list.
     try {
-      const res = await fetch(`/api/versions?appId=${item.appId}`);
+      const res = await fetch(`/api/versions?appId=${item.appId}&platform=${encodeURIComponent(platform || 'iphone')}`);
       const data = await res.json();
       if (data.success && (data.externalVersionIdentifiers || []).length > 0) {
         ids = data.externalVersionIdentifiers;
@@ -2658,7 +2956,7 @@ async function loadBatchVersions(item, platform, outputPath) {
   }
 
   const reversed = [...ids].reverse();
-  const pageState = { page: 1, renderToken: 0 };
+  const pageState = { page: 1, renderToken: 0, platform: platform || 'iphone' };
 
   // If a specific build was picked earlier, open the page that contains it.
   const picked = batchState.selectedVersions[item.appId];
@@ -2733,12 +3031,12 @@ function renderBatchVersionsPage(container, item, reversed, pageState) {
 
   fillVersionMetadata(
     info.ids,
-    { appId: Number(item.appId) || 0 },
+    { appId: Number(item.appId) || 0, platform: pageState.platform || 'iphone' },
     (vId, data) => {
       // Only the display version is filled in: unlike the version history on
       // its own tab, the batch table has no release-date column.
       const dispEl = document.getElementById(`batch-disp-${item.appId}-${vId}`);
-      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion) : '—';
+      if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion, pageState.platform) : '—';
     },
     () => pageState.renderToken !== token
   );
@@ -2775,7 +3073,7 @@ function onBatchVersionPicked(appId, versionId, checked) {
 // Saves the list of apps that passed the Apple ID check (status "available")
 // back to a text file in the same "Name: AppID" format as Apps_ID_List.txt,
 // so the remaining apps can be reused later.
-function saveBatchList() {
+async function saveBatchList() {
   const results = batchState.results;
   if (!results) return;
 
@@ -2789,17 +3087,22 @@ function saveBatchList() {
     .map(i => `${i.name || i.appId}: ${i.appId}`)
     .join('\n') + '\n';
 
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'apps_list.txt';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-
-  showToast(batchText('batch_save_toast'), 'success');
+  const filename = 'apps_list.txt';
+  try {
+    const res = await fetch('/api/save-list', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename, content })
+    });
+    const data = await res.json();
+    if (data && data.success) {
+      showToast(batchText('purchases_saved_toast', { path: data.path || filename }), 'success');
+      return;
+    }
+    showToast((data && data.message) || batchText('purchases_save_failed'), 'error');
+  } catch (err) {
+    showToast(batchText('purchases_save_failed'), 'error');
+  }
 }
 
 function batchSelectAll(select) {

@@ -4,17 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Демо ipatool webGUI — скачивание IPA из App Store</title>
-  <meta name="description" content="Интерактивная демонстрация ipatool webGUI на тестовых данных: поиск, скачивание и установка IPA-файлов из App Store (iOS, iPadOS, tvOS). Исходный код, сборки и документация — в репозитории на GitHub.">
+  <meta name="description" content="Интерактивная демонстрация ipatool webGUI на тестовых данных: поиск, скачивание и установка IPA-файлов из App Store (iOS, iPadOS, tvOS, watchOS, visionOS, macOS). Исходный код, сборки и документация — в репозитории на GitHub.">
   <!-- The repository is the canonical destination: this page is only a demo
        of it, so all ranking signals are consolidated on the repo URL. It must
        stay indexable for the canonical hint to be seen at all. -->
-  <link rel="canonical" href="https://github.com/pdx15/ipatool-sapfix-webGUI">
+  <link rel="canonical" href="https://github.com/pdx15/ipatool-webGUI">
   <meta name="robots" content="index, follow">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Демо ipatool webGUI — скачивание IPA из App Store">
   <meta property="og:description" content="Интерактивная демонстрация ipatool webGUI на тестовых данных. Исходный код и сборки — на GitHub.">
-  <meta property="og:url" content="https://pdx15.github.io/ipatool-sapfix-webGUI/">
-  <meta property="og:image" content="https://pdx15.github.io/ipatool-sapfix-webGUI/assets/social-preview.png">
+  <meta property="og:url" content="https://pdx15.github.io/ipatool-webGUI/">
+  <meta property="og:image" content="https://pdx15.github.io/ipatool-webGUI/assets/social-preview.png">
   <meta name="twitter:card" content="summary_large_image">
   <link rel="stylesheet" href="assets/style.css">
 </head>
@@ -23,7 +23,7 @@
     ДЕМО-РЕЖИМ · Данные тестовые, реальные приложения не скачиваются ·
     <a
       class="demo-banner-link"
-      href="https://github.com/pdx15/ipatool-sapfix-webGUI"
+      href="https://github.com/pdx15/ipatool-webGUI"
       target="_blank"
       rel="noopener noreferrer"
       title="ipatool webGUI на GitHub: исходный код, сборки и документация"
@@ -38,7 +38,7 @@
         </svg>
       </div>
       <div class="brand-text">
-        <span class="brand-title">ipatool <span class="badge-gui">webGUI</span></span>
+        <span class="brand-title">ipatool <span class="badge-gui">webGUI</span><a id="brand-version" class="brand-version" href="https://github.com/pdx15/ipatool-webGUI/releases" target="_blank" rel="noopener noreferrer" style="display:none"></a><a id="brand-update-pill" class="brand-update-pill" href="https://github.com/pdx15/ipatool-webGUI/releases" target="_blank" rel="noopener noreferrer" style="display:none"></a></span>
         <span class="brand-subtitle" data-i18n="app_subtitle">App Store IPA Downloader для Windows</span>
       </div>
     </div>
@@ -189,6 +189,9 @@
                 <option value="iphone" selected>iPhone (iOS)</option>
                 <option value="ipad">iPad (iPadOS)</option>
                 <option value="appletv">Apple TV (tvOS)</option>
+                <option value="watchos">Apple Watch (watchOS)</option>
+                <option value="visionos">Apple Vision Pro (visionOS)</option>
+                <option value="macos">Mac (macOS)</option>
               </select>
             </div>
 
@@ -300,6 +303,9 @@
                 <option value="iphone" selected>iPhone (iOS)</option>
                 <option value="ipad">iPad (iPadOS)</option>
                 <option value="appletv">Apple TV (tvOS)</option>
+                <option value="watchos">Apple Watch (watchOS)</option>
+                <option value="visionos">Apple Vision Pro (visionOS)</option>
+                <option value="macos">Mac (macOS)</option>
               </select>
             </div>
 
@@ -321,9 +327,10 @@
                 type="text" 
                 id="direct-output-path" 
                 class="input-control" 
-                placeholder="По умолчанию: текущая папка или Загрузки"
+                data-i18n-placeholder="output_folder_placeholder"
+                placeholder="По умолчанию: папка apps в текущей папке"
               >
-              <button type="button" class="btn btn-outline" onclick="openOutputFolder()" title="Открыть текущую папку">
+              <button type="button" class="btn btn-outline" onclick="openOutputFolder(document.getElementById('direct-output-path').value.trim())" title="Открыть папку сохранения">
                 📂 <span data-i18n="open_folder_btn">Открыть</span>
               </button>
             </div>
@@ -400,6 +407,9 @@
                 <option value="iphone" selected>iPhone (iOS)</option>
                 <option value="ipad">iPad (iPadOS)</option>
                 <option value="appletv">Apple TV (tvOS)</option>
+                <option value="watchos">Apple Watch (watchOS)</option>
+                <option value="visionos">Apple Vision Pro (visionOS)</option>
+                <option value="macos">Mac (macOS)</option>
               </select>
             </div>
 
@@ -410,9 +420,10 @@
                   type="text"
                   id="batch-output-path"
                   class="input-control"
-                  placeholder="По умолчанию: текущая папка или Загрузки"
+                  data-i18n-placeholder="output_folder_placeholder"
+                  placeholder="По умолчанию: папка apps в текущей папке"
                 >
-                <button type="button" class="btn btn-outline" onclick="openOutputFolder()" title="Открыть текущую папку">
+                <button type="button" class="btn btn-outline" onclick="openOutputFolder(document.getElementById('batch-output-path').value.trim())" title="Открыть папку сохранения">
                   📂 <span data-i18n="open_folder_btn">Открыть</span>
                 </button>
               </div>
@@ -573,9 +584,22 @@
               required
             >
           </div>
-          <button type="submit" id="versions-btn" class="btn btn-primary">
-            <span data-i18n="fetch_versions_btn">Получить версии</span>
-          </button>
+          <div class="search-options">
+            <div class="option-group">
+              <label for="versions-platform" data-i18n="platform_label">Платформа:</label>
+              <select id="versions-platform" class="select-control">
+                <option value="iphone" selected>iPhone (iOS)</option>
+                <option value="ipad">iPad (iPadOS)</option>
+                <option value="appletv">Apple TV (tvOS)</option>
+                <option value="watchos">Apple Watch (watchOS)</option>
+                <option value="visionos">Apple Vision Pro (visionOS)</option>
+                <option value="macos">Mac (macOS)</option>
+              </select>
+            </div>
+            <button type="submit" id="versions-btn" class="btn btn-primary">
+              <span data-i18n="fetch_versions_btn">Получить версии</span>
+            </button>
+          </div>
         </form>
 
         <div id="versions-loading" class="state-container" style="display:none">
@@ -638,6 +662,27 @@
           <div class="search-input-wrapper">
             <input type="text" id="purchases-filter" data-i18n-placeholder="purchases_filter_placeholder" placeholder="Фильтр по названию, Bundle ID или App ID" oninput="renderPurchases()">
           </div>
+          <div class="option-group purchases-os-filter-group">
+            <label for="purchases-os-filter" data-i18n="purchases_os_label">ОС:</label>
+            <select id="purchases-os-filter" class="select-control" onchange="renderPurchases()">
+              <option value="all" data-i18n="purchases_os_all" selected>Все ОС</option>
+              <option value="iOS">iOS</option>
+              <option value="iPadOS">iPadOS</option>
+              <option value="macOS">macOS</option>
+              <option value="tvOS">tvOS</option>
+              <option value="watchOS">watchOS</option>
+              <option value="visionOS">visionOS</option>
+            </select>
+          </div>
+          <label class="purchases-hidden-toggle" id="purchases-hidden-toggle-wrap" title="Показать только приложения, скрытые или удалённые из региональной витрины App Store">
+            <input type="checkbox" id="purchases-only-hidden" onchange="renderPurchases()">
+            <span class="purchases-hidden-toggle-track"><span class="purchases-hidden-toggle-thumb"></span></span>
+            <span class="purchases-hidden-toggle-label">
+              <span class="badge-hidden-storefront">!</span>
+              <span data-i18n="purchases_only_hidden">Только скрытые</span>
+              <span id="purchases-hidden-count" class="purchases-hidden-count">0</span>
+            </span>
+          </label>
           <div class="purchases-toolbar-right">
             <span id="purchases-count-badge" class="badge">0</span>
             <button type="button" class="btn btn-outline btn-sm" onclick="exportPurchasesList()">
@@ -926,12 +971,6 @@
                 <button type="submit" id="login-submit-btn" class="btn btn-primary btn-lg full-width">
                   <span data-i18n="login_btn">Войти в Apple ID</span>
                 </button>
-                <!-- Alternative macOS-only login: GSA -> MZFinance (stable,
-                     bypasses the glitchy native/fast path). Visible only on macOS. -->
-                <button type="button" id="login-test-btn" class="btn btn-outline btn-lg full-width" style="display:none" onclick="handleTestLogin(event)">
-                  <span data-i18n="login_test_btn">Войти в Apple ID SKIP</span>
-                </button>
-                <small class="form-hint" id="login-test-hint" style="display:none" data-i18n="login_test_hint">Если при авторизации через «Войти в Apple ID» возникают ошибки (HTTP 403, «An unknown error has occurred», ошибки GSA/SRP или проблемы с 2FA), используйте альтернативный метод авторизации через «Войти в Apple ID SKIP».</small>
               </div>
             </form>
           </div>
@@ -1012,7 +1051,7 @@
             <details class="faq-item">
               <summary class="faq-question" data-i18n="faq_q6">Где сохраняются скачанные файлы .IPA?</summary>
               <div class="faq-answer" data-i18n="faq_a6">
-                <p>По умолчанию файлы сохраняются в рабочую папку программы или в папку "Загрузки". Вы можете открыть папку в любой момент, нажав кнопку <strong>"📂 Открыть папку загрузок"</strong> во вкладке "Загрузки".</p>
+                <p>По умолчанию файлы сохраняются в папку <code>apps</code> внутри рабочей папки программы. Вы можете открыть её в любой момент, нажав кнопку <strong>"📂 Открыть папку загрузок"</strong> во вкладке "Загрузки".</p>
               </div>
             </details>
 

@@ -144,6 +144,92 @@ body {
   letter-spacing: 0.01em;
 }
 
+.brand-version {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: opacity 0.2s ease, transform 0.2s ease, filter 0.2s ease;
+}
+
+.brand-version:hover {
+  opacity: 0.85;
+}
+
+.brand-version.has-update {
+  background: linear-gradient(90deg, #f59e0b, #ef4444, #ec4899, #f59e0b);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: brandVersionShimmer 2.6s linear infinite;
+  filter: drop-shadow(0 0 8px rgba(245, 158, 11, 0.45));
+}
+
+.brand-update-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #fff;
+  text-decoration: none;
+  background: linear-gradient(135deg, #f59e0b 0%, #ef4444 100%);
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.65), 0 4px 12px rgba(239, 68, 68, 0.4);
+  animation: brandUpdatePulse 1.8s infinite;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.brand-update-pill:hover {
+  transform: translateY(-1px) scale(1.03);
+  filter: brightness(1.08);
+}
+
+@keyframes brandVersionShimmer {
+  0% {
+    background-position: 0% center;
+  }
+  100% {
+    background-position: 200% center;
+  }
+}
+
+@keyframes brandUpdatePulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.65), 0 4px 12px rgba(239, 68, 68, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0), 0 4px 14px rgba(245, 158, 11, 0.55);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0), 0 4px 12px rgba(239, 68, 68, 0.4);
+  }
+}
+
+.badge-hidden-storefront {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.16);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.55);
+  font-size: 0.75rem;
+  font-weight: 900;
+  line-height: 1;
+  vertical-align: middle;
+  cursor: help;
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.25);
+}
+
 .brand-subtitle {
   font-size: 0.8rem;
   color: var(--text-secondary);
@@ -757,7 +843,7 @@ body {
   color: var(--accent-primary);
 }
 
-/* Minimum supported iOS version badge shown next to the display version. */
+/* Minimum supported iOS version badge shown beside each historical build. */
 .badge-ios {
   background: rgba(139, 92, 246, 0.15);
   color: #a78bfa;
@@ -827,14 +913,14 @@ body {
 }
 
 /* Keep the three official App Store actions inside the card at narrow widths. */
-.app-card:not(.removed-app-card) .app-actions {
+.app-card:not(.removed-app-card):not(.batch-app-card) .app-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   min-width: 0;
 }
 
-.app-card:not(.removed-app-card) .app-actions .btn {
+.app-card:not(.removed-app-card):not(.batch-app-card) .app-actions .btn {
   min-width: 0;
   padding-left: 6px;
   padding-right: 6px;
@@ -1444,9 +1530,12 @@ body {
 .batch-versions-details summary {
   cursor: pointer;
   list-style: none;
-  display: inline-flex;
+  display: flex;
+  width: 100%;
+  justify-content: center;
   align-items: center;
   gap: 6px;
+  padding: 8px 14px;
 }
 .batch-versions-details summary::-webkit-details-marker { display: none; }
 .batch-versions-box {
@@ -1456,7 +1545,9 @@ body {
   padding: 8px;
   background: var(--bg-card);
   overflow-x: auto;
+  width: 100%;
   max-width: 100%;
+  box-sizing: border-box;
 }
 .batch-versions-table { width: 100%; }
 .batch-versions-table td, .batch-versions-table th { padding: 8px 12px; }
@@ -1470,13 +1561,15 @@ body {
 
 /* Keep the version-history block from pushing past the app card edges when the
    Действие/Action column is expanded. */
-.batch-app-card .app-actions {
+.app-card.batch-app-card .app-actions {
+  display: flex;
   flex-direction: column;
   align-items: stretch;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
 }
-.batch-app-card .app-actions .btn { flex: initial; }
+.app-card.batch-app-card .app-actions .btn { flex: initial; }
 
 .batch-filtered-row {
   display: flex;
@@ -1796,6 +1889,11 @@ body {
   color: var(--text-muted);
 }
 
+.purchases-updated.is-stale {
+  color: #ef4444 !important;
+  font-weight: 600;
+}
+
 .purchases-toolbar {
   display: flex;
   align-items: center;
@@ -1894,6 +1992,103 @@ body {
 .batch-versions-box .versions-pager {
   margin: 4px 0 8px;
 }
+
+.purchases-hidden-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+
+.purchases-hidden-toggle:hover {
+  border-color: rgba(239, 68, 68, 0.55);
+}
+
+.purchases-hidden-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.purchases-hidden-toggle-track {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  background: var(--bg-elevated);
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+  flex-shrink: 0;
+}
+
+.purchases-hidden-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+.purchases-hidden-toggle input:checked + .purchases-hidden-toggle-track {
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.65);
+}
+
+.purchases-hidden-toggle input:checked + .purchases-hidden-toggle-track .purchases-hidden-toggle-thumb {
+  transform: translateX(16px);
+  background: #ef4444;
+}
+
+.purchases-hidden-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.purchases-hidden-toggle-label .badge-hidden-storefront {
+  margin-left: 0;
+}
+
+.purchases-hidden-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: rgba(239, 68, 68, 0.14);
+  color: #ef4444;
+}
+
+.purchases-os-filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.purchases-os-filter-group .select-control {
+  padding: 6px 10px;
+  min-width: 112px;
+}
+
+
 
 .demo-banner { position: sticky; top: 0; z-index: 1000; padding: 9px 16px; text-align: center; color: #dbeafe; background: linear-gradient(90deg, #1d4ed8, #7c3aed); font-size: 12px; font-weight: 700; letter-spacing: .05em; }
 .demo-banner-link { color: #ffffff; text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; }
