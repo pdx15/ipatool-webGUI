@@ -427,6 +427,123 @@ index 72b83ff..1ea920e 100644
  func newDownloadEndpoint(endpoint, path string) (downloadProductEndpoint, error) {
  	parsed, err := url.ParseRequestURI(endpoint)
  	if err != nil || parsed.Scheme != "https" || parsed.Host != downloadDispatchDomain ||
+diff --git a/pkg/appstore/appstore_ios_version_lookup.go b/pkg/appstore/appstore_ios_version_lookup.go
+index 2f2f459..b84b7db 100644
+--- a/pkg/appstore/appstore_ios_version_lookup.go
++++ b/pkg/appstore/appstore_ios_version_lookup.go
+@@ -26,29 +26,98 @@ type catalogVersionPlatformAttributes struct {
+ }
+ 
+ func (t *appstore) lookupLatestIOSExternalVersionID(app App, countryCode string, platform Platform) (string, error) {
+-	// This is the JSON catalog API used by the public App Store client.
+-	res, err := t.platformClient.Send(http.Request{
+-		URL:            fmt.Sprintf("https://apps.apple.com/api/apps/v1/catalog/%s/apps/%d?platform=%s", strings.ToLower(countryCode), app.ID, platform),
+-		Method:         http.MethodGET,
+-		ResponseFormat: http.ResponseFormatJSON,
+-	})
+-	if err != nil {
+-		return "", fmt.Errorf("iOS catalog lookup request failed: %w", err)
++	urls := []string{
++		fmt.Sprintf("https://apps.apple.com/api/apps/v1/catalog/%s/apps/%d?platform=%s", strings.ToLower(countryCode), app.ID, platform),
+ 	}
+-
+-	if res.StatusCode != gohttp.StatusOK {
+-		return "", fmt.Errorf("iOS catalog lookup returned HTTP %d", res.StatusCode)
++	if platform == PlatformAppleTV {
++		urls = append(urls, fmt.Sprintf(
++			"https://apps.apple.com/api/apps/v1/catalog/%s/apps/%d?platform=iphone&additionalPlatforms=appletv,ipad,mac,realityDevice,watch",
++			strings.ToLower(countryCode),
++			app.ID,
++		))
+ 	}
+ 
+-	if len(res.Data.Data) != 1 {
+-		return "", errors.New("iOS catalog lookup must return exactly one app")
++	var firstErr error
++	for _, requestURL := range urls {
++		// This is the JSON catalog API used by the public App Store client.
++		res, err := t.platformClient.Send(http.Request{
++			URL:            requestURL,
++			Method:         http.MethodGET,
++			ResponseFormat: http.ResponseFormatJSON,
++		})
++		if err != nil {
++			if firstErr == nil {
++				firstErr = fmt.Errorf("iOS catalog lookup request failed: %w", err)
++			}
++
++			continue
++		}
++
++		if res.StatusCode != gohttp.StatusOK {
++			if firstErr == nil {
++				firstErr = fmt.Errorf("iOS catalog lookup returned HTTP %d", res.StatusCode)
++			}
++
++			continue
++		}
++
++		if len(res.Data.Data) != 1 {
++			if firstErr == nil {
++				firstErr = errors.New("iOS catalog lookup must return exactly one app")
++			}
++
++			continue
++		}
++
++		version, parseErr := extractCatalogExternalVersionID(res.Data.Data[0], app, platform)
++		if parseErr == nil && version != "" {
++			return version, nil
++		}
++		if firstErr == nil {
++			firstErr = parseErr
++		}
+ 	}
+ 
+-	item := res.Data.Data[0]
++	return "", firstErr
++}
++
++func extractCatalogExternalVersionID(item catalogVersionLookupItem, app App, platform Platform) (string, error) {
+ 	if item.ID != strconv.FormatInt(app.ID, 10) || item.Type != "apps" {
+ 		return "", errors.New("iOS catalog lookup returned a different app")
+ 	}
+ 
++	if platform == PlatformAppleTV {
++		hasTVFamily := slices.ContainsFunc(item.Attributes.DeviceFamilies, func(family string) bool {
++			return strings.EqualFold(family, "tvos") || strings.EqualFold(family, "appletv")
++		})
++		var attributes catalogVersionPlatformAttributes
++		var ok bool
++		for _, key := range []string{"appletvos", "tvos", "appletv"} {
++			if candidate, found := item.Attributes.PlatformAttributes[key]; found {
++				attributes = candidate
++				ok = true
++				break
++			}
++		}
++		if !ok || !hasTVFamily {
++			return "", errors.New("iOS catalog lookup returned no metadata for the requested platform")
++		}
++
++		if app.BundleID != "" && attributes.BundleID != "" && attributes.BundleID != app.BundleID {
++			iosAttrs, hasIOS := item.Attributes.PlatformAttributes["ios"]
++			if !hasIOS || iosAttrs.BundleID != app.BundleID {
++				return "", errors.New("iOS catalog lookup returned a different bundle identifier")
++			}
++		}
++
++		version := string(attributes.ExternalVersionID)
++		if id, err := strconv.ParseUint(version, 10, 64); err != nil || id == 0 {
++			return "", errors.New("iOS catalog lookup returned no valid external version id")
++		}
++
++		return version, nil
++	}
++
+ 	attributes, ok := item.Attributes.PlatformAttributes["ios"]
+ 	if !ok || !slices.Contains(item.Attributes.DeviceFamilies, string(platform)) {
+ 		return "", errors.New("iOS catalog lookup returned no metadata for the requested platform")
 diff --git a/pkg/appstore/appstore_kbsync.go b/pkg/appstore/appstore_kbsync.go
 index ef6779b..1569ce4 100644
 --- a/pkg/appstore/appstore_kbsync.go
@@ -691,22 +808,58 @@ index ef6779b..1569ce4 100644
 +		isSignInRequiredMessage(data.CustomerMessage)
 +}
 diff --git a/pkg/appstore/appstore_list_versions.go b/pkg/appstore/appstore_list_versions.go
-index bbe03b0..add0ec5 100644
+index bbe03b0..6349c5f 100644
 --- a/pkg/appstore/appstore_list_versions.go
 +++ b/pkg/appstore/appstore_list_versions.go
-@@ -47,7 +47,9 @@ func (t *appstore) ListVersions(input ListVersionsInput) (ListVersionsOutput, er
+@@ -47,7 +47,10 @@ func (t *appstore) ListVersions(input ListVersionsInput) (ListVersionsOutput, er
  		externalVersionID, err = t.lookupLatestExternalVersionID(input.Account, input.App, platform)
  	}
  
 -	if err != nil {
++	lookupErr := err
 +	missingTVOffer := platform == PlatformAppleTV &&
 +		(errors.Is(err, errPlatformAppNotFound) || errors.Is(err, errPlatformOffersNotFound))
 +	if err != nil && !missingTVOffer {
  		return ListVersionsOutput{}, fmt.Errorf("failed to resolve platform version: %w", err)
  	}
  
+@@ -78,6 +81,34 @@ func (t *appstore) ListVersions(input ListVersionsInput) (ListVersionsOutput, er
+ 
+ 	item := res.Data.Items[0]
+ 
++	if missingTVOffer {
++		if supported, checked := t.ipaSupportsPlatform(item.URL, platform); checked && !supported {
++			matched := false
++			if rawIDs, ok := item.Metadata["softwareVersionExternalIdentifiers"].([]interface{}); ok && len(rawIDs) > 0 {
++				currentVerID := fmt.Sprint(item.Metadata["softwareVersionExternalIdentifier"])
++				for i := len(rawIDs) - 1; i >= 0; i-- {
++					candVerID := strings.TrimSpace(fmt.Sprint(rawIDs[i]))
++					if candVerID == "" || candVerID == "<nil>" || candVerID == currentVerID {
++						continue
++					}
++					candRes, _, candErr := t.sendDownloadProduct(input.Context, input.Account, input.App, guid, candVerID, platform)
++					if candErr != nil || len(candRes.Data.Items) == 0 {
++						continue
++					}
++					candItem := candRes.Data.Items[0]
++					if okPlat, okCheck := t.ipaSupportsPlatform(candItem.URL, platform); okCheck && okPlat {
++						item = candItem
++						matched = true
++						break
++					}
++				}
++			}
++			if !matched {
++				return ListVersionsOutput{}, fmt.Errorf("failed to resolve platform version: %w", lookupErr)
++			}
++		}
++	}
++
+ 	rawIdentifiers, ok := item.Metadata["softwareVersionExternalIdentifiers"].([]interface{})
+ 	if !ok {
+ 		return ListVersionsOutput{}, NewErrorWithMetadata(fmt.Errorf("failed to get version identifiers from item metadata"), item.Metadata)
 diff --git a/pkg/appstore/appstore_lookup.go b/pkg/appstore/appstore_lookup.go
-index 4fde3ef..2603a5c 100644
+index 4fde3ef..44cd13a 100644
 --- a/pkg/appstore/appstore_lookup.go
 +++ b/pkg/appstore/appstore_lookup.go
 @@ -7,10 +7,22 @@ import (
@@ -720,7 +873,7 @@ index 4fde3ef..2603a5c 100644
  
 +func storefrontFallbackCountries(primary string) []string {
 +	countries := []string{primary}
-+	for _, candidate := range []string{"US", "GB"} {
++	for _, candidate := range []string{"RU", "KZ", "BY", "AM", "UZ", "US", "GB"} {
 +		if !strings.EqualFold(primary, candidate) {
 +			countries = append(countries, candidate)
 +		}
@@ -871,10 +1024,18 @@ index 7bab12c..8db39cc 100644
  
  func macOSExternalVersionID(body []byte, app App) (string, error) {
 diff --git a/pkg/appstore/appstore_platform_version_lookup.go b/pkg/appstore/appstore_platform_version_lookup.go
-index c2b583f..6bdfe12 100644
+index c2b583f..fdeafae 100644
 --- a/pkg/appstore/appstore_platform_version_lookup.go
 +++ b/pkg/appstore/appstore_platform_version_lookup.go
-@@ -72,6 +72,21 @@ func (t *appstore) lookupLatestExternalVersionID(acc Account, app App, platform
+@@ -6,6 +6,7 @@ import (
+ 	"fmt"
+ 	gohttp "net/http"
+ 	"net/url"
++	"slices"
+ 	"strconv"
+ 	"strings"
+ 
+@@ -72,6 +73,21 @@ func (t *appstore) lookupLatestExternalVersionID(acc Account, app App, platform
  		return "", fmt.Errorf("failed to resolve the country code: %w", err)
  	}
  
@@ -896,3 +1057,135 @@ index c2b583f..6bdfe12 100644
  	if platform == PlatformVisionOS {
  		return t.lookupLatestVisionOSExternalVersionID(app.ID, countryCode)
  	}
+@@ -132,9 +148,10 @@ func (t *appstore) lookupLatestExternalVersionID(acc Account, app App, platform
+ 		return externalVersionID, nil
+ 	}
+ 
+-	if platform == PlatformIPhone || platform == PlatformIPad {
+-		// Apple Arcade apps can be absent from every MDM catalog. The App
+-		// Store's catalog API still exposes their current iOS version.
++	if platform == PlatformIPhone || platform == PlatformIPad || platform == PlatformAppleTV {
++		// Apple Arcade and consumer-only storefronts (such as RU for tvOS) can
++		// be absent from every MDM catalog. The App Store's catalog API still
++		// exposes their current platform-specific version.
+ 		version, err := t.lookupLatestIOSExternalVersionID(app, countryCode, platform)
+ 		if err == nil {
+ 			return version, nil
+@@ -143,9 +160,117 @@ func (t *appstore) lookupLatestExternalVersionID(acc Account, app App, platform
+ 		lastErr = fmt.Errorf("%w; iOS catalog fallback failed: %w", lastErr, err)
+ 	}
+ 
++	if platform == PlatformAppleTV && t.storefrontClient != nil {
++		version, sfErr := t.lookupLatestTVOSStorefrontExternalVersionID(app, countryCode)
++		if sfErr == nil && version != "" {
++			return version, nil
++		}
++	}
++
+ 	return "", fmt.Errorf("app %d in storefront %s (catalogs: %s): %w", app.ID, countryCode, strings.Join(catalogs, ", "), lastErr)
+ }
+ 
++func (t *appstore) lookupLatestTVOSStorefrontExternalVersionID(app App, countryCode string) (string, error) {
++	var firstErr error
++	for _, queryPlatform := range []string{"appletv", "tv"} {
++		res, err := t.storefrontClient.Send(http.Request{
++			URL:            fmt.Sprintf("https://apps.apple.com/%s/app/id%d?platform=%s", strings.ToLower(countryCode), app.ID, queryPlatform),
++			Method:         http.MethodGET,
++			ResponseFormat: http.ResponseFormatRaw,
++		})
++		if err != nil {
++			if firstErr == nil {
++				firstErr = err
++			}
++
++			continue
++		}
++
++		if res.StatusCode != gohttp.StatusOK {
++			if firstErr == nil {
++				firstErr = fmt.Errorf("tvOS storefront lookup returned HTTP %d", res.StatusCode)
++			}
++
++			continue
++		}
++
++		version, parseErr := tvOSExternalVersionID(res.Data, app)
++		if parseErr == nil && version != "" {
++			return version, nil
++		}
++		if firstErr == nil {
++			firstErr = parseErr
++		}
++	}
++
++	return "", firstErr
++}
++
++func tvOSExternalVersionID(body []byte, app App) (string, error) {
++	data, err := serializedServerData(body)
++	if err != nil {
++		return "", err
++	}
++
++	var value interface{}
++	if err := json.Unmarshal(data, &value); err != nil {
++		return "", fmt.Errorf("failed to decode Apple TV product page: %w", err)
++	}
++
++	versions := make(map[string]struct{})
++	collectTVOSExternalVersions(value, app, versions)
++
++	if len(versions) == 0 {
++		return "", errors.New("tvOS purchase configuration has no external version id for the requested app")
++	}
++
++	if len(versions) != 1 {
++		return "", errors.New("tvOS purchase configurations contain conflicting external version ids")
++	}
++
++	for version := range versions {
++		return version, nil
++	}
++
++	return "", errors.New("tvOS external version id was not found")
++}
++
++func collectTVOSExternalVersions(value interface{}, app App, versions map[string]struct{}) {
++	switch value := value.(type) {
++	case []interface{}:
++		for _, child := range value {
++			collectTVOSExternalVersions(child, app, versions)
++		}
++	case map[string]interface{}:
++		if configuration, ok := value["purchaseConfiguration"].(map[string]interface{}); ok {
++			platforms, _ := configuration["appPlatforms"].([]interface{})
++			buyParams, _ := configuration["buyParams"].(string)
++
++			hasTVPlatform := slices.ContainsFunc(platforms, func(raw interface{}) bool {
++				p, ok := raw.(string)
++
++				return ok && (strings.EqualFold(p, "tv") ||
++					strings.EqualFold(p, "appletv") ||
++					strings.EqualFold(p, "appletvos") ||
++					strings.EqualFold(p, "tvos"))
++			})
++
++			params, err := url.ParseQuery(buyParams)
++			if err == nil && hasTVPlatform &&
++				params.Get("salableAdamId") == strconv.FormatInt(app.ID, 10) {
++				version := params.Get("appExtVrsId")
++				if id, err := strconv.ParseUint(version, 10, 64); err == nil && id != 0 {
++					versions[version] = struct{}{}
++				}
++			}
++		}
++
++		for _, child := range value {
++			collectTVOSExternalVersions(child, app, versions)
++		}
++	}
++}
++
+ func (t *appstore) lookupLatestVisionOSExternalVersionID(appID int64, countryCode string) (string, error) {
+ 	request := http.Request{
+ 		URL:            visionProductURL(appID, countryCode),
