@@ -47,7 +47,7 @@ index cb71e17..056bab7 100644
  			Expect(atomic.LoadInt64(servedBytes)).To(BeNumerically("<", int64(len(ipa)/2)))
  		},
 diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
-index d824c43..e188e51 100644
+index d824c43..d681d88 100644
 --- a/pkg/appstore/appstore_partial_zip.go
 +++ b/pkg/appstore/appstore_partial_zip.go
 @@ -26,9 +26,22 @@ var infoPlistDisplayVersionKeys = []string{
@@ -215,7 +215,73 @@ index d824c43..e188e51 100644
  	if err != nil {
  		return versionMetadata{}, fmt.Errorf("failed to open zip reader: %w", err)
  	}
-@@ -230,12 +358,33 @@ func readVersionMetadataFromInfoPlist(file *zip.File) (versionMetadata, error) {
+@@ -193,6 +321,65 @@ func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, erro
+ 	return versionMetadata{}, errors.New("could not find Info.plist")
+ }
+ 
++func (t *appstore) ipaSupportsPlatform(url string, platform Platform) (bool, bool) {
++	var expectedPlatform string
++
++	switch platform {
++	case PlatformIPhone, PlatformIPad:
++		expectedPlatform = "iPhoneOS"
++	case PlatformAppleTV:
++		expectedPlatform = "AppleTVOS"
++	case PlatformWatchOS:
++		expectedPlatform = "WatchOS"
++	case PlatformVisionOS:
++		expectedPlatform = "XROS"
++	default:
++		return true, false
++	}
++
++	reader, size, err := newHTTPRangeReaderAt(t.httpClient, url)
++	if err != nil {
++		return false, false
++	}
++
++	zipReader, err := zip.NewReader(newBufferedRangeReaderAt(reader, size), size)
++	if err != nil {
++		return false, false
++	}
++
++	for _, file := range zipReader.File {
++		if !isMainAppInfoPlist(file.Name) {
++			continue
++		}
++
++		src, openErr := file.Open()
++		if openErr != nil {
++			return false, false
++		}
++
++		data, readErr := io.ReadAll(src)
++		_ = src.Close()
++		if readErr != nil {
++			return false, false
++		}
++
++		var info platformPackageInfo
++		if _, decodeErr := plist.Unmarshal(data, &info); decodeErr != nil {
++			return false, false
++		}
++
++		for _, supported := range info.SupportedPlatforms {
++			if supported == expectedPlatform {
++				return true, true
++			}
++		}
++
++		return false, true
++	}
++
++	return false, false
++}
++
+ func isMainAppInfoPlist(name string) bool {
+ 	parts := strings.Split(name, "/")
+ 
+@@ -230,12 +417,115 @@ func readVersionMetadataFromInfoPlist(file *zip.File) (versionMetadata, error) {
  		return versionMetadata{}, err
  	}
  
@@ -231,21 +297,103 @@ index d824c43..e188e51 100644
  }
  
 +func readMinimumOSVersionFromInfoPlist(metadata map[string]interface{}) string {
++	var minOS string
 +	for _, key := range infoPlistMinimumOSVersionKeys {
 +		value, ok := metadata[key]
 +		if !ok || value == nil {
 +			continue
 +		}
 +
-+		minimumOSVersion := strings.TrimSpace(fmt.Sprintf("%v", value))
-+		if minimumOSVersion == "" || minimumOSVersion == "<nil>" {
++		candidate := strings.TrimSpace(fmt.Sprintf("%v", value))
++		if candidate == "" || candidate == "<nil>" {
 +			continue
 +		}
 +
-+		return minimumOSVersion
++		minOS = candidate
++		break
++	}
++
++	osPrefix := readSupportedOSPrefixFromInfoPlist(metadata)
++	if minOS == "" {
++		return osPrefix
++	}
++	if osPrefix != "" {
++		return osPrefix + " " + minOS
++	}
++
++	return minOS
++}
++
++func readSupportedOSPrefixFromInfoPlist(metadata map[string]interface{}) string {
++	raw, ok := metadata["CFBundleSupportedPlatforms"]
++	if !ok || raw == nil {
++		return ""
++	}
++
++	var platforms []string
++	switch v := raw.(type) {
++	case []string:
++		platforms = v
++	case []interface{}:
++		for _, item := range v {
++			if item != nil {
++				platforms = append(platforms, strings.TrimSpace(fmt.Sprintf("%v", item)))
++			}
++		}
++	}
++
++	for _, p := range platforms {
++		switch strings.ToLower(p) {
++		case "appletvos":
++			return "tvOS"
++		case "watchos":
++			return "watchOS"
++		case "xros":
++			return "visionOS"
++		case "macosx":
++			return "macOS"
++		case "iphoneos":
++			if isIPadOnlyDeviceFamily(metadata["UIDeviceFamily"]) {
++				return "iPadOS"
++			}
++			return "iOS"
++		}
 +	}
 +
 +	return ""
++}
++
++func isIPadOnlyDeviceFamily(raw interface{}) bool {
++	if raw == nil {
++		return false
++	}
++
++	var hasIPhone, hasIPad bool
++	checkItem := func(item interface{}) {
++		switch strings.TrimSpace(fmt.Sprintf("%v", item)) {
++		case "1":
++			hasIPhone = true
++		case "2":
++			hasIPad = true
++		}
++	}
++
++	switch v := raw.(type) {
++	case []int:
++		for _, item := range v {
++			checkItem(item)
++		}
++	case []uint64:
++		for _, item := range v {
++			checkItem(item)
++		}
++	case []interface{}:
++		for _, item := range v {
++			checkItem(item)
++		}
++	}
++
++	return hasIPad && !hasIPhone
 +}
 +
  func readDisplayVersionFromMetadata(metadata map[string]interface{}) (string, error) {

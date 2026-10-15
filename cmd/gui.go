@@ -40,6 +40,7 @@ type DownloadJob struct {
 	AppName    string  `json:"appName"`
 	BundleID   string  `json:"bundleId"`
 	AppID      int64   `json:"appId"`
+	Platform   string  `json:"platform,omitempty"`
 	Version    string  `json:"version"`
 	Progress   float64 `json:"progress"`
 	BytesRead  int64   `json:"bytesRead"`
@@ -309,6 +310,10 @@ func guiCmd() *cobra.Command {
 }
 
 func runGUIServer(host string, port int, noBrowser bool) error {
+	if dir := appWorkingDir(); dir != "" && dir != "." {
+		_ = os.Chdir(dir)
+	}
+
 	// Setup asset filesystem
 	assetsSub, err := fs.Sub(embeddedAssets, "gui_assets")
 	if err != nil {
@@ -377,6 +382,7 @@ func runGUIServer(host string, port int, noBrowser bool) error {
 	mux.HandleFunc("/api/version-metadata", handleAPIVersionMetadata)
 	mux.HandleFunc("/api/version-metadata/batch", handleAPIVersionMetadataBatch)
 	mux.HandleFunc("/api/purchases", handleAPIPurchases)
+	mux.HandleFunc("/api/save-list", handleAPISaveList)
 	mux.HandleFunc("/api/batch/check", handleAPIBatchCheck)
 	mux.HandleFunc("/api/batch/check/status", handleAPIBatchCheckStatus)
 	mux.HandleFunc("/api/batch/download", handleAPIBatchDownload)
@@ -1220,11 +1226,40 @@ type downloadRequestPayload struct {
 
 const defaultDownloadFolderName = "apps"
 
-func defaultDownloadDir() string {
-	dir := defaultDownloadFolderName
-	if cwd, err := os.Getwd(); err == nil && cwd != "" {
-		dir = filepath.Join(cwd, defaultDownloadFolderName)
+func isTestOrSystemExecDir(exe string, dir string) bool {
+	base := filepath.Base(exe)
+	if strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".test.exe") || strings.Contains(exe, "go-build") {
+		return true
 	}
+	clean := filepath.Clean(dir)
+	for _, prefix := range []string{"/usr/", "/bin", "/sbin", "/opt/", "/tmp", "/private/tmp", "/var/folders/"} {
+		if clean == strings.TrimSuffix(prefix, "/") || strings.HasPrefix(clean, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func appWorkingDir() string {
+	if exe, err := os.Executable(); err == nil && exe != "" {
+		if resolved, evalErr := filepath.EvalSymlinks(exe); evalErr == nil && resolved != "" {
+			exe = resolved
+		}
+		exeDir := filepath.Clean(filepath.Dir(exe))
+		if exeDir != "" && exeDir != "." && !isTestOrSystemExecDir(exe, exeDir) {
+			return exeDir
+		}
+	}
+
+	if cwd, err := os.Getwd(); err == nil && cwd != "" {
+		return filepath.Clean(cwd)
+	}
+
+	return "."
+}
+
+func defaultDownloadDir() string {
+	dir := filepath.Join(appWorkingDir(), defaultDownloadFolderName)
 	_ = os.MkdirAll(dir, 0o755)
 	return dir
 }
@@ -1268,6 +1303,7 @@ func handleAPIDownload(w http.ResponseWriter, r *http.Request) {
 		BundleID:   req.BundleID,
 		AppID:      req.AppID,
 		AppName:    req.AppName,
+		Platform:   req.Platform,
 		Status:     "queued",
 		CreatedAt:  time.Now().Unix(),
 		OutputPath: outputPath,
@@ -1284,6 +1320,7 @@ func handleAPIDownload(w http.ResponseWriter, r *http.Request) {
 
 func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appstore.Account) appstore.Account {
 	platform, _ := appstore.ParsePlatform(req.Platform)
+	job.Platform = string(platform)
 	app := appstore.App{ID: req.AppID}
 	outputPath := resolveDownloadOutputPath(req.OutputPath)
 	if job.OutputPath == "" {
@@ -1849,3 +1886,70 @@ func handleAPIOpenFolder(w http.ResponseWriter, r *http.Request) {
 		"success": true,
 	})
 }
+
+type saveListPayload struct {
+	Filename string `json:"filename"`
+	Content  string `json:"content"`
+}
+
+func currentWorkingDir() string {
+	dir := appWorkingDir()
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
+}
+
+func sanitizeTxtFilename(name string) string {
+	base := filepath.Base(strings.TrimSpace(name))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "purchases.txt"
+	}
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case r < 32, r == '<', r == '>', r == ':', r == '"', r == '/', r == '\\', r == '|', r == '?', r == '*':
+			b.WriteByte('_')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	cleaned := strings.TrimSpace(b.String())
+	if cleaned == "" {
+		cleaned = "purchases.txt"
+	}
+	if !strings.HasSuffix(strings.ToLower(cleaned), ".txt") {
+		cleaned += ".txt"
+	}
+	return cleaned
+}
+
+func handleAPISaveList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req saveListPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid payload")
+		return
+	}
+
+	if strings.TrimSpace(req.Content) == "" {
+		jsonError(w, http.StatusBadRequest, "content is empty")
+		return
+	}
+
+	filename := sanitizeTxtFilename(req.Filename)
+	fullPath := filepath.Join(currentWorkingDir(), filename)
+	if err := os.WriteFile(fullPath, []byte(req.Content), 0o644); err != nil {
+		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save file: %v", err))
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"filename": filename,
+		"path":     fullPath,
+	})
+}
+
