@@ -2167,21 +2167,12 @@ function formatPurchaseDate(value) {
   });
 }
 
-function purchaseAppOSLabels(a) {
-  const validPlatforms = Array.isArray(a?.platforms)
-    ? a.platforms.filter(pl => pl && String(pl).toLowerCase() !== 'unknown')
-    : [];
-  return [...new Set((validPlatforms.length ? validPlatforms : ['iphone']).map(pl => platformOSLabel(pl)))];
-}
-
 function filteredPurchases() {
   const p = state.purchases;
   const q = (document.getElementById('purchases-filter')?.value || '').trim().toLowerCase();
-  const osFilter = document.getElementById('purchases-os-filter')?.value || 'all';
   const onlyHidden = !!document.getElementById('purchases-only-hidden')?.checked;
   return p.apps.filter(a => {
     if (onlyHidden && !a.hiddenFromStorefront) return false;
-    if (osFilter && osFilter !== 'all' && !purchaseAppOSLabels(a).includes(osFilter)) return false;
     if (!q) return true;
     return (
       (a.name || '').toLowerCase().includes(q) ||
@@ -2265,12 +2256,7 @@ function renderPurchases() {
   }
 
   const list = filteredPurchases();
-  const osFilter = document.getElementById('purchases-os-filter')?.value || 'all';
-  const hiddenTotal = p.apps.filter(a => {
-    if (!a.hiddenFromStorefront) return false;
-    if (osFilter && osFilter !== 'all' && !purchaseAppOSLabels(a).includes(osFilter)) return false;
-    return true;
-  }).length;
+  const hiddenTotal = p.apps.filter(a => a.hiddenFromStorefront).length;
   const hiddenCountEl = document.getElementById('purchases-hidden-count');
   if (hiddenCountEl) {
     hiddenCountEl.textContent = String(hiddenTotal);
@@ -2314,19 +2300,11 @@ function renderPurchases() {
     const validPlatforms = Array.isArray(a.platforms)
       ? a.platforms.filter(pl => pl && String(pl).toLowerCase() !== 'unknown')
       : [];
-    const matchedPlatform = (osFilter && osFilter !== 'all')
-      ? validPlatforms.find(pl => platformOSLabel(pl) === osFilter)
-      : '';
-    const itemPlatform = matchedPlatform || validPlatforms[0] || 'iphone';
-    const osLabels = purchaseAppOSLabels(a);
-    const osBadgesCell = osLabels
-      .map(lbl => ` <span class="badge badge-ios">${batchEscapeHtml(lbl)}</span>`)
-      .join('');
-    const versionCell = a.version ? ` <span class="badge badge-version">${batchEscapeHtml(a.version)}</span>` : '';
+    const itemPlatform = validPlatforms[0] || 'iphone';
     const hiddenCell = a.hiddenFromStorefront ? `<span class="badge-hidden-storefront" title="${hiddenTip}">!</span>` : '';
     return `
       <tr>
-        <td>${nameEsc}${hiddenCell}${versionCell}${osBadgesCell}</td>
+        <td>${nameEsc}${hiddenCell}</td>
         <td><code>${bundleEsc || '—'}</code></td>
         <td><code>${appId || '—'}</code></td>
         <td>${formatPurchaseDate(a.purchaseDate)}</td>

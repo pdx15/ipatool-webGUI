@@ -2071,16 +2071,4 @@ body {
   color: #ef4444;
 }
 
-.purchases-os-filter-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.purchases-os-filter-group .select-control {
-  padding: 6px 10px;
-  min-width: 112px;
-}
-
 
