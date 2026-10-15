@@ -7,5 +7,6 @@
 exp/__pycache__/
 *.pyc
 apps/
-purchases_cache.json
+.ipatool-webgui/
+purchases_cache*.json
 

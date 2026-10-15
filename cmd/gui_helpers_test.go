@@ -765,15 +765,9 @@ func TestSanitizeTxtFilename(t *testing.T) {
 }
 
 func TestPurchasesDiskCacheRoundTrip(t *testing.T) {
-	tmpDir := t.TempDir()
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	defer func() { _ = os.Chdir(origDir) }()
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
 
 	acc := appstore.Account{
 		DirectoryServicesID: "123456789",
@@ -796,6 +790,14 @@ func TestPurchasesDiskCacheRoundTrip(t *testing.T) {
 	tvosVerByID := map[int64]string{1451612172: "3.12.1"}
 	fetchedAt := time.Unix(1760486400, 0).UTC()
 
+	cachePath := purchasesCacheFilePath(acc)
+	if filepath.Base(cachePath) != "purchases_cache_user@example.com.json" {
+		t.Fatalf("unexpected cache filename: %q", cachePath)
+	}
+	if filepath.Base(filepath.Dir(cachePath)) != guiConfigDirectoryName {
+		t.Fatalf("expected cache in %q directory, got %q", guiConfigDirectoryName, cachePath)
+	}
+
 	writePurchasesDiskCache(acc, apps, hiddenIDs, tvosVerByID, fetchedAt)
 
 	gotApps, gotHidden, gotTVOS, gotAt, ok := readPurchasesDiskCache(acc)
@@ -815,9 +817,12 @@ func TestPurchasesDiskCacheRoundTrip(t *testing.T) {
 		t.Fatalf("expected fetchedAt %d, got %d", fetchedAt.Unix(), gotAt.Unix())
 	}
 
-	otherAcc := appstore.Account{DirectoryServicesID: "999999999"}
+	otherAcc := appstore.Account{
+		DirectoryServicesID: "999999999",
+		Email:               "other@example.com",
+	}
 	if _, _, _, _, ok := readPurchasesDiskCache(otherAcc); ok {
-		t.Fatalf("expected cache for another DSID to be ignored")
+		t.Fatalf("expected cache for another account not to exist yet")
 	}
 }
 

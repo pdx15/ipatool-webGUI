@@ -30,7 +30,6 @@ const (
 	commerceYearConcurrency    = 2
 	commerceCatalogBatchSize   = 100
 	tvosLookupConcurrency      = 4
-	purchasesCacheFilename     = "purchases_cache.json"
 )
 
 // guiPersistentCookieJar wraps juju/persistent-cookiejar so Apple session
@@ -1281,11 +1280,49 @@ func ownedAppsWithRetry(acc appstore.Account) (appstore.Account, []appstore.App,
 	return acc, nil, nil, nil, errors.New("failed to load purchase history after re-authentication")
 }
 
-func purchasesCacheFilePath() string {
-	if dir := appWorkingDir(); dir != "" {
-		return filepath.Join(dir, purchasesCacheFilename)
+func guiPurchasesCacheDirectory() string {
+	if dependencies.OS != nil && dependencies.Machine != nil {
+		if stateDir, err := prepareGUIStateDirectory(dependencies.OS, dependencies.Machine.HomeDirectory()); err == nil && stateDir != "" {
+			return stateDir
+		}
 	}
-	return purchasesCacheFilename
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		stateDir := filepath.Join(home, guiConfigDirectoryName)
+		if err := os.MkdirAll(stateDir, 0o700); err == nil {
+			return stateDir
+		}
+	}
+	stateDir := guiConfigDirectoryName
+	_ = os.MkdirAll(stateDir, 0o700)
+	return stateDir
+}
+
+func sanitizeAccountCacheKey(acc appstore.Account) string {
+	raw := strings.TrimSpace(strings.ToLower(acc.Email))
+	if raw == "" {
+		raw = strings.TrimSpace(acc.DirectoryServicesID)
+	}
+	if raw == "" {
+		raw = strings.TrimSpace(strings.ToLower(acc.Name))
+	}
+	var b strings.Builder
+	for _, r := range raw {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' || r == '@' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	cleaned := strings.Trim(b.String(), "._-")
+	if cleaned == "" {
+		return "default"
+	}
+	return cleaned
+}
+
+func purchasesCacheFilePath(acc appstore.Account) string {
+	filename := fmt.Sprintf("purchases_cache_%s.json", sanitizeAccountCacheKey(acc))
+	return filepath.Join(guiPurchasesCacheDirectory(), filename)
 }
 
 func buildPurchaseItems(apps []appstore.App, hiddenIDs map[int64]bool, tvosVerByID map[int64]string) []purchaseItem {
@@ -1334,7 +1371,7 @@ func parsePurchaseItemsToApps(items []purchaseItem) ([]appstore.App, map[int64]b
 }
 
 func readPurchasesDiskCache(acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string, time.Time, bool) {
-	path := purchasesCacheFilePath()
+	path := purchasesCacheFilePath(acc)
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return nil, nil, nil, time.Time{}, false
@@ -1386,7 +1423,7 @@ func writePurchasesDiskCache(acc appstore.Account, apps []appstore.App, hiddenID
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(purchasesCacheFilePath(), data, 0o644)
+	_ = os.WriteFile(purchasesCacheFilePath(acc), data, 0o600)
 }
 
 // loadPurchases returns the cached purchase list for acc, loading it from
