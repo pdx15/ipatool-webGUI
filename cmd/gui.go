@@ -1863,6 +1863,9 @@ func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string
 			MinimumOSVersion: out.MinimumOSVersion,
 		}
 		versionMetaCache.Unlock()
+		if platform == appstore.PlatformAppleTV {
+			recordAppTVOSSeed(appID, versionID, out.DisplayVersion, nil)
+		}
 	}
 
 	return map[string]interface{}{
