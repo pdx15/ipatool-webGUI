@@ -1920,13 +1920,38 @@ body {
 
 .purchases-table td code {
   font-size: 0.82rem;
+}
+
+.purchases-table td:nth-child(2) code {
   word-break: break-all;
+}
+
+.purchases-table th:nth-child(3),
+.purchases-table td:nth-child(3) {
+  white-space: nowrap;
+  min-width: 115px;
+}
+
+.purchases-table td:nth-child(3) code {
+  white-space: nowrap;
+  word-break: normal;
+}
+
+.purchases-table th:nth-child(4),
+.purchases-table td:nth-child(4) {
+  white-space: nowrap;
+}
+
+.purchases-table th:nth-child(5),
+.purchases-table td:nth-child(5) {
+  width: 1%;
+  white-space: nowrap;
 }
 
 .purchases-table .purchases-row-actions {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 
 #purchases-refresh-btn svg {
