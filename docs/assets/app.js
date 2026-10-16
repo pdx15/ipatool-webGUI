@@ -1556,16 +1556,41 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl, platform = 'ip
       if (speedEl) speedEl.textContent = job.speed || '';
 
       // Update steps
-      if (job.status === 'purchasing') {
-        document.getElementById('step-license')?.classList.add('active');
+      const stepLic = document.getElementById('step-license');
+      const stepDl = document.getElementById('step-download');
+      const stepSinf = document.getElementById('step-sinf');
+      if (job.status === 'purchasing' || job.status === 'queued') {
+        if (stepLic) {
+          stepLic.classList.remove('completed');
+          stepLic.classList.add('active');
+        }
+        if (stepDl) stepDl.classList.remove('active', 'completed');
+        if (stepSinf) stepSinf.classList.remove('active', 'completed');
         if (subEl) subEl.textContent = 'Получение лицензии App Store...';
       } else if (job.status === 'downloading') {
-        document.getElementById('step-license')?.classList.add('completed');
-        document.getElementById('step-download')?.classList.add('active');
+        if (stepLic) {
+          stepLic.classList.remove('active');
+          stepLic.classList.add('completed');
+        }
+        if (stepDl) {
+          stepDl.classList.remove('completed');
+          stepDl.classList.add('active');
+        }
+        if (stepSinf) stepSinf.classList.remove('active', 'completed');
         if (subEl) subEl.textContent = 'Скачивание зашифрованного пакета...';
       } else if (job.status === 'patching') {
-        document.getElementById('step-download')?.classList.add('completed');
-        document.getElementById('step-sinf')?.classList.add('active');
+        if (stepLic) {
+          stepLic.classList.remove('active');
+          stepLic.classList.add('completed');
+        }
+        if (stepDl) {
+          stepDl.classList.remove('active');
+          stepDl.classList.add('completed');
+        }
+        if (stepSinf) {
+          stepSinf.classList.remove('completed');
+          stepSinf.classList.add('active');
+        }
         if (subEl) subEl.textContent = 'Применение цифровой подписи (sinf)...';
       } else if (job.status === 'completed') {
         clearInterval(interval);
@@ -1624,7 +1649,7 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl, platform = 'ip
       console.error('Progress poll error:', err);
       handling = false;
     }
-  }, 500);
+  }, 1000);
 }
 
 function openCompletedFolder() {
@@ -1735,38 +1760,16 @@ function platformOSLabel(platform) {
   }
 }
 
-function parseMinimumOSBadge(minimumOSVersion, fallbackPlatform = 'iphone') {
-  const raw = String(minimumOSVersion || '').trim();
-  if (!raw) return null;
-  const osMap = {
-    ios: { label: 'iOS', platform: 'iphone' },
-    ipados: { label: 'iPadOS', platform: 'ipad' },
-    tvos: { label: 'tvOS', platform: 'appletv' },
-    watchos: { label: 'watchOS', platform: 'watchos' },
-    visionos: { label: 'visionOS', platform: 'visionos' },
-    macos: { label: 'macOS', platform: 'macos' }
-  };
-  const m = raw.match(/^(iOS|iPadOS|tvOS|watchOS|visionOS|macOS)(?:\s+(.+))?$/i);
-  if (m) {
-    const hit = osMap[m[1].toLowerCase()];
-    if (hit) {
-      return { osLabel: hit.label, minOS: (m[2] || '').trim(), platform: hit.platform };
-    }
-  }
-  return { osLabel: platformOSLabel(fallbackPlatform), minOS: raw, platform: fallbackPlatform || 'iphone' };
-}
-
 // Builds the inner HTML of a "Display Version" table cell: the app version and,
 // when known, a small OS badge showing the minimum supported OS version from
 // the selected build's Info.plist / package metadata.
 function renderDisplayVersionCell(displayVersion, minimumOSVersion, platform = 'iphone') {
   const version = batchEscapeHtml(displayVersion || '—');
-  const parsed = parseMinimumOSBadge(minimumOSVersion, platform);
-  if (!parsed) return version;
-  const osLabel = parsed.osLabel;
-  const badgeText = parsed.minOS ? `${osLabel} ${parsed.minOS}` : osLabel;
+  const minOS = String(minimumOSVersion || '').trim();
+  if (!minOS) return version;
+  const osLabel = platformOSLabel(platform);
   const title = batchText('min_ios_badge_title').replace(/\biOS\b/g, osLabel);
-  return `${version} <span class="badge badge-ios" title="${batchEscapeHtml(title)}">${batchEscapeHtml(badgeText)}</span>`;
+  return `${version} <span class="badge badge-ios" title="${batchEscapeHtml(title)}">${batchEscapeHtml(osLabel)} ${batchEscapeHtml(minOS)}</span>`;
 }
 
 async function handleFetchVersions(e) {
@@ -1780,9 +1783,11 @@ async function handleFetchVersions(e) {
   const matchedPreset = state.lastVersionsInput && (rawInput === state.lastVersionsInput || parsed === state.lastVersionsInput);
   const presetName = matchedPreset ? (state.lastVersionsName || '') : '';
   const presetAppId = matchedPreset ? (Number(state.lastVersionsAppId) || 0) : 0;
-  state.lastVersionsName = '';
-  state.lastVersionsAppId = 0;
-  state.lastVersionsInput = '';
+  if (!matchedPreset) {
+    state.lastVersionsName = '';
+    state.lastVersionsAppId = 0;
+    state.lastVersionsInput = '';
+  }
 
   const bundleId = isNumeric ? '' : parsed;
   const appId = isNumeric ? parsed : (presetAppId ? String(presetAppId) : '');
@@ -1811,6 +1816,11 @@ async function handleFetchVersions(e) {
     const versions = data.externalVersionIdentifiers || [];
     const appName = data.name || presetName || '';
     const resolvedAppId = Number(data.appID || appId) || 0;
+    if (resolvedAppId > 0) {
+      state.lastVersionsAppId = resolvedAppId;
+      state.lastVersionsName = appName;
+      state.lastVersionsInput = parsed;
+    }
     titleEl.textContent = appName || data.bundleID || parsed;
     bundleEl.textContent = `Bundle ID: ${data.bundleID || parsed}`;
     badgeEl.textContent = `${versions.length} версий`;
@@ -1998,7 +2008,7 @@ function renderVersionsPage() {
       <td id="disp-ver-${vId}">…</td>
       <td id="date-ver-${vId}">…</td>
       <td>
-        <button id="dl-ver-${vId}" class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleId}', ${appId}, '${platform}', '${appNameEsc || bundleId}', '', '${vId}')">
+        <button class="btn btn-primary btn-sm" onclick="startAppDownload('${bundleId}', ${appId}, '${platform}', '${appNameEsc || bundleId}', '', '${vId}')">
           ⬇️ ${batchText('batch_download_single')}
         </button>
       </td>
@@ -2022,13 +2032,6 @@ function renderVersionsPage() {
       const dateEl = document.getElementById(`date-ver-${vId}`);
       if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion, platform) : '—';
       if (dateEl) dateEl.textContent = data ? (data.releaseDate || '—') : '—';
-      if (data && data.minimumOSVersion) {
-        const parsedOS = parseMinimumOSBadge(data.minimumOSVersion, platform);
-        const dlBtn = document.getElementById(`dl-ver-${vId}`);
-        if (parsedOS && dlBtn && parsedOS.platform) {
-          dlBtn.setAttribute('onclick', `startAppDownload('${bundleId}', ${appId}, '${parsedOS.platform}', '${appNameEsc || bundleId}', '', '${vId}')`);
-        }
-      }
     },
     () => ps.renderToken !== token
   );
@@ -2483,6 +2486,12 @@ async function refreshActiveDownloads() {
 
     updateDownloadsBadge();
     renderActiveDownloadsTab();
+
+    // Stop background /api/downloads/active polling once no server-side jobs
+    // remain or when trackDownloadProgress is already polling the single job.
+    if (live.size === 0 || (state.isDownloading && live.size <= 1)) {
+      stopActiveDownloadsPolling();
+    }
   } catch (err) {
     console.error('Active downloads refresh error:', err);
   }
@@ -2492,8 +2501,12 @@ let activeDownloadsTimer = null;
 
 function startActiveDownloadsPolling() {
   if (activeDownloadsTimer) return;
+  if (state.isDownloading && state.activeDownloads.size <= 1) {
+    renderActiveDownloadsTab();
+    return;
+  }
   refreshActiveDownloads();
-  activeDownloadsTimer = setInterval(refreshActiveDownloads, 2000);
+  activeDownloadsTimer = setInterval(refreshActiveDownloads, 3000);
 }
 
 function stopActiveDownloadsPolling() {

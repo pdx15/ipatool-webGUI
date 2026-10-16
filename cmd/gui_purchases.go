@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/majd/ipatool/v2/pkg/appstore"
 	pkghttp "github.com/majd/ipatool/v2/pkg/http"
+	"howett.net/plist"
 )
 
 const (
@@ -218,14 +220,231 @@ var commerceRefreshMu sync.Mutex
 
 // purchaseItem is the JSON shape consumed by the GUI.
 type purchaseItem struct {
-	AppID                int64               `json:"appId"`
-	BundleID             string              `json:"bundleId"`
-	Name                 string              `json:"name"`
-	Version              string              `json:"version,omitempty"`
-	TVOSVersion          string              `json:"tvosVersion,omitempty"`
-	PurchaseDate         string              `json:"purchaseDate,omitempty"`
-	Platforms            []appstore.Platform `json:"platforms,omitempty"`
-	HiddenFromStorefront bool                `json:"hiddenFromStorefront,omitempty"`
+	AppID                 int64               `json:"appId"`
+	BundleID              string              `json:"bundleId"`
+	Name                  string              `json:"name"`
+	Version               string              `json:"version,omitempty"`
+	TVOSVersion           string              `json:"tvosVersion,omitempty"`
+	TVOSExternalVersionID string              `json:"tvosExternalVersionId,omitempty"`
+	RedownloadVersionIDs  []string            `json:"redownloadVersionIds,omitempty"`
+	PurchaseDate          string              `json:"purchaseDate,omitempty"`
+	Platforms             []appstore.Platform `json:"platforms,omitempty"`
+	HiddenFromStorefront  bool                `json:"hiddenFromStorefront,omitempty"`
+}
+
+var purchaseTVOSSeeds = struct {
+	sync.RWMutex
+	tvosExtIDByID     map[int64]string
+	redownloadIDsByID map[int64][]string
+	displayVerByID    map[int64]string
+}{
+	tvosExtIDByID:     map[int64]string{},
+	redownloadIDsByID: map[int64][]string{},
+	displayVerByID:    map[int64]string{},
+}
+
+func recordAppTVOSSeed(appID int64, extVersionID, displayVersion string, redownloadIDs []string) {
+	if appID <= 0 {
+		return
+	}
+	extVersionID = strings.TrimSpace(extVersionID)
+	displayVersion = strings.TrimSpace(displayVersion)
+
+	purchaseTVOSSeeds.Lock()
+	if extVersionID != "" && extVersionID != "0" {
+		purchaseTVOSSeeds.tvosExtIDByID[appID] = extVersionID
+	}
+	if displayVersion != "" {
+		purchaseTVOSSeeds.displayVerByID[appID] = displayVersion
+	}
+	for _, rID := range redownloadIDs {
+		rID = strings.TrimSpace(rID)
+		if rID == "" || rID == "0" {
+			continue
+		}
+		if !slices.Contains(purchaseTVOSSeeds.redownloadIDsByID[appID], rID) {
+			purchaseTVOSSeeds.redownloadIDsByID[appID] = append(purchaseTVOSSeeds.redownloadIDsByID[appID], rID)
+		}
+	}
+	purchaseTVOSSeeds.Unlock()
+
+	if extVersionID != "" && extVersionID != "0" {
+		appstore.RegisterKnownTVOSExternalVersionID(appID, extVersionID)
+	}
+}
+
+func rememberResolvedTVOSVersionID(acc appstore.Account, appID int64, extVersionID, displayVersion string) {
+	if appID <= 0 {
+		return
+	}
+	recordAppTVOSSeed(appID, extVersionID, displayVersion, nil)
+
+	purchasesState.Lock()
+	if purchasesState.dsid == acc.DirectoryServicesID && purchasesState.apps != nil {
+		if purchasesState.tvosVerByID == nil {
+			purchasesState.tvosVerByID = make(map[int64]string)
+		}
+		if displayVersion != "" {
+			purchasesState.tvosVerByID[appID] = displayVersion
+		}
+		for i := range purchasesState.apps {
+			if purchasesState.apps[i].ID == appID {
+				if !slices.Contains(purchasesState.apps[i].Platforms, appstore.PlatformAppleTV) {
+					purchasesState.apps[i].Platforms = append(purchasesState.apps[i].Platforms, appstore.PlatformAppleTV)
+				}
+			}
+		}
+		writePurchasesDiskCache(acc, purchasesState.apps, purchasesState.hiddenIDs, purchasesState.tvosVerByID, purchasesState.fetchedAt)
+	}
+	purchasesState.Unlock()
+}
+
+func collectTVOSVersionSeeds(acc appstore.Account, appID int64) []string {
+	if appID <= 0 {
+		return nil
+	}
+	// Ensure disk cache and local ./apps/*.ipa files have been inspected.
+	_, _, _ = previousPurchasesBaseline(acc)
+	scanLocalIPATVOSeeds()
+
+	var seeds []string
+	addSeed := func(s string) {
+		s = strings.TrimSpace(s)
+		if s != "" && s != "0" && !slices.Contains(seeds, s) {
+			seeds = append(seeds, s)
+		}
+	}
+
+	purchaseTVOSSeeds.RLock()
+	addSeed(purchaseTVOSSeeds.tvosExtIDByID[appID])
+	for _, rID := range purchaseTVOSSeeds.redownloadIDsByID[appID] {
+		addSeed(rID)
+	}
+	purchaseTVOSSeeds.RUnlock()
+
+	cacheKey := versionMetaCacheKey(appID, appstore.PlatformAppleTV)
+	versionMetaCache.RLock()
+	for verID := range versionMetaCache.m[cacheKey] {
+		addSeed(verID)
+	}
+	versionMetaCache.RUnlock()
+
+	return seeds
+}
+
+func inspectLocalIPATVOSeed(ipaPath string) (int64, string, string, bool) {
+	zr, err := zip.OpenReader(ipaPath)
+	if err != nil {
+		return 0, "", "", false
+	}
+	defer func() { _ = zr.Close() }()
+
+	var itemID int64
+	var extVerID string
+	var displayVer string
+	isTVOS := false
+
+	for _, f := range zr.File {
+		if f.Name == "iTunesMetadata.plist" {
+			rc, openErr := f.Open()
+			if openErr != nil {
+				continue
+			}
+			data, readErr := io.ReadAll(rc)
+			_ = rc.Close()
+			if readErr != nil {
+				continue
+			}
+			meta := map[string]interface{}{}
+			if _, pErr := plist.Unmarshal(data, &meta); pErr == nil {
+				if rawID, ok := meta["itemId"]; ok && rawID != nil {
+					itemID, _ = strconv.ParseInt(strings.TrimSpace(fmt.Sprintf("%v", rawID)), 10, 64)
+				}
+				if rawVer, ok := meta["softwareVersionExternalIdentifier"]; ok && rawVer != nil {
+					s := strings.TrimSpace(fmt.Sprintf("%v", rawVer))
+					if s != "" && s != "<nil>" && s != "0" {
+						extVerID = s
+					}
+				}
+				if rawShort, ok := meta["bundleShortVersionString"]; ok && rawShort != nil {
+					s := strings.TrimSpace(fmt.Sprintf("%v", rawShort))
+					if s != "" && s != "<nil>" {
+						displayVer = s
+					}
+				}
+			}
+			continue
+		}
+
+		parts := strings.Split(f.Name, "/")
+		if len(parts) == 3 && parts[0] == "Payload" && strings.HasSuffix(parts[1], ".app") && parts[2] == "Info.plist" {
+			rc, openErr := f.Open()
+			if openErr != nil {
+				continue
+			}
+			data, readErr := io.ReadAll(rc)
+			_ = rc.Close()
+			if readErr != nil {
+				continue
+			}
+			info := map[string]interface{}{}
+			if _, pErr := plist.Unmarshal(data, &info); pErr == nil {
+				if rawPlats, ok := info["CFBundleSupportedPlatforms"].([]interface{}); ok {
+					for _, p := range rawPlats {
+						if strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", p)), "AppleTVOS") {
+							isTVOS = true
+						}
+					}
+				}
+				if dtPlat, ok := info["DTPlatformName"].(string); ok && strings.EqualFold(strings.TrimSpace(dtPlat), "appletvos") {
+					isTVOS = true
+				}
+				if displayVer == "" {
+					if rawShort, ok := info["CFBundleShortVersionString"]; ok && rawShort != nil {
+						s := strings.TrimSpace(fmt.Sprintf("%v", rawShort))
+						if s != "" && s != "<nil>" {
+							displayVer = s
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if isTVOS && itemID > 0 && extVerID != "" {
+		recordAppTVOSSeed(itemID, extVerID, displayVer, nil)
+		return itemID, extVerID, displayVer, true
+	}
+	return 0, "", "", false
+}
+
+func scanLocalIPATVOSeeds() {
+	dirs := []string{defaultDownloadDir()}
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		dirs = append(dirs, wd, filepath.Join(wd, "apps"))
+	}
+	seen := make(map[string]struct{})
+	for _, dir := range dirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".ipa") {
+				continue
+			}
+			fullPath := filepath.Join(dir, entry.Name())
+			if _, dup := seen[fullPath]; dup {
+				continue
+			}
+			seen[fullPath] = struct{}{}
+			_, _, _, _ = inspectLocalIPATVOSeed(fullPath)
+		}
+	}
 }
 
 type commercePurchasesResponse struct {
@@ -274,7 +493,18 @@ func fetchDAAPOwnedAppsForAccount(acc appstore.Account) ([]appstore.App, error) 
 			Page:    page,
 			Limit:   appstore.MaxOwnedAppsLimit,
 		})
+		if err != nil && page == 1 && !errors.Is(err, appstore.ErrPasswordTokenExpired) {
+			time.Sleep(500 * time.Millisecond)
+			out, err = dependencies.AppStore.OwnedApps(appstore.OwnedAppsInput{
+				Account: acc,
+				Page:    page,
+				Limit:   appstore.MaxOwnedAppsLimit,
+			})
+		}
 		if err != nil {
+			if len(allApps) > 0 {
+				return allApps, nil
+			}
 			return nil, err
 		}
 		allApps = append(allApps, out.Results...)
@@ -286,54 +516,100 @@ func fetchDAAPOwnedAppsForAccount(acc appstore.Account) ([]appstore.App, error) 
 	return allApps, nil
 }
 
-// fetchDAAPOwnedApps queries the user's primary regional storefront and, when
-// the account is outside the US/GB storefronts, also probes the US storefront
-// so purchased apps hidden only in the regional storefront are discovered via
-// DAAP as well.
+// fetchDAAPOwnedApps queries the user's primary regional storefront and also
+// queries extended DAAP purchase history (mhid=1, ajIp=1) for hidden items,
+// tvOS layered-image metadata (aeli), and redownload version IDs (aeRp/aeRP).
 func fetchDAAPOwnedApps(acc appstore.Account) (regionalApps []appstore.App, fallbackApps []appstore.App, err error) {
+	scanLocalIPATVOSeeds()
+
 	regionalApps, err = fetchDAAPOwnedAppsForAccount(acc)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	trimmedSF := strings.TrimSpace(acc.StoreFront)
-	if !strings.HasPrefix(trimmedSF, "143441") {
-		usAcc := acc
-		usAcc.StoreFront = "143441-1,29"
-		if usApps, usErr := fetchDAAPOwnedAppsForAccount(usAcc); usErr == nil && len(usApps) > 0 {
-			fallbackApps = append(fallbackApps, usApps...)
+	regionalIndex := make(map[int64]int, len(regionalApps))
+	regionalBundleIndex := make(map[string]int, len(regionalApps))
+	for i, app := range regionalApps {
+		if app.ID > 0 {
+			regionalIndex[app.ID] = i
+		}
+		if b := strings.ToLower(strings.TrimSpace(app.BundleID)); b != "" {
+			regionalBundleIndex[b] = i
+		}
+	}
+
+	if extItems, extErr := appstore.FetchDAAPOwnedAppsExtended(dependencies.AppStore, acc); extErr == nil {
+		for _, item := range extItems {
+			if item.App.ID <= 0 {
+				continue
+			}
+			recordAppTVOSSeed(item.App.ID, "", "", item.RedownloadVersionIDs)
+			idx, ok := regionalIndex[item.App.ID]
+			if !ok && item.App.BundleID != "" {
+				idx, ok = regionalBundleIndex[strings.ToLower(strings.TrimSpace(item.App.BundleID))]
+			}
+			if ok {
+				for _, p := range item.App.Platforms {
+					if p != "" && p != appstore.PlatformUnknown && !slices.Contains(regionalApps[idx].Platforms, p) {
+						regionalApps[idx].Platforms = append(regionalApps[idx].Platforms, p)
+					}
+				}
+				if len(regionalApps[idx].Platforms) > 1 {
+					regionalApps[idx].Platforms = slices.DeleteFunc(regionalApps[idx].Platforms, func(p appstore.Platform) bool {
+						return p == appstore.PlatformUnknown
+					})
+				}
+			} else if item.Hidden {
+				fallbackApps = append(fallbackApps, item.App)
+			}
 		}
 	}
 
 	return regionalApps, fallbackApps, nil
 }
 
-func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string, error) {
-	var (
-		regionalDAAPApps []appstore.App
-		fallbackDAAPApps []appstore.App
-		daapErr          error
-		commerceApps     []appstore.App
-		commercePod      string
-		commerceErr      error
-		wg               sync.WaitGroup
-	)
+func previousPurchasesBaseline(acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string) {
+	purchasesState.Lock()
+	if purchasesState.dsid == acc.DirectoryServicesID && purchasesState.apps != nil {
+		prevApps := append([]appstore.App(nil), purchasesState.apps...)
+		prevHidden := make(map[int64]bool, len(purchasesState.hiddenIDs))
+		for k, v := range purchasesState.hiddenIDs {
+			prevHidden[k] = v
+		}
+		prevTVOS := make(map[int64]string, len(purchasesState.tvosVerByID))
+		for k, v := range purchasesState.tvosVerByID {
+			prevTVOS[k] = v
+		}
+		purchasesState.Unlock()
+		return prevApps, prevHidden, prevTVOS
+	}
+	purchasesState.Unlock()
 
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		regionalDAAPApps, fallbackDAAPApps, daapErr = fetchDAAPOwnedApps(acc)
-	}()
-	go func() {
-		defer wg.Done()
-		commerceApps, commercePod, commerceErr = fetchCommercePurchaseHistoryOnce(acc)
-	}()
-	wg.Wait()
-
-	if commerceErr == nil {
-		persistAccountPodIfChanged(acc, commercePod)
+	if diskApps, diskHidden, diskTVOS, _, ok := readPurchasesDiskCache(acc); ok {
+		return diskApps, diskHidden, diskTVOS
 	}
 
+	return nil, nil, nil
+}
+
+func lookupCachedPurchaseApp(acc appstore.Account, appID int64, bundleID string) (appstore.App, bool) {
+	bundleID = strings.TrimSpace(bundleID)
+	apps, _, _ := previousPurchasesBaseline(acc)
+	for _, item := range apps {
+		if appID > 0 && item.ID == appID {
+			return item, true
+		}
+		if bundleID != "" && strings.EqualFold(strings.TrimSpace(item.BundleID), bundleID) {
+			return item, true
+		}
+	}
+	return appstore.App{}, false
+}
+
+func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string, error) {
+	prevApps, prevHiddenIDs, prevTVOS := previousPurchasesBaseline(acc)
+
+	regionalDAAPApps, fallbackDAAPApps, daapErr := fetchDAAPOwnedApps(acc)
 	// If DAAP failed due to an expired password token, let ownedAppsWithRetry
 	// perform a single refreshAccount (which refreshes both PasswordToken and
 	// web cookies) and retry the whole fetch cleanly.
@@ -341,28 +617,48 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 		return nil, nil, nil, daapErr
 	}
 
+	commerceApps, _, commerceErr := fetchCommercePurchaseHistoryOnce(acc)
+
 	// If DAAP succeeded and only the short-lived web cookies for
 	// /commerce/account/purchases expired, refresh once now (after DAAP has
 	// finished, avoiding any race) and retry commerce. If that refresh fails
 	// (e.g. transient fpinit timeout), keep the DAAP apps rather than failing.
-	if daapErr == nil && commerceErr != nil && errors.Is(commerceErr, appstore.ErrPasswordTokenExpired) && acc.Password != "" {
+	if commerceErr != nil && errors.Is(commerceErr, appstore.ErrPasswordTokenExpired) && acc.Password != "" {
 		commerceRefreshMu.Lock()
 		refreshedAcc, refreshErr := refreshAccount(acc)
 		commerceRefreshMu.Unlock()
 		if refreshErr == nil {
-			if retriedApps, retriedPod, retryErr := fetchCommercePurchaseHistoryOnce(refreshedAcc); retryErr == nil {
-				persistAccountPodIfChanged(refreshedAcc, retriedPod)
+			if retriedApps, _, retryErr := fetchCommercePurchaseHistoryOnce(refreshedAcc); retryErr == nil {
 				commerceApps = retriedApps
 				commerceErr = nil
 			}
 		}
 	}
 
+	var prevHiddenApps []appstore.App
+	for _, pApp := range prevApps {
+		if pApp.ID > 0 && prevHiddenIDs[pApp.ID] {
+			prevHiddenApps = append(prevHiddenApps, pApp)
+		}
+	}
+
 	if daapErr != nil && len(regionalDAAPApps) == 0 {
 		if commerceErr == nil && len(commerceApps) > 0 {
-			enrichMissingCatalogFields(commerceApps)
-			tvosVerByID := enrichTVOSCatalog(acc, commerceApps)
-			return sortPurchasesByDate(commerceApps), nil, tvosVerByID, nil
+			combined := mergePurchaseHistoryApps(commerceApps, prevHiddenApps)
+			enrichMissingCatalogFields(combined)
+			tvosVerByID := enrichTVOSCatalog(acc, combined)
+			for id, ver := range prevTVOS {
+				if tvosVerByID[id] == "" && ver != "" {
+					tvosVerByID[id] = ver
+				}
+			}
+			hiddenIDs := make(map[int64]bool, len(prevHiddenIDs))
+			for id, hidden := range prevHiddenIDs {
+				if hidden {
+					hiddenIDs[id] = true
+				}
+			}
+			return sortPurchasesByDate(combined), hiddenIDs, tvosVerByID, nil
 		}
 		if errors.Is(commerceErr, appstore.ErrPasswordTokenExpired) {
 			return nil, nil, nil, commerceErr
@@ -378,6 +674,9 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 	}
 
 	extraApps := mergePurchaseHistoryApps(fallbackDAAPApps, commerceApps)
+	if (commerceErr != nil || len(commerceApps) == 0) && len(prevHiddenApps) > 0 {
+		extraApps = mergePurchaseHistoryApps(extraApps, prevHiddenApps)
+	}
 
 	hiddenIDs := make(map[int64]bool)
 	for _, app := range extraApps {
@@ -391,14 +690,18 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 	merged := mergePurchaseHistoryApps(regionalDAAPApps, extraApps)
 	enrichMissingCatalogFields(merged)
 	tvosVerByID := enrichTVOSCatalog(acc, merged)
+	for id, ver := range prevTVOS {
+		if tvosVerByID[id] == "" && ver != "" {
+			tvosVerByID[id] = ver
+		}
+	}
 
 	return sortPurchasesByDate(merged), hiddenIDs, tvosVerByID, nil
 }
 
 func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.App, error) {
-	apps, updatedPod, err := fetchCommercePurchaseHistoryOnce(acc)
+	apps, _, err := fetchCommercePurchaseHistoryOnce(acc)
 	if err == nil {
-		persistAccountPodIfChanged(acc, updatedPod)
 		return apps, nil
 	}
 
@@ -410,26 +713,14 @@ func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.A
 		refreshedAcc, refreshErr := refreshAccount(acc)
 		commerceRefreshMu.Unlock()
 		if refreshErr == nil {
-			apps, updatedPod, err = fetchCommercePurchaseHistoryOnce(refreshedAcc)
+			apps, _, err = fetchCommercePurchaseHistoryOnce(refreshedAcc)
 			if err == nil {
-				persistAccountPodIfChanged(refreshedAcc, updatedPod)
 				return apps, nil
 			}
 		}
 	}
 
 	return nil, err
-}
-
-func persistAccountPodIfChanged(acc appstore.Account, newPod string) {
-	newPod = strings.TrimSpace(newPod)
-	if newPod == "" || newPod == strings.TrimSpace(acc.Pod) || dependencies.Keychain == nil {
-		return
-	}
-	acc.Pod = newPod
-	if data, err := json.Marshal(acc); err == nil {
-		_ = dependencies.Keychain.Set("account", data)
-	}
 }
 
 func newCommerceHTTPClient() *http.Client {
@@ -459,7 +750,7 @@ func fetchCommercePurchaseHistoryOnce(acc appstore.Account) ([]appstore.App, str
 	client := newCommerceHTTPClient()
 
 	podMu := sync.Mutex{}
-	activePod := strings.TrimSpace(acc.Pod)
+	activePod := ""
 	getPod := func() string {
 		podMu.Lock()
 		defer podMu.Unlock()
@@ -484,6 +775,9 @@ func fetchCommercePurchaseHistoryOnce(acc appstore.Account) ([]appstore.App, str
 		return nil, getPod(), appstore.ErrPasswordTokenExpired
 	}
 	if err != nil {
+		if strings.Contains(err.Error(), "unexpected commerce purchase history response") {
+			return nil, getPod(), appstore.ErrPasswordTokenExpired
+		}
 		return nil, getPod(), err
 	}
 
@@ -1195,6 +1489,43 @@ func enrichTVOSCatalog(acc appstore.Account, apps []appstore.App) map[int64]stri
 	}
 
 	wg.Wait()
+
+	for i := range apps {
+		id := apps[i].ID
+		if id <= 0 {
+			continue
+		}
+		purchaseTVOSSeeds.RLock()
+		extID := purchaseTVOSSeeds.tvosExtIDByID[id]
+		dispVer := purchaseTVOSSeeds.displayVerByID[id]
+		purchaseTVOSSeeds.RUnlock()
+
+		if extID != "" || dispVer != "" {
+			if !slices.Contains(apps[i].Platforms, appstore.PlatformAppleTV) {
+				apps[i].Platforms = append(apps[i].Platforms, appstore.PlatformAppleTV)
+			}
+			if len(apps[i].Platforms) > 1 {
+				apps[i].Platforms = slices.DeleteFunc(apps[i].Platforms, func(p appstore.Platform) bool {
+					return p == appstore.PlatformUnknown
+				})
+			}
+		}
+
+		if tvosVerByID[id] == "" && dispVer != "" {
+			tvosVerByID[id] = dispVer
+		} else if tvosVerByID[id] == "" && extID != "" && dependencies.AppStore != nil {
+			if metaOut, metaErr := dependencies.AppStore.GetVersionMetadata(appstore.GetVersionMetadataInput{
+				Account:   acc,
+				App:       apps[i],
+				VersionID: extID,
+				Platform:  appstore.PlatformAppleTV,
+			}); metaErr == nil && strings.TrimSpace(metaOut.DisplayVersion) != "" {
+				tvosVerByID[id] = strings.TrimSpace(metaOut.DisplayVersion)
+				recordAppTVOSSeed(id, extID, tvosVerByID[id], nil)
+			}
+		}
+	}
+
 	return tvosVerByID
 }
 
@@ -1333,15 +1664,22 @@ func buildPurchaseItems(apps []appstore.App, hiddenIDs map[int64]bool, tvosVerBy
 			purchaseDate = app.PurchaseDate.Format("2006-01-02 15:04:05")
 		}
 
+		purchaseTVOSSeeds.RLock()
+		tvosExtID := purchaseTVOSSeeds.tvosExtIDByID[app.ID]
+		redownloadIDs := append([]string(nil), purchaseTVOSSeeds.redownloadIDsByID[app.ID]...)
+		purchaseTVOSSeeds.RUnlock()
+
 		items = append(items, purchaseItem{
-			AppID:                app.ID,
-			BundleID:             app.BundleID,
-			Name:                 app.Name,
-			Version:              app.Version,
-			TVOSVersion:          tvosVerByID[app.ID],
-			PurchaseDate:         purchaseDate,
-			Platforms:            app.Platforms,
-			HiddenFromStorefront: hiddenIDs[app.ID],
+			AppID:                 app.ID,
+			BundleID:              app.BundleID,
+			Name:                  app.Name,
+			Version:               app.Version,
+			TVOSVersion:           tvosVerByID[app.ID],
+			TVOSExternalVersionID: tvosExtID,
+			RedownloadVersionIDs:  redownloadIDs,
+			PurchaseDate:          purchaseDate,
+			Platforms:             app.Platforms,
+			HiddenFromStorefront:  hiddenIDs[app.ID],
 		})
 	}
 	return items
@@ -1365,6 +1703,9 @@ func parsePurchaseItemsToApps(items []purchaseItem) ([]appstore.App, map[int64]b
 		}
 		if item.TVOSVersion != "" && item.AppID > 0 {
 			tvosVerByID[item.AppID] = item.TVOSVersion
+		}
+		if item.AppID > 0 && (item.TVOSExternalVersionID != "" || item.TVOSVersion != "" || len(item.RedownloadVersionIDs) > 0) {
+			recordAppTVOSSeed(item.AppID, item.TVOSExternalVersionID, item.TVOSVersion, item.RedownloadVersionIDs)
 		}
 	}
 	return apps, hiddenIDs, tvosVerByID
