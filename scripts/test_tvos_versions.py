@@ -190,10 +190,13 @@ def decrypt_keyring_jwe(token: str, passphrase: str) -> bytes:
 # 2. Load Account, KBSync, GUID, and Cookies (macOS Keychain + Windows JWE)
 # ============================================================================
 
-def get_mac_guid(kbsync_map: dict = None, dsid: str = "") -> str:
-    # 1. If kbsync_cache already has an entry "<dsid>:<guid>", reuse that exact GUID
-    if isinstance(kbsync_map, dict):
-        for k in kbsync_map.keys():
+def get_mac_guid(kbsync_entry: dict = None, dsid: str = "") -> str:
+    # 1. If kbsync-v1 has {"dsid": ..., "guid": "...", "data": "..."}, reuse that exact GUID
+    if isinstance(kbsync_entry, dict):
+        entry_guid = str(kbsync_entry.get("guid", "")).strip().upper().replace(":", "")
+        if len(entry_guid) == 12:
+            return entry_guid
+        for k in kbsync_entry.keys():
             if ":" in k:
                 k_dsid, k_guid = k.split(":", 1)
                 k_guid = k_guid.strip().upper().replace(":", "")
@@ -462,7 +465,8 @@ def decode_mlit(buf: bytes, depth: int = 0) -> dict:
 CONFIGURATOR_DL_UA = "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
 CONFIGURATOR_ENT_UA = "Configurator/2.18 (Macintosh; OS X 15.3.2; 24D81) AppleWebKit/0620.2.4.11.6"
 TVOS_TA_DEVICES = "AppleTV14,1 AppleTV6,2 AppleTV5,3"
-DAAP_BASE_URL = "https://play.itunes.apple.com/WebObjects/MZPurchaseDaap.woa/purchase"
+DAAP_BASE_URL = "https://pd.itunes.apple.com/WebObjects/MZPurchaseDaap.woa/purchase"
+ENT_DOWNLOAD_URL = "https://downloaddispatch.itunes.apple.com/WebObjects/DownloadDispatch.woa/wa/ent/download"
 
 
 def _build_ssl_context():
@@ -638,15 +642,20 @@ def main():
         pod = str(acc.get("pod") or fallback_acc.get("pod") or "").strip()
         email = str(acc.get("email", "loaded-from-session")).strip()
 
-        kbsync_map = load_keychain_item(state_dir, "kbsync_cache") or {}
-        guid = get_mac_guid(kbsync_map if isinstance(kbsync_map, dict) else None, dsid)
+        kbsync_entry = load_keychain_item(state_dir, "kbsync-v1") or load_keychain_item(state_dir, "kbsync_cache") or {}
+        guid = get_mac_guid(kbsync_entry if isinstance(kbsync_entry, dict) else None, dsid)
 
         sf_base = store_front.split(",")[0] if "," in store_front else store_front
         sf_numeric = sf_base.split("-")[0] if "-" in sf_base else sf_base
 
         kbsync_b64 = ""
-        if isinstance(kbsync_map, dict):
-            kbsync_b64 = kbsync_map.get(f"{dsid}:{guid}", "") or next(iter(kbsync_map.values()), "")
+        if isinstance(kbsync_entry, dict):
+            kbsync_b64 = str(kbsync_entry.get("data", "")).strip()
+            if not kbsync_b64:
+                kbsync_b64 = kbsync_entry.get(f"{dsid}:{guid}", "") or next((v for v in kbsync_entry.values() if isinstance(v, str) and len(v) > 20), "")
+
+        hw_bytes = bytes.fromhex(guid) if len(guid) == 12 else b"\x00" * 6
+        serial_b64 = base64.b64encode(b"\x54\xc8\xb0\xa9\x88" + hw_bytes[2:]).decode("ascii")
 
         log(f"Account: {email} | DSID: {dsid} | StoreFront: {store_front} | Pod: {pod} | GUID: {guid}")
         log(f"Cookies loaded: {'yes' if cookie_hdr else 'no'} | Cached kbsync: {'yes (' + str(len(kbsync_b64)) + ' chars)' if kbsync_b64 else 'no'}")
@@ -672,104 +681,163 @@ def main():
             return h
 
         # --------------------------------------------------------------------
-        # Step 1: Unpinned Download Check (volumeStoreDownloadProduct)
+        # Step 1: Unpinned Download Check (volumeStoreDownloadProduct + ent/download)
         # --------------------------------------------------------------------
         log("\n--- [Step 1] Unpinned Download & Remote IPA Platform Check ---")
-        vs_host = f"p{pod}-buy.itunes.apple.com" if pod else "p25-buy.itunes.apple.com"
+        vs_host = f"p{pod}-buy.itunes.apple.com" if pod else "buy.itunes.apple.com"
         vs_url = f"https://{vs_host}/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct?guid={guid}"
-        vs_payload = plistlib.dumps({
-            "creditDisplay": "",
-            "guid": guid,
-            "salableAdamId": app_id,
-            "serialNumber": "0",
-        })
-        st, raw, _ = http_send(vs_url, method="POST", headers=common_headers(sf=f"{sf_base},29", ta_device=TVOS_TA_DEVICES), body=vs_payload)
-        try:
-            pl = plistlib.loads(raw)
-            songs = pl.get("songList", [])
-            if songs:
-                meta = songs[0].get("metadata", {})
-                train = [str(x) for x in meta.get("softwareVersionExternalIdentifiers", [])]
-                lat = str(meta.get("softwareVersionExternalIdentifier", "")) or (train[-1] if train else "")
-                unpinned_first = train[0] if train else ""
-                unpinned_latest = lat
-                pkg_url = songs[0].get("URL", "")
-                info = inspect_remote_ipa_info_plist(pkg_url) if pkg_url else {}
-                plats = info.get("CFBundleSupportedPlatforms", [])
-                log(f"  volumeStore unpinned -> status={st}, latest={lat}, train_len={len(train)}, platforms={plats}, ver={info.get('CFBundleShortVersionString')}")
-                if "AppleTVOS" in plats:
-                    log(f"\n[SUCCESS] Unpinned response is already AppleTVOS! Latest externalVersionId={lat}")
-                    return
-                ios_train_set.update(train)
-                if lat:
-                    ios_train_set.add(lat)
-            else:
-                log(f"  volumeStore unpinned -> status={st}, empty songList (failureType={pl.get('failureType')}, msg={pl.get('customerMessage')})")
-        except Exception as e:
-            log(f"  volumeStore parse error: {e}")
+        ent_url = f"{ENT_DOWNLOAD_URL}?guid={guid}"
+
+        step1_probes = [
+            (
+                "volumeStore",
+                vs_url,
+                {
+                    "Content-Type": "application/x-apple-plist",
+                    "User-Agent": CONFIGURATOR_DL_UA,
+                    "iCloud-DSID": dsid,
+                    "X-Dsid": dsid,
+                    **({"Cookie": cookie_hdr} if cookie_hdr else {}),
+                },
+                {
+                    "creditDisplay": "",
+                    "guid": guid,
+                    "salableAdamId": app_id,
+                    "serialNumber": "0",
+                },
+            ),
+        ]
+        if kbsync_b64:
+            step1_probes.append((
+                "ent/download",
+                ent_url,
+                common_headers(ua=CONFIGURATOR_ENT_UA, sf=store_front),
+                {
+                    "creditDisplay": "",
+                    "guid": guid,
+                    "kbsync": kbsync_b64,
+                    "salableAdamId": str(app_id),
+                    "serialNumber": serial_b64,
+                },
+            ))
+
+        for p_name, p_url, p_hdrs, p_dict in step1_probes:
+            st, raw, _ = http_send(p_url, method="POST", headers=p_hdrs, body=plistlib.dumps(p_dict))
+            try:
+                pl = plistlib.loads(raw)
+                songs = pl.get("songList", [])
+                if songs:
+                    meta = songs[0].get("metadata", {})
+                    train = [str(x) for x in meta.get("softwareVersionExternalIdentifiers", [])]
+                    lat = str(meta.get("softwareVersionExternalIdentifier", "")) or (train[-1] if train else "")
+                    if train and not unpinned_first:
+                        unpinned_first = train[0]
+                    if lat and not unpinned_latest:
+                        unpinned_latest = lat
+                    pkg_url = songs[0].get("URL", "")
+                    info = inspect_remote_ipa_info_plist(pkg_url) if pkg_url else {}
+                    plats = info.get("CFBundleSupportedPlatforms", [])
+                    log(f"  {p_name} unpinned -> status={st}, latest={lat}, train_len={len(train)}, platforms={plats}, ver={info.get('CFBundleShortVersionString')}")
+                    if "AppleTVOS" in plats:
+                        log(f"\n[SUCCESS] Unpinned {p_name} response is already AppleTVOS! Latest externalVersionId={lat}")
+                        return
+                    ios_train_set.update(train)
+                    if lat:
+                        ios_train_set.add(lat)
+                else:
+                    log(f"  {p_name} unpinned -> status={st}, empty songList (failureType={pl.get('failureType')}, msg={pl.get('customerMessage')})")
+            except Exception as e:
+                log(f"  {p_name} parse error: {e}")
 
         # --------------------------------------------------------------------
-        # Step 2: Extended DAAP Purchase History (meta without spaces, db101 & dbRev)
+        # Step 2: Extended DAAP Purchase History (pd.itunes.apple.com, meta without spaces)
         # --------------------------------------------------------------------
-        log("\n--- [Step 2] Extended DAAP Purchase History ---")
-        all_query = "('com.apple.itunes.extended\\-media\\-kind:32','com.apple.itunes.extended\\-media\\-kind:536870912','com.apple.itunes.extended\\-media\\-kind:33554432','com.apple.itunes.extended\\-media\\-kind:2097152')"
+        log("\n--- [Step 2] Extended DAAP Purchase History (pd.itunes.apple.com) ---")
+        all_query = (
+            "('com.apple.itunes.extended\\-media\\-kind:131072',"
+            "'com.apple.itunes.extended\\-media\\-kind:262144',"
+            "'com.apple.itunes.extended\\-media\\-kind:33554432',"
+            "'com.apple.itunes.extended\\-media\\-kind:67108864')"
+        )
+        tv_query = (
+            "('com.apple.itunes.extended\\-media\\-kind:32',"
+            "'com.apple.itunes.extended\\-media\\-kind:536870912',"
+            "'com.apple.itunes.extended\\-media\\-kind:33554432',"
+            "'com.apple.itunes.extended\\-media\\-kind:131072')"
+        )
         single_query = f"('com.apple.itunes.itms\\-songid:{app_id}')"
 
-        def daap_headers(sf_val: str):
-            h = common_headers(ua=CONFIGURATOR_DL_UA, sf=sf_val, content_type="application/x-dmap-tagged")
-            h["Client-Cloud-Daap-Version"] = "1.3/24D81"
-            h["Client-Cloud-Purchase-Daap-Version"] = "1.1/24D81"
-            h["Client-Cloud-Purchase-DAAP-Version"] = "1.1/24D81"
-            h["X-DAAP-Supported-Features"] = "16"
-            h["X-Guid"] = guid
+        def daap_headers(sf_val: str, content_type="application/x-dmap-tagged"):
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            h = {
+                "Accept": "*/*",
+                "Accept-Language": "en-us",
+                "User-Agent": CONFIGURATOR_DL_UA,
+                "Client-Cloud-DAAP-Request-Reason": "5",
+                "Client-Cloud-Daap-Version": "1.3/24D81",
+                "Client-Cloud-Purchase-Daap-Version": "1.1/Configurator-2.0",
+                "Client-DAAP-Version": "3.12",
+                "Date": now_utc.strftime("%a, %d %b %Y %H:%M:%S GMT"),
+                "iCloud-DSID": dsid,
+                "X-Apple-I-Client-Time": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "X-Apple-I-Locale": "en_US",
+                "X-Apple-Store-Front": sf_val,
+                "X-Dsid": dsid,
+                "X-Guid": guid,
+                "X-Token": token,
+                "X-DAAP-Supported-Features": "16",
+            }
+            if content_type:
+                h["Content-Type"] = content_type
+            if cookie_hdr:
+                h["Cookie"] = cookie_hdr
             return h
 
         storefronts_to_test = [f"{sf_base},29", f"{sf_base},34"]
         if sf_numeric != "143441":
             storefronts_to_test.append("143441-1,29")
 
+        d101_url = f"{DAAP_BASE_URL}/databases/101/items?includeApplePubBooks=1&includeItemFlavors=1"
+
         for sf_val in storefronts_to_test:
             # 2a. Direct databases/101/items (PurchaseHistoryItemsDAAPRequestEncoder.m)
-            direct_tags = (
-                dmap_string("meta", DAAP_EXTENDED_META_FIELDS)
-                + dmap_uint32("musr", 0)
-                + dmap_uint8("mhid", 1)
-                + dmap_uint8("ajIp", 1)
-                + dmap_string("mque", all_query)
-                + dmap_tag("aetl", b"")
-            )
-            direct_body = dmap_tag("adsr", direct_tags)
-            d101_url = f"{DAAP_BASE_URL}/databases/101/items?includeApplePubBooks=1&includeItemFlavors=1"
-            st, raw, _ = http_send(d101_url, method="POST", headers=daap_headers(sf_val), body=direct_body)
-            mstt = first_dmap_uint(raw, "mstt") if st == 200 else None
-            items = parse_dmap_mlit_items(raw) if st == 200 else []
-            matched = [it for it in items if it.get("aeSI") == app_id or it.get("miid") == app_id or it.get("mild") == app_id]
-            log(f"  [{sf_val}] direct db101 (m=True) -> HTTP {st}, mstt={mstt}, total_items={len(items)}, matched={len(matched)}")
-            for m_it in matched:
-                log(f"    -> MATCH in direct db101: {json.dumps(m_it, ensure_ascii=False)}")
-                for s_val in m_it.get("_strings", {}).values():
-                    for cid in extract_version_ids_from_text(s_val):
-                        if cid not in candidates:
-                            candidates.append(cid)
+            for d_q_label, d_q in [("all", all_query), ("tv", tv_query), ("single", single_query)]:
+                direct_tags = (
+                    dmap_string("meta", DAAP_EXTENDED_META_FIELDS)
+                    + dmap_uint32("musr", 0)
+                    + dmap_uint8("mhid", 1)
+                    + dmap_uint8("ajIp", 1)
+                    + dmap_string("mque", d_q)
+                    + dmap_tag("aetl", b"")
+                )
+                st, raw, _ = http_send(d101_url, method="POST", headers=daap_headers(sf_val), body=dmap_tag("adsr", direct_tags))
+                mstt = first_dmap_uint(raw, "mstt") if st == 200 else None
+                items = parse_dmap_mlit_items(raw) if st == 200 else []
+                matched = [it for it in items if it.get("aeSI") == app_id or it.get("miid") == app_id or it.get("mild") == app_id]
+                if d_q_label == "all" or matched or len(items) > 0:
+                    log(f"  [{sf_val}] direct db101 ({d_q_label}, m=True) -> HTTP {st}, mstt={mstt}, total_items={len(items)}, matched={len(matched)}")
+                for m_it in matched:
+                    log(f"    -> MATCH in direct db101 ({d_q_label}): {json.dumps(m_it, ensure_ascii=False)}")
+                    for s_val in m_it.get("_strings", {}).values():
+                        for cid in extract_version_ids_from_text(s_val):
+                            if cid not in candidates:
+                                candidates.append(cid)
 
-            # 2b. Session /login -> /update -> db101 (musr=0, mder=rev) & dbRev (musr=rev, mder=0)
-            login_body = dmap_tag("abro", dmap_uint32("mstc", int(time.time())) + dmap_tag("aetl", b""))
-            st_l, raw_l, _ = http_send(f"{DAAP_BASE_URL}/login", method="POST", headers=daap_headers(sf_val), body=login_body)
+            # 2b. Session /login (empty body) -> /update (form-urlencoded) -> db101 & dbRev
+            st_l, raw_l, _ = http_send(f"{DAAP_BASE_URL}/login", method="POST", headers=daap_headers(sf_val, content_type=None), body=b"")
             mlid = first_dmap_uint(raw_l, "mlid") if st_l == 200 else None
             if not mlid:
                 log(f"  [{sf_val}] /login failed (HTTP {st_l})")
                 continue
 
-            for q_label, q_str in [("all", all_query), ("single", single_query)]:
-                upd_tags = (
-                    dmap_uint32("mstc", int(time.time()))
-                    + dmap_uint32("mlid", mlid)
-                    + dmap_uint32("musr", 1)
-                    + dmap_uint8("mikd", 2)
-                    + dmap_string("mque", q_str)
-                    + dmap_tag("aetl", b"")
+            for q_label, q_str in [("all", all_query), ("tv", tv_query), ("single", single_query)]:
+                upd_body = f"session-id={mlid}&revision-number=(null)&query={q_str}".encode("utf-8")
+                st_u, raw_u, _ = http_send(
+                    f"{DAAP_BASE_URL}/update",
+                    method="POST",
+                    headers=daap_headers(sf_val, content_type="application/x-www-form-urlencoded"),
+                    body=upd_body,
                 )
-                st_u, raw_u, _ = http_send(f"{DAAP_BASE_URL}/update", method="POST", headers=daap_headers(sf_val), body=dmap_tag("mupd", upd_tags))
                 rev = first_dmap_uint(raw_u, "musr") if st_u == 200 else None
                 if not rev:
                     continue
@@ -858,7 +926,7 @@ def main():
                     if cid not in candidates:
                         candidates.append(cid)
         else:
-            log("  Skipped (no cached kbsync found in keychain)")
+            log("  Skipped (no cached kbsync-v1 found in keychain)")
 
         # --------------------------------------------------------------------
         # Step 4: Test Candidates via Pinned Download + Remote Info.plist Check
@@ -868,35 +936,64 @@ def main():
             if cand in ios_train_set:
                 log(f"  Candidate {cand}: skipped (already in iPhoneOS train)")
                 continue
-            pin_payload = plistlib.dumps({
-                "creditDisplay": "",
-                "guid": guid,
-                "salableAdamId": app_id,
-                "externalVersionId": cand,
-                "appExtVrsId": cand,
-                "serialNumber": "0",
-            })
-            st_c, raw_c, _ = http_send(vs_url, method="POST", headers=common_headers(sf=f"{sf_base},29", ta_device=TVOS_TA_DEVICES), body=pin_payload)
-            try:
-                pl_c = plistlib.loads(raw_c)
-                songs_c = pl_c.get("songList", [])
-                if not songs_c:
-                    log(f"  Candidate {cand} -> empty songList (failureType={pl_c.get('failureType')}, msg={pl_c.get('customerMessage')})")
-                    continue
-                meta_c = songs_c[0].get("metadata", {})
-                train_c = [str(x) for x in meta_c.get("softwareVersionExternalIdentifiers", [])]
-                lat_c = train_c[-1] if train_c else str(meta_c.get("softwareVersionExternalIdentifier", cand))
-                pkg_url_c = songs_c[0].get("URL", "")
-                info_c = inspect_remote_ipa_info_plist(pkg_url_c) if pkg_url_c else {}
-                plats_c = info_c.get("CFBundleSupportedPlatforms", [])
-                log(f"  Candidate {cand} -> platforms={plats_c}, shortVer={info_c.get('CFBundleShortVersionString')}, train_len={len(train_c)}, latest={lat_c}")
-                if "AppleTVOS" in plats_c:
-                    log(f"\n[SUCCESS] Resolved tvOS train via candidate {cand}!")
-                    log(f"  tvOS version train ({len(train_c)} versions): {train_c}")
-                    log(f"  Latest tvOS externalVersionId: {lat_c}")
-                    return
-            except Exception as e:
-                log(f"  Candidate {cand} error: {e}")
+
+            cand_probes = [
+                (
+                    "volumeStore",
+                    vs_url,
+                    {
+                        "Content-Type": "application/x-apple-plist",
+                        "User-Agent": CONFIGURATOR_DL_UA,
+                        "iCloud-DSID": dsid,
+                        "X-Dsid": dsid,
+                        **({"Cookie": cookie_hdr} if cookie_hdr else {}),
+                    },
+                    {
+                        "creditDisplay": "",
+                        "guid": guid,
+                        "salableAdamId": app_id,
+                        "externalVersionId": cand,
+                        "serialNumber": "0",
+                    },
+                ),
+            ]
+            if kbsync_b64:
+                cand_probes.append((
+                    "ent/download",
+                    ent_url,
+                    common_headers(ua=CONFIGURATOR_ENT_UA, sf=store_front),
+                    {
+                        "creditDisplay": "",
+                        "guid": guid,
+                        "kbsync": kbsync_b64,
+                        "salableAdamId": str(app_id),
+                        "externalVersionId": cand,
+                        "serialNumber": serial_b64,
+                    },
+                ))
+
+            for cp_name, cp_url, cp_hdrs, cp_dict in cand_probes:
+                st_c, raw_c, _ = http_send(cp_url, method="POST", headers=cp_hdrs, body=plistlib.dumps(cp_dict))
+                try:
+                    pl_c = plistlib.loads(raw_c)
+                    songs_c = pl_c.get("songList", [])
+                    if not songs_c:
+                        log(f"  Candidate {cand} ({cp_name}) -> empty songList (failureType={pl_c.get('failureType')}, msg={pl_c.get('customerMessage')})")
+                        continue
+                    meta_c = songs_c[0].get("metadata", {})
+                    train_c = [str(x) for x in meta_c.get("softwareVersionExternalIdentifiers", [])]
+                    lat_c = train_c[-1] if train_c else str(meta_c.get("softwareVersionExternalIdentifier", cand))
+                    pkg_url_c = songs_c[0].get("URL", "")
+                    info_c = inspect_remote_ipa_info_plist(pkg_url_c) if pkg_url_c else {}
+                    plats_c = info_c.get("CFBundleSupportedPlatforms", [])
+                    log(f"  Candidate {cand} ({cp_name}) -> platforms={plats_c}, shortVer={info_c.get('CFBundleShortVersionString')}, train_len={len(train_c)}, latest={lat_c}")
+                    if "AppleTVOS" in plats_c:
+                        log(f"\n[SUCCESS] Resolved tvOS train via candidate {cand} ({cp_name})!")
+                        log(f"  tvOS version train ({len(train_c)} versions): {train_c}")
+                        log(f"  Latest tvOS externalVersionId: {lat_c}")
+                        return
+                except Exception as e:
+                    log(f"  Candidate {cand} ({cp_name}) error: {e}")
 
         log("\n[RESULT] No tvOS externalVersionId resolved yet. Check the Step 2 / Step 3 output above!")
     finally:
