@@ -516,15 +516,26 @@ func fetchDAAPOwnedAppsForAccount(acc appstore.Account) ([]appstore.App, error) 
 	return allApps, nil
 }
 
-// fetchDAAPOwnedApps queries the user's primary regional storefront and also
-// queries extended DAAP purchase history (mhid=1, ajIp=1) for hidden items,
-// tvOS layered-image metadata (aeli), and redownload version IDs (aeRp/aeRP).
+// fetchDAAPOwnedApps queries the user's primary regional storefront, probes the
+// US storefront when outside the US so purchased apps hidden only in the
+// regional storefront are discovered via DAAP, and also queries extended DAAP
+// purchase history (mhid=1, ajIp=1) for hidden items, tvOS layered-image
+// metadata (aeli), and redownload version IDs (aeRp/aeRP).
 func fetchDAAPOwnedApps(acc appstore.Account) (regionalApps []appstore.App, fallbackApps []appstore.App, err error) {
 	scanLocalIPATVOSeeds()
 
 	regionalApps, err = fetchDAAPOwnedAppsForAccount(acc)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	trimmedSF := strings.TrimSpace(acc.StoreFront)
+	if !strings.HasPrefix(trimmedSF, "143441") {
+		usAcc := acc
+		usAcc.StoreFront = "143441-1,29"
+		if usApps, usErr := fetchDAAPOwnedAppsForAccount(usAcc); usErr == nil && len(usApps) > 0 {
+			fallbackApps = append(fallbackApps, usApps...)
+		}
 	}
 
 	regionalIndex := make(map[int64]int, len(regionalApps))
@@ -559,7 +570,7 @@ func fetchDAAPOwnedApps(acc appstore.Account) (regionalApps []appstore.App, fall
 						return p == appstore.PlatformUnknown
 					})
 				}
-			} else if item.Hidden {
+			} else {
 				fallbackApps = append(fallbackApps, item.App)
 			}
 		}
@@ -617,7 +628,10 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 		return nil, nil, nil, daapErr
 	}
 
-	commerceApps, _, commerceErr := fetchCommercePurchaseHistoryOnce(acc)
+	commerceApps, commercePod, commerceErr := fetchCommercePurchaseHistoryOnce(acc)
+	if commerceErr == nil {
+		persistAccountPodIfChanged(acc, commercePod)
+	}
 
 	// If DAAP succeeded and only the short-lived web cookies for
 	// /commerce/account/purchases expired, refresh once now (after DAAP has
@@ -628,7 +642,8 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 		refreshedAcc, refreshErr := refreshAccount(acc)
 		commerceRefreshMu.Unlock()
 		if refreshErr == nil {
-			if retriedApps, _, retryErr := fetchCommercePurchaseHistoryOnce(refreshedAcc); retryErr == nil {
+			if retriedApps, retriedPod, retryErr := fetchCommercePurchaseHistoryOnce(refreshedAcc); retryErr == nil {
+				persistAccountPodIfChanged(refreshedAcc, retriedPod)
 				commerceApps = retriedApps
 				commerceErr = nil
 			}
@@ -674,7 +689,7 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 	}
 
 	extraApps := mergePurchaseHistoryApps(fallbackDAAPApps, commerceApps)
-	if (commerceErr != nil || len(commerceApps) == 0) && len(prevHiddenApps) > 0 {
+	if len(prevHiddenApps) > 0 {
 		extraApps = mergePurchaseHistoryApps(extraApps, prevHiddenApps)
 	}
 
@@ -700,8 +715,9 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 }
 
 func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.App, error) {
-	apps, _, err := fetchCommercePurchaseHistoryOnce(acc)
+	apps, updatedPod, err := fetchCommercePurchaseHistoryOnce(acc)
 	if err == nil {
+		persistAccountPodIfChanged(acc, updatedPod)
 		return apps, nil
 	}
 
@@ -713,14 +729,26 @@ func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.A
 		refreshedAcc, refreshErr := refreshAccount(acc)
 		commerceRefreshMu.Unlock()
 		if refreshErr == nil {
-			apps, _, err = fetchCommercePurchaseHistoryOnce(refreshedAcc)
+			apps, updatedPod, err = fetchCommercePurchaseHistoryOnce(refreshedAcc)
 			if err == nil {
+				persistAccountPodIfChanged(refreshedAcc, updatedPod)
 				return apps, nil
 			}
 		}
 	}
 
 	return nil, err
+}
+
+func persistAccountPodIfChanged(acc appstore.Account, newPod string) {
+	newPod = strings.TrimSpace(newPod)
+	if newPod == "" || newPod == strings.TrimSpace(acc.Pod) || dependencies.Keychain == nil {
+		return
+	}
+	acc.Pod = newPod
+	if data, err := json.Marshal(acc); err == nil {
+		_ = dependencies.Keychain.Set("account", data)
+	}
 }
 
 func newCommerceHTTPClient() *http.Client {
@@ -750,7 +778,7 @@ func fetchCommercePurchaseHistoryOnce(acc appstore.Account) ([]appstore.App, str
 	client := newCommerceHTTPClient()
 
 	podMu := sync.Mutex{}
-	activePod := ""
+	activePod := strings.TrimSpace(acc.Pod)
 	getPod := func() string {
 		podMu.Lock()
 		defer podMu.Unlock()
