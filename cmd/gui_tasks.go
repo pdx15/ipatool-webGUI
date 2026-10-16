@@ -141,6 +141,8 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 					account = updated
 					refreshed = true
 					continue
+				} else if tvErr != nil {
+					return account, appstore.DownloadOutput{}, licenseAcquired, tvErr
 				}
 			}
 		}
@@ -155,12 +157,8 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 			Progress:          progress,
 		})
 		if err == nil {
-			if input.Platform == appstore.PlatformAppleTV && output.DestinationPath != "" {
-				if itemID, extID, dispVer, ok := inspectLocalIPATVOSeed(output.DestinationPath); ok {
-					rememberResolvedTVOSVersionID(account, itemID, extID, dispVer)
-				} else if input.App.ID > 0 && externalVersionID != "" {
-					rememberResolvedTVOSVersionID(account, input.App.ID, externalVersionID, "")
-				}
+			if input.Platform == appstore.PlatformAppleTV && input.App.ID > 0 && externalVersionID != "" {
+				rememberResolvedTVOSVersionID(account, input.App.ID, externalVersionID, "")
 			}
 			return account, output, licenseAcquired, nil
 		}

@@ -899,7 +899,7 @@ index 7bab12c..8db39cc 100644
  
  func macOSExternalVersionID(body []byte, app App) (string, error) {
 diff --git a/pkg/appstore/appstore_platform_version_lookup.go b/pkg/appstore/appstore_platform_version_lookup.go
-index c2b583f..6656732 100644
+index c2b583f..876e53a 100644
 --- a/pkg/appstore/appstore_platform_version_lookup.go
 +++ b/pkg/appstore/appstore_platform_version_lookup.go
 @@ -1,15 +1,27 @@
@@ -952,7 +952,7 @@ index c2b583f..6656732 100644
  	if platform == PlatformVisionOS {
  		return t.lookupLatestVisionOSExternalVersionID(app.ID, countryCode)
  	}
-@@ -199,3 +226,1412 @@ func externalVersionIDFromBuyParams(buyParams string) (string, error) {
+@@ -199,3 +226,1486 @@ func externalVersionIDFromBuyParams(buyParams string) (string, error) {
  
  	return values.Get("appExtVrsId"), nil
  }
@@ -988,20 +988,20 @@ index c2b583f..6656732 100644
 +	tvosResolvedTrainCache = map[string]tvosResolvedTrainEntry{}
 +	knownTVOSVersionSeeds  = map[int64][]string{}
 +	daapExtendedCache      = map[string]daapExtendedCacheEntry{}
-+	redownloadParamDigits  = regexp.MustCompile(`(?:appExtVrsId|externalVersionId|softwareVersionExternalIdentifier)[=:]\s*([0-9]{5,})`)
++	redownloadParamDigits  = regexp.MustCompile(`(?:appExtVrsId|externalVersionId|softwareVersionExternalIdentifier|externalId|versionId|evid)[=:]\s*"?([0-9]{5,})`)
 +	bareDigitsPattern      = regexp.MustCompile(`^[0-9]{5,}$`)
 +)
 +
 +const (
-+	ownedTVAppsMediaKind     = 33554432 // 0x2000000 in tvOS appstored PurchaseHistoryDAAPEncoding
-+	daapPurchasedDatabaseID  = 101      // purchase-daap/database-id in bag.xml
-+	configuratorDownloadUA   = "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
-+	configuratorEntUA        = "Configurator/2.18 (Macintosh; OS X 15.3.2; 24D81) AppleWebKit/0620.2.4.11.6"
-+	tvosCloudDAAPVersion     = "1.3/Configurator-2.0"
-+	tvosPurchaseDAAPVer      = "1.1/Configurator-2.0"
-+	tvosTADeviceVariants     = "AppleTV14,1 AppleTV6,2 AppleTV5,3"
-+	// Matches PurchaseHistoryItemsDAAPRequestEncoder.mm ("[v2 componentsJoinedByString:@\", \"]").
-+	daapExtendedMetaFields = "dmap.itemid, dmap.itemname, dmap.longitemid, dmap.itemhidden, daap.songartist, daap.songdatepurchased, com.apple.itunes.itms-songid, com.apple.itunes.cloud-id, com.apple.itunes.cloud-purchased-token, com.apple.itunes.extended-media-kind, com.apple.itunes.supported-devices, com.apple.itunes.supports-layered-image, com.apple.itunes.item-flavors, com.apple.itunes.item-flavor-listing, com.apple.itunes.item-flavor, com.apple.itunes.item-redownload-param-2, com.apple.itunes.item-redownload-param, com.apple.itunes.bundle-id, com.apple.itunes.version"
++	ownedTVAppsMediaKind    = 33554432 // 0x2000000 in tvOS appstored PurchaseHistoryDAAPEncoding
++	daapPurchasedDatabaseID = 101      // purchase-daap/database-id in bag.xml
++	configuratorDownloadUA  = "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
++	configuratorEntUA       = "Configurator/2.18 (Macintosh; OS X 15.3.2; 24D81) AppleWebKit/0620.2.4.11.6"
++	tvosCloudDAAPVersion    = "1.3/24D81"
++	tvosPurchaseDAAPVer     = "1.1/24D81"
++	tvosTADeviceVariants    = "AppleTV14,1 AppleTV6,2 AppleTV5,3"
++	// Matches PurchaseHistoryItemsDAAPRequestEncoder.m ("[&off_10040DD50 componentsJoinedByString:@\",\"]" — no spaces after commas).
++	daapExtendedMetaFields = "dmap.itemname,dmap.itemid,dmap.longitemid,dmap.downloadstatus,dmap.itemhidden,daap.songartist,daap.songdatepurchased,daap.songgenre,com.apple.itunes.item-flavor-listing,com.apple.itunes.item-flavor,com.apple.itunes.item-flavors,com.apple.itunes.item-redownload-param-2,com.apple.itunes.item-redownload-param,com.apple.itunes.itms-artistid,com.apple.itunes.itms-genreid,com.apple.itunes.itms-playlistid,com.apple.itunes.itms-songid,com.apple.itunes.itms-storefrontid,com.apple.itunes.cloud-id,com.apple.itunes.cloud-purchased-token,com.apple.itunes.extended-media-kind,com.apple.itunes.supported-devices,com.apple.itunes.supports-layered-image,com.apple.itunes.bundle-id,com.apple.itunes.version,com.apple.itunes.display-publication-version,com.apple.itunes.store.preflight-package-url,com.apple.itunes.store.redownload-action-params,com.apple.itunes.store.software-bundle-id,com.apple.itunes.store.software-device-families,com.apple.itunes.store.software-version-external-identifier,com.apple.itunes.store.version-string"
 +)
 +
 +// RegisterKnownTVOSExternalVersionID records a known tvOS externalVersionId
@@ -1082,9 +1082,10 @@ index c2b583f..6656732 100644
 +
 +func tvosAppstoredDAAPQuery() string {
 +	return fmt.Sprintf(
-+		"('com.apple.itunes.extended\\-media\\-kind:%d','com.apple.itunes.extended\\-media\\-kind:%d')",
++		"('com.apple.itunes.extended\\-media\\-kind:%d','com.apple.itunes.extended\\-media\\-kind:%d','com.apple.itunes.extended\\-media\\-kind:%d')",
++		ownedAppsMediaKind,
++		ownedArcadeAppsMediaKind,
 +		ownedTVAppsMediaKind,
-+		ownedMacAppsMediaKind,
 +	)
 +}
 +
@@ -1179,8 +1180,8 @@ index c2b583f..6656732 100644
 +		sfBase + ",34",
 +		sfBase + ",13",
 +	}
-+	if sfNumeric != "" && sfNumeric+"-1,29" != sfBase+",29" {
-+		sessionStorefronts = append([]string{sfNumeric + "-1,29"}, sessionStorefronts...)
++	if sfNumeric != "" && sfNumeric != "143441" {
++		sessionStorefronts = append(sessionStorefronts, "143441-1,29", "143441-1,34")
 +	}
 +
 +	for _, sf := range sessionStorefronts {
@@ -1188,9 +1189,32 @@ index c2b583f..6656732 100644
 +		accForSF.StoreFront = sf
 +		sfTag := sf
 +		if idx := strings.LastIndex(sf, ","); idx >= 0 {
-+			sfTag = "sf" + sf[idx+1:]
++			prefix := ""
++			if strings.HasPrefix(sf, "143441-") && sfNumeric != "143441" {
++				prefix = "us"
++			}
++			sfTag = prefix + "sf" + sf[idx+1:]
 +		}
 +
++		// 1. Direct databases/101/items request (PurchaseHistoryItemsDAAPRequestEncoder.m in tvOS appstored).
++		if strings.HasSuffix(sf, ",29") {
++			directURL := fmt.Sprintf("%s/databases/%d/items?includeApplePubBooks=1&includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, daapPurchasedDatabaseID)
++			directReq := buildDirectDAAPDatabase101Request(accForSF, guid, directURL, 0, true, allQuery, "", signer)
++			if directRes, directErr := t.ownedAppsClient.Send(directReq); directErr == nil && directRes.StatusCode == gohttp.StatusOK && len(directRes.Data) > 0 {
++				mstt, _, _ := firstDMAPUint(directRes.Data, "mstt")
++				parsed := parseDAAPExtendedItems(directRes.Data)
++				hid := 0
++				for _, it := range parsed {
++					if it.Hidden {
++						hid++
++					}
++				}
++				mergeItems(parsed)
++				passDiag = append(passDiag, fmt.Sprintf("%s.d101(st=%d,mstt=%d,n=%d,hid=%d)", sfTag, directRes.StatusCode, mstt, len(parsed), hid))
++			}
++		}
++
++		// 2. Session-based /login -> /update -> /databases/{101|<rev>}/items.
 +		loginRes, loginErr := t.ownedAppsClient.Send(t.ownedAppsLoginRequest(accForSF, guid))
 +		if loginErr != nil || loginRes.StatusCode != gohttp.StatusOK {
 +			passDiag = append(passDiag, fmt.Sprintf("%s:login(%d)", sfTag, loginRes.StatusCode))
@@ -1204,7 +1228,7 @@ index c2b583f..6656732 100644
 +
 +		queriesForSF := []string{allQuery}
 +		if strings.HasSuffix(sf, ",29") {
-+			queriesForSF = []string{tvQuery, allQuery}
++			queriesForSF = []string{allQuery, tvQuery}
 +		}
 +
 +		for qi, q := range queriesForSF {
@@ -1220,19 +1244,26 @@ index c2b583f..6656732 100644
 +				continue
 +			}
 +
-+			// Query both databases/101/items?includeItemFlavors=1 (BLDAAPItemsRequest / appstored bag db 101)
-+			// and databases/<latestVersion>/items?includeItemFlavors=1 with consistent Configurator UA.
++			// Per BookLibraryCore (sub_241D6D70C) & BLDAAPItemsRequest:
++			// - databases/101/items uses musr = localVersion (0 on full sync) and mder = serverVersion (latestVersion)
++			// - databases/<latestVersion>/items uses musr = latestVersion and mder = 0
 +			dbEndpoints := []struct {
-+				label string
-+				url   string
++				label        string
++				url          string
++				localVersion uint32
++				deltaVersion uint32
 +			}{
 +				{
-+					label: "db101",
-+					url:   fmt.Sprintf("%s/databases/%d/items?includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, daapPurchasedDatabaseID),
++					label:        "db101",
++					url:          fmt.Sprintf("%s/databases/%d/items?includeApplePubBooks=1&includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, daapPurchasedDatabaseID),
++					localVersion: 0,
++					deltaVersion: uint32(latestVersion),
 +				},
 +				{
-+					label: "dbRev",
-+					url:   fmt.Sprintf("%s/databases/%d/items?includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, latestVersion),
++					label:        "dbRev",
++					url:          fmt.Sprintf("%s/databases/%d/items?includeApplePubBooks=1&includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, latestVersion),
++					localVersion: uint32(latestVersion),
++					deltaVersion: 0,
 +				},
 +			}
 +
@@ -1251,7 +1282,8 @@ index c2b583f..6656732 100644
 +							guid,
 +							dbEp.url,
 +							uint32(sessionID),
-+							uint32(latestVersion),
++							dbEp.localVersion,
++							dbEp.deltaVersion,
 +							includeMeta,
 +							q,
 +							pageToken,
@@ -1340,18 +1372,49 @@ index c2b583f..6656732 100644
 +	if sfBase == "" {
 +		sfBase = "143441-1"
 +	}
++	sfNumeric, _, _ := strings.Cut(sfBase, "-")
 +
 +	queries := []string{
 +		fmt.Sprintf("('com.apple.itunes.itms\\-songid:%d')", appID),
 +		fmt.Sprintf("('dmap.itemid:%d')", appID),
-+		fmt.Sprintf("(('com.apple.itunes.extended\\-media\\-kind:%d','com.apple.itunes.extended\\-media\\-kind:%d','com.apple.itunes.extended\\-media\\-kind:%d')+'com.apple.itunes.itms\\-songid:%d')", ownedTVAppsMediaKind, ownedAppsMediaKind, ownedMacAppsMediaKind, appID),
++		fmt.Sprintf("('dmap.longitemid:%d')", appID),
++		fmt.Sprintf("(('com.apple.itunes.extended\\-media\\-kind:%d','com.apple.itunes.extended\\-media\\-kind:%d','com.apple.itunes.extended\\-media\\-kind:%d','com.apple.itunes.extended\\-media\\-kind:%d')+'com.apple.itunes.itms\\-songid:%d')", ownedAppsMediaKind, ownedArcadeAppsMediaKind, ownedTVAppsMediaKind, ownedMacAppsMediaKind, appID),
 +	}
 +	var candidates []string
 +	var debugParts []string
 +
-+	for _, sf := range []string{sfBase + ",29", sfBase + ",34"} {
++	collectFromResponse := func(data []byte) {
++		for _, item := range parseDAAPExtendedItems(data) {
++			if item.App.ID == 0 || item.App.ID == appID {
++				if item.DebugSummary != "" && !slices.Contains(debugParts, item.DebugSummary) {
++					debugParts = append(debugParts, item.DebugSummary)
++				}
++				for _, v := range item.RedownloadVersionIDs {
++					candidates = appendUniqueString(candidates, v)
++				}
++			}
++		}
++	}
++
++	storefronts := []string{sfBase + ",29", sfBase + ",34"}
++	if sfNumeric != "143441" {
++		storefronts = append(storefronts, "143441-1,29")
++	}
++
++	db101URL := fmt.Sprintf("%s/databases/%d/items?includeApplePubBooks=1&includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, daapPurchasedDatabaseID)
++
++	for _, sf := range storefronts {
 +		accForSF := acc
 +		accForSF.StoreFront = sf
++
++		for _, q := range queries {
++			for _, includeMeta := range []bool{true, false} {
++				directReq := buildDirectDAAPDatabase101Request(accForSF, guid, db101URL, 0, includeMeta, q, "", signer)
++				if res, err := t.ownedAppsClient.Send(directReq); err == nil && res.StatusCode == gohttp.StatusOK && len(res.Data) > 0 {
++					collectFromResponse(res.Data)
++				}
++			}
++		}
 +
 +		loginRes, loginErr := t.ownedAppsClient.Send(t.ownedAppsLoginRequest(accForSF, guid))
 +		if loginErr != nil || loginRes.StatusCode != gohttp.StatusOK {
@@ -1370,24 +1433,27 @@ index c2b583f..6656732 100644
 +			if verErr != nil || !ok || latestVersion == 0 || latestVersion > math.MaxUint32 {
 +				continue
 +			}
-+			dbURLs := []string{
-+				fmt.Sprintf("%s/databases/%d/items?includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, daapPurchasedDatabaseID),
-+				fmt.Sprintf("%s/databases/%d/items?includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, latestVersion),
++			dbSpecs := []struct {
++				url      string
++				localVer uint32
++				deltaVer uint32
++			}{
++				{
++					url:      db101URL,
++					localVer: 0,
++					deltaVer: uint32(latestVersion),
++				},
++				{
++					url:      fmt.Sprintf("%s/databases/%d/items?includeApplePubBooks=1&includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, latestVersion),
++					localVer: uint32(latestVersion),
++					deltaVer: 0,
++				},
 +			}
-+			for _, dbURL := range dbURLs {
-+				for _, includeMeta := range []bool{false, true} {
-+					req := buildSessionDAAPExtendedItemsRequest(accForSF, guid, dbURL, uint32(sessionID), uint32(latestVersion), includeMeta, q, "", signer)
++			for _, dbSpec := range dbSpecs {
++				for _, includeMeta := range []bool{true, false} {
++					req := buildSessionDAAPExtendedItemsRequest(accForSF, guid, dbSpec.url, uint32(sessionID), dbSpec.localVer, dbSpec.deltaVer, includeMeta, q, "", signer)
 +					if res, itemsErr := t.ownedAppsClient.Send(req); itemsErr == nil && res.StatusCode == gohttp.StatusOK && len(res.Data) > 0 {
-+						for _, item := range parseDAAPExtendedItems(res.Data) {
-+							if item.App.ID == 0 || item.App.ID == appID {
-+								if item.DebugSummary != "" && !slices.Contains(debugParts, item.DebugSummary) {
-+									debugParts = append(debugParts, item.DebugSummary)
-+								}
-+								for _, v := range item.RedownloadVersionIDs {
-+									candidates = appendUniqueString(candidates, v)
-+								}
-+							}
-+						}
++						collectFromResponse(res.Data)
 +					}
 +				}
 +			}
@@ -1433,6 +1499,7 @@ index c2b583f..6656732 100644
 +	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
 +
 +	nonTVOSTrainSet := make(map[string]struct{})
++	var unpinnedFirstSeen string
 +	var unpinnedLatestSeen string
 +
 +	// Step 1: Probe unpinned sendDownloadProduct and inspect remote Info.plist via HTTP Range.
@@ -1450,6 +1517,9 @@ index c2b583f..6656732 100644
 +		if len(unpinnedRes.Data.Items) > 0 {
 +			item := unpinnedRes.Data.Items[0]
 +			ids, latest := extractVersionListAndLatest(item.Metadata)
++			if len(ids) > 0 {
++				unpinnedFirstSeen = ids[0]
++			}
 +			unpinnedLatestSeen = latest
 +			if item.URL != "" {
 +				if platforms, platErr := t.readPackageSupportedPlatformsFromIPA(item.URL); platErr == nil {
@@ -1512,7 +1582,7 @@ index c2b583f..6656732 100644
 +		}
 +	}
 +
-+	// Step 2b: Probe native tvOS downloaddispatch / contentRestore / volumeStore endpoints.
++	// Step 2b: Probe native tvOS MZSoftwareUpdate / contentRestore endpoints.
 +	var probeDebug string
 +	hasNonIOSCandidate := false
 +	for _, c := range candidates {
@@ -1522,11 +1592,14 @@ index c2b583f..6656732 100644
 +		}
 +	}
 +	if !hasNonIOSCandidate {
-+		probeIDs, probeLatest, ok, pDebug := t.probeTVOSNativeEndpoints(ctx, acc, app, guid, unpinnedLatestSeen, nonTVOSTrainSet)
++		probeIDs, probeLatest, extraCands, ok, pDebug := t.probeTVOSNativeEndpoints(ctx, acc, app, guid, unpinnedFirstSeen, unpinnedLatestSeen, nonTVOSTrainSet)
 +		probeDebug = pDebug
 +		if ok {
 +			t.cacheResolvedTVOSTrain(cacheKey, app.ID, probeIDs, probeLatest)
 +			return probeIDs, probeLatest, nil
++		}
++		for _, ec := range extraCands {
++			candidates = appendUniqueString(candidates, ec)
 +		}
 +	}
 +
@@ -1615,26 +1688,32 @@ index c2b583f..6656732 100644
 +	tvosResolveMu.Unlock()
 +}
 +
-+func (t *appstore) probeTVOSNativeEndpoints(ctx context.Context, acc Account, app App, guid, unpinnedLatestSeen string, nonTVOSTrainSet map[string]struct{}) ([]string, string, bool, string) {
++func (t *appstore) probeTVOSNativeEndpoints(
++	ctx context.Context,
++	acc Account,
++	app App,
++	guid, unpinnedFirstSeen, unpinnedLatestSeen string,
++	nonTVOSTrainSet map[string]struct{},
++) ([]string, string, []string, bool, string) {
 +	if t.downloadClient == nil {
-+		return nil, "", false, "noClient"
++		return nil, "", nil, false, "noClient"
 +	}
 +
 +	hardwareID, err := hex.DecodeString(guid)
 +	if err != nil || len(hardwareID) != 6 {
-+		return nil, "", false, "badGUID"
++		return nil, "", nil, false, "badGUID"
 +	}
 +
 +	dsid, err := strconv.ParseUint(strings.TrimSpace(acc.DirectoryServicesID), 10, 64)
 +	if err != nil || dsid == 0 {
-+		return nil, "", false, "badDSID"
++		return nil, "", nil, false, "badDSID"
 +	}
 +
 +	kbsync := t.cachedKBSync(dsid, guid)
 +	if kbsync == "" {
 +		kbsync, err = t.generateKBSync(ctx, hardwareID, dsid)
 +		if err != nil || kbsync == "" {
-+			return nil, "", false, "kbsyncErr"
++			return nil, "", nil, false, "kbsyncErr"
 +		}
 +		t.storeKBSync(dsid, guid, kbsync)
 +	}
@@ -1654,36 +1733,102 @@ index c2b583f..6656732 100644
 +	}
 +	tvStoreFront := sfBase + ",29"
 +
-+	bag, _ := t.fetchURLBag(guid)
-+	entEndpoint := "https://downloaddispatch.itunes.apple.com/WebObjects/DownloadDispatch.woa/wa/ent/download"
-+	if bag.EntDownloadEndpoint != "" {
-+		entEndpoint = bag.EntDownloadEndpoint
-+	}
-+	redownloadEndpoint := "https://downloaddispatch.itunes.apple.com/r/redownload"
-+	if bag.RedownloadEndpoint != "" {
-+		redownloadEndpoint = bag.RedownloadEndpoint
-+	}
-+	updateEndpoint := "https://downloaddispatch.itunes.apple.com/up/updateProduct"
-+	if bag.UpdateEndpoint != "" {
-+		updateEndpoint = bag.UpdateEndpoint
-+	}
-+	contentRestoreEndpoint := "https://downloaddispatch.itunes.apple.com/contentRestore"
-+	volumeStoreEndpoint := t.volumeStoreEndpoint(acc).baseURL
++	var diagParts []string
++	var extraCandidates []string
 +
-+	type probeSpec struct {
-+		name        string
-+		url         string
-+		contentType string
-+		userAgent   string
-+		storeFront  string
-+		taDevice    string
-+		payload     map[string]interface{}
++	// 1. Probe MZSoftwareUpdate availableSoftwareUpdatesExtended & availableSoftwareUpdates (UpdatesTask.m / UpdatesTask.mm).
++	if t.ownedAppsClient != nil {
++		localSoftware := []map[string]interface{}{
++			{
++				"adam-id":                      app.ID,
++				"installed-version-identifier": int64(0),
++			},
++			{
++				"adam-id":                      app.ID,
++				"installed-version-identifier": int64(1),
++			},
++		}
++		if firstInt, parseErr := strconv.ParseInt(strings.TrimSpace(unpinnedFirstSeen), 10, 64); parseErr == nil && firstInt > 0 {
++			localSoftware = append(localSoftware, map[string]interface{}{
++				"adam-id":                      app.ID,
++				"installed-version-identifier": firstInt,
++			})
++		}
++		if latestInt, parseErr := strconv.ParseInt(strings.TrimSpace(unpinnedLatestSeen), 10, 64); parseErr == nil && latestInt > 0 {
++			localSoftware = append(localSoftware, map[string]interface{}{
++				"adam-id":                      app.ID,
++				"installed-version-identifier": latestInt,
++			})
++		}
++
++		suEndpoints := []struct {
++			name string
++			url  string
++		}{
++			{
++				name: "suExt",
++				url:  "https://su.itunes.apple.com/WebObjects/MZSoftwareUpdate.woa/wa/availableSoftwareUpdatesExtended",
++			},
++			{
++				name: "suStd",
++				url:  "https://su.itunes.apple.com/WebObjects/MZSoftwareUpdate.woa/wa/availableSoftwareUpdates",
++			},
++		}
++
++		for _, suEp := range suEndpoints {
++			if ctx != nil && ctx.Err() != nil {
++				break
++			}
++			suReq := http.Request{
++				URL:            suEp.url,
++				Method:         http.MethodPOST,
++				ResponseFormat: http.ResponseFormatRaw,
++				Headers: map[string]string{
++					"Content-Type":        "application/x-apple-plist",
++					"User-Agent":          configuratorEntUA,
++					"X-Apple-Store-Front": tvStoreFront,
++					"X-Apple-TA-Device":   tvosTADeviceVariants,
++					"X-Dsid":              acc.DirectoryServicesID,
++					"iCloud-DSID":         acc.DirectoryServicesID,
++					"X-Token":             acc.PasswordToken,
++				},
++				Payload: &http.XMLPayload{
++					Content: map[string]interface{}{
++						"autoUpdatesEnabled": true,
++						"guid":               guid,
++						"kbsync":             kbsync,
++						"local-software":     localSoftware,
++					},
++				},
++			}
++			suRes, suErr := t.ownedAppsClient.Send(suReq)
++			if suErr != nil || len(suRes.Data) == 0 {
++				diagParts = append(diagParts, fmt.Sprintf("%s:err(%d)", suEp.name, suRes.StatusCode))
++				continue
++			}
++
++			foundCands := extractCandidatesFromRawUpdateResponse(suRes.Data)
++			nonIOSCount := 0
++			for _, c := range foundCands {
++				if _, isIOS := nonTVOSTrainSet[c]; !isIOS {
++					extraCandidates = appendUniqueString(extraCandidates, c)
++					nonIOSCount++
++				}
++			}
++			diagParts = append(diagParts, fmt.Sprintf("%s:st=%d,c=%d(tv=%d)", suEp.name, suRes.StatusCode, len(foundCands), nonIOSCount))
++		}
 +	}
 +
++	// 2. Probe p2-content-restore with Configurator/2.18 UA + NSData kbsync.
++	var kbsyncDataVal interface{} = kbsync
++	if len(rawKBSync) > 0 {
++		kbsyncDataVal = rawKBSync
++	}
 +	restoreItems := []map[string]interface{}{
 +		{
 +			"item-id":        app.ID,
 +			"kind":           "software",
++			"flavor":         "1:software",
 +			"store-front-id": sfNumericInt,
 +		},
 +		{
@@ -1693,149 +1838,22 @@ index c2b583f..6656732 100644
 +		},
 +	}
 +
-+	var kbsyncDataVal interface{} = kbsync
-+	if len(rawKBSync) > 0 {
-+		kbsyncDataVal = rawKBSync
-+	}
-+
-+	existingVerVal := interface{}(1)
-+	if unpinnedLatestSeen != "" {
-+		existingVerVal = unpinnedLatestSeen
-+	}
-+
-+	specs := []probeSpec{
-+		// 1. Standard unpinned /r/redownload (exact Configurator/2.17 request that Majd noted can return a tvOS package).
-+		{
-+			name:        "rdStd",
-+			url:         fmt.Sprintf("%s?guid=%s", redownloadEndpoint, guid),
-+			contentType: "application/x-apple-plist",
-+			userAgent:   configuratorDownloadUA,
-+			storeFront:  acc.StoreFront,
-+			payload: map[string]interface{}{
-+				"creditDisplay": "",
-+				"guid":          guid,
-+				"salableAdamId": app.ID,
-+				"serialNumber":  "0",
-+			},
++	crReq := http.Request{
++		URL:            fmt.Sprintf("https://downloaddispatch.itunes.apple.com/contentRestore?guid=%s", guid),
++		Method:         http.MethodPOST,
++		ResponseFormat: http.ResponseFormatXML,
++		NoRedirects:    true,
++		Headers: map[string]string{
++			"Content-Type":        "application/x-apple-plist",
++			"User-Agent":          configuratorEntUA,
++			"X-Apple-Store-Front": tvStoreFront,
++			"X-Apple-TA-Device":   tvosTADeviceVariants,
++			"X-Dsid":              acc.DirectoryServicesID,
++			"iCloud-DSID":         acc.DirectoryServicesID,
++			"X-Token":             acc.PasswordToken,
 +		},
-+		// 2. Unpinned /r/redownload with Configurator/2.17 UA + tvOS StoreFront (<sf>,29) + X-Apple-TA-Device.
-+		{
-+			name:        "rdTV",
-+			url:         fmt.Sprintf("%s?guid=%s", redownloadEndpoint, guid),
-+			contentType: "application/x-apple-plist",
-+			userAgent:   configuratorDownloadUA,
-+			storeFront:  tvStoreFront,
-+			taDevice:    tvosTADeviceVariants,
-+			payload: map[string]interface{}{
-+				"creditDisplay": "",
-+				"guid":          guid,
-+				"salableAdamId": app.ID,
-+				"serialNumber":  "0",
-+			},
-+		},
-+		// 3. Unpinned /r/redownload with kbsync + serialB64 + Configurator/2.17 UA + tvOS StoreFront.
-+		{
-+			name:        "rdKB",
-+			url:         fmt.Sprintf("%s?guid=%s", redownloadEndpoint, guid),
-+			contentType: "application/x-apple-plist",
-+			userAgent:   configuratorDownloadUA,
-+			storeFront:  tvStoreFront,
-+			taDevice:    tvosTADeviceVariants,
-+			payload: map[string]interface{}{
-+				"creditDisplay": "",
-+				"guid":          guid,
-+				"kbsync":        kbsync,
-+				"salableAdamId": app.ID,
-+				"serialNumber":  serialB64,
-+			},
-+		},
-+		// 4. Standard unpinned ent/download (Configurator/2.18 UA, kbsync, serialB64, no externalVersionId).
-+		{
-+			name:        "entStd",
-+			url:         fmt.Sprintf("%s?guid=%s", entEndpoint, guid),
-+			contentType: "application/x-apple-plist",
-+			userAgent:   configuratorEntUA,
-+			storeFront:  acc.StoreFront,
-+			payload: map[string]interface{}{
-+				"creditDisplay": "",
-+				"guid":          guid,
-+				"kbsync":        kbsync,
-+				"salableAdamId": strconv.FormatInt(app.ID, 10),
-+				"serialNumber":  serialB64,
-+			},
-+		},
-+		// 5. Unpinned ent/download with Configurator/2.18 UA + tvOS StoreFront (<sf>,29) + X-Apple-TA-Device.
-+		{
-+			name:        "entTV",
-+			url:         fmt.Sprintf("%s?guid=%s", entEndpoint, guid),
-+			contentType: "application/x-apple-plist",
-+			userAgent:   configuratorEntUA,
-+			storeFront:  tvStoreFront,
-+			taDevice:    tvosTADeviceVariants,
-+			payload: map[string]interface{}{
-+				"creditDisplay": "",
-+				"guid":          guid,
-+				"kbsync":        kbsync,
-+				"salableAdamId": strconv.FormatInt(app.ID, 10),
-+				"serialNumber":  serialB64,
-+			},
-+		},
-+		// 6. Unpinned volumeStoreDownloadProduct with Configurator/2.17 UA + tvOS StoreFront (<sf>,29) + X-Apple-TA-Device.
-+		{
-+			name:        "vsTV",
-+			url:         fmt.Sprintf("%s?guid=%s", volumeStoreEndpoint, guid),
-+			contentType: "application/x-apple-plist",
-+			userAgent:   configuratorDownloadUA,
-+			storeFront:  tvStoreFront,
-+			taDevice:    tvosTADeviceVariants,
-+			payload: map[string]interface{}{
-+				"creditDisplay": "",
-+				"guid":          guid,
-+				"salableAdamId": app.ID,
-+				"serialNumber":  "0",
-+			},
-+		},
-+		// 7. Unpinned /up/updateProduct with Configurator/2.17 UA + serialNumber "0" + tvOS StoreFront.
-+		{
-+			name:        "upStd",
-+			url:         fmt.Sprintf("%s?guid=%s", updateEndpoint, guid),
-+			contentType: "application/x-apple-plist",
-+			userAgent:   configuratorDownloadUA,
-+			storeFront:  tvStoreFront,
-+			taDevice:    tvosTADeviceVariants,
-+			payload: map[string]interface{}{
-+				"creditDisplay": "",
-+				"guid":          guid,
-+				"salableAdamId": app.ID,
-+				"serialNumber":  "0",
-+			},
-+		},
-+		// 8. /up/updateProduct with appExtVrsId/existingExternalVersionId + Configurator/2.17 UA + serialNumber "0".
-+		{
-+			name:        "upPin",
-+			url:         fmt.Sprintf("%s?guid=%s", updateEndpoint, guid),
-+			contentType: "application/x-apple-plist",
-+			userAgent:   configuratorDownloadUA,
-+			storeFront:  tvStoreFront,
-+			taDevice:    tvosTADeviceVariants,
-+			payload: map[string]interface{}{
-+				"creditDisplay":             "",
-+				"guid":                      guid,
-+				"salableAdamId":             app.ID,
-+				"appExtVrsId":               existingVerVal,
-+				"existingExternalVersionId": existingVerVal,
-+				"serialNumber":              "0",
-+			},
-+		},
-+		// 9. p2-content-restore with Configurator/2.18 UA + NSData kbsync.
-+		{
-+			name:        "crCfg",
-+			url:         fmt.Sprintf("%s?guid=%s", contentRestoreEndpoint, guid),
-+			contentType: "application/x-apple-plist",
-+			userAgent:   configuratorEntUA,
-+			storeFront:  tvStoreFront,
-+			taDevice:    tvosTADeviceVariants,
-+			payload: map[string]interface{}{
++		Payload: &http.XMLPayload{
++			Content: map[string]interface{}{
 +				"device-name":   "Apple TV",
 +				"guid":          guid,
 +				"serial-number": serialB64,
@@ -1845,90 +1863,80 @@ index c2b583f..6656732 100644
 +		},
 +	}
 +
-+	var diagParts []string
-+
-+	for _, spec := range specs {
-+		if ctx != nil && ctx.Err() != nil {
-+			break
-+		}
-+		headers := map[string]string{
-+			"Content-Type":        spec.contentType,
-+			"User-Agent":          spec.userAgent,
-+			"X-Apple-Store-Front": spec.storeFront,
-+			"X-Dsid":              acc.DirectoryServicesID,
-+			"iCloud-DSID":         acc.DirectoryServicesID,
-+			"X-Token":             acc.PasswordToken,
-+		}
-+		if spec.taDevice != "" {
-+			headers["X-Apple-TA-Device"] = spec.taDevice
-+		}
-+		req := http.Request{
-+			URL:            spec.url,
-+			Method:         http.MethodPOST,
-+			ResponseFormat: http.ResponseFormatXML,
-+			NoRedirects:    true,
-+			Headers:        headers,
-+			Payload:        &http.XMLPayload{Content: spec.payload},
-+		}
-+
-+		res, sendErr := t.downloadClient.Send(req)
-+		allItems := append([]downloadItemResult(nil), res.Data.Items...)
-+		allItems = append(allItems, res.Data.RestoreItems...)
-+
-+		if sendErr != nil && len(allItems) == 0 {
-+			diagParts = append(diagParts, fmt.Sprintf("%s:err(%d)", spec.name, res.StatusCode))
-+			continue
-+		}
-+
++	if crRes, crErr := t.downloadClient.Send(crReq); crErr == nil {
++		allItems := append([]downloadItemResult(nil), crRes.Data.Items...)
++		allItems = append(allItems, crRes.Data.RestoreItems...)
 +		if len(allItems) == 0 {
-+			failInfo := res.Data.FailureType
-+			if failInfo == "" && len(res.Data.FailedItems) > 0 {
-+				if ft, ok := res.Data.FailedItems[0]["failureType"]; ok {
++			failInfo := crRes.Data.FailureType
++			if failInfo == "" && len(crRes.Data.FailedItems) > 0 {
++				if ft, ok := crRes.Data.FailedItems[0]["failureType"]; ok {
 +					failInfo = fmt.Sprintf("fi:%v", ft)
 +				}
 +			}
-+			if failInfo == "" && res.Data.CustomerMessage != "" {
-+				failInfo = res.Data.CustomerMessage
-+			}
-+			diagParts = append(diagParts, fmt.Sprintf("%s:empty(st=%d,ft=%s)", spec.name, res.StatusCode, failInfo))
-+			continue
-+		}
-+
-+		for _, item := range allItems {
-+			ids, latest := extractVersionListAndLatest(item.Metadata)
-+			_, isIOS := nonTVOSTrainSet[latest]
-+			diagParts = append(diagParts, fmt.Sprintf("%s:item(lat=%s,n=%d,ios=%v)", spec.name, latest, len(ids), isIOS))
-+
-+			if latest != "" && !isIOS {
-+				if item.URL != "" {
-+					if platforms, platErr := t.readPackageSupportedPlatformsFromIPA(item.URL); platErr == nil && containsPlatformString(platforms, "AppleTVOS") {
-+						if len(ids) == 0 {
-+							ids = []string{latest}
-+						}
-+						return ids, ids[len(ids)-1], true, strings.Join(diagParts, ",")
-+					}
-+				}
-+				// Even if the response omitted softwareVersionExternalIdentifiers, feed latest into sendDownloadProduct.
-+				if fullRes, _, fullErr := t.sendDownloadProduct(ctx, acc, app, guid, latest, PlatformAppleTV); fullErr == nil && len(fullRes.Data.Items) > 0 {
-+					fullItem := fullRes.Data.Items[0]
-+					if fullItem.URL != "" {
-+						if platforms, platErr := t.readPackageSupportedPlatformsFromIPA(fullItem.URL); platErr == nil && containsPlatformString(platforms, "AppleTVOS") {
-+							fullIDs, fullLatest := extractVersionListAndLatest(fullItem.Metadata)
-+							if len(fullIDs) > 0 {
-+								fullLatest = fullIDs[len(fullIDs)-1]
-+							} else if fullLatest == "" {
-+								fullLatest = latest
-+								fullIDs = []string{latest}
++			diagParts = append(diagParts, fmt.Sprintf("crCfg:empty(st=%d,ft=%s)", crRes.StatusCode, failInfo))
++		} else {
++			for _, item := range allItems {
++				ids, latest := extractVersionListAndLatest(item.Metadata)
++				_, isIOS := nonTVOSTrainSet[latest]
++				diagParts = append(diagParts, fmt.Sprintf("crCfg:item(lat=%s,n=%d,ios=%v)", latest, len(ids), isIOS))
++				if latest != "" && !isIOS {
++					if item.URL != "" {
++						if platforms, platErr := t.readPackageSupportedPlatformsFromIPA(item.URL); platErr == nil && containsPlatformString(platforms, "AppleTVOS") {
++							if len(ids) == 0 {
++								ids = []string{latest}
 +							}
-+							return fullIDs, fullLatest, true, strings.Join(diagParts, ",")
++							return ids, ids[len(ids)-1], extraCandidates, true, strings.Join(diagParts, ",")
 +						}
 +					}
++					extraCandidates = appendUniqueString(extraCandidates, latest)
 +				}
 +			}
 +		}
 +	}
 +
-+	return nil, "", false, strings.Join(diagParts, ",")
++	return nil, "", extraCandidates, false, strings.Join(diagParts, ",")
++}
++
++func extractCandidatesFromRawUpdateResponse(data []byte) []string {
++	var out []string
++	var collectMap func(v interface{})
++	collectMap = func(v interface{}) {
++		switch typed := v.(type) {
++		case map[string]interface{}:
++			for k, val := range typed {
++				kl := strings.ToLower(k)
++				if kl == "externalid" || kl == "versionid" || kl == "appextvrsid" || kl == "externalversionid" || kl == "softwareversionexternalidentifier" {
++					s := strings.TrimSpace(fmt.Sprintf("%v", val))
++					if bareDigitsPattern.MatchString(s) {
++						out = appendUniqueString(out, s)
++					}
++				} else if kl == "buyparams" || kl == "action-params" {
++					for _, id := range extractRedownloadVersionIDs(fmt.Sprintf("%v", val)) {
++						out = appendUniqueString(out, id)
++					}
++				} else {
++					collectMap(val)
++				}
++			}
++		case []interface{}:
++			for _, elem := range typed {
++				collectMap(elem)
++			}
++		}
++	}
++
++	var plistObj interface{}
++	if _, err := plist.Unmarshal(data, &plistObj); err == nil && plistObj != nil {
++		collectMap(plistObj)
++	}
++	var jsonObj interface{}
++	if err := json.Unmarshal(data, &jsonObj); err == nil && jsonObj != nil {
++		collectMap(jsonObj)
++	}
++	for _, id := range extractRedownloadVersionIDs(string(data)) {
++		out = appendUniqueString(out, id)
++	}
++	return out
 +}
 +
 +func (t *appstore) readPackageSupportedPlatformsFromIPA(packageURL string) ([]string, error) {
@@ -2067,15 +2075,62 @@ index c2b583f..6656732 100644
 +func applyDAAPExtendedHeaders(headers map[string]string) {
 +	headers["Client-Cloud-Daap-Version"] = tvosCloudDAAPVersion
 +	headers["Client-Cloud-Purchase-Daap-Version"] = tvosPurchaseDAAPVer
-+	delete(headers, "Client-Cloud-Purchase-DAAP-Version")
++	headers["Client-Cloud-Purchase-DAAP-Version"] = tvosPurchaseDAAPVer
 +	delete(headers, "X-FM-Dsid")
 +	headers["X-DAAP-Supported-Features"] = "16"
++}
++
++func buildDirectDAAPDatabase101Request(
++	acc Account,
++	guid, requestURL string,
++	revision uint32,
++	includeMeta bool,
++	customQuery, paginationToken string,
++	signer ActionSigner,
++) http.Request {
++	now := time.Now()
++	query := customQuery
++	if query == "" {
++		query = defaultDAAPAllMediaKindsQuery()
++	}
++
++	tags := make([]byte, 0, 512)
++	if includeMeta {
++		tags = append(tags, dmapString("meta", daapExtendedMetaFields)...)
++	}
++	tags = append(tags, dmapUint32("musr", revision)...)
++	tags = append(tags, dmapUint8("mhid", 1)...)
++	tags = append(tags, dmapUint8("ajIp", 1)...)
++	if paginationToken != "" {
++		tags = append(tags, dmapString("mpag", paginationToken)...)
++	}
++	tags = append(tags, dmapString("mque", query)...)
++	tags = append(tags, dmapTag("aetl", nil)...)
++
++	body := dmapTag("adsr", tags)
++
++	headers := ownedAppsHeaders(acc, guid, now)
++	headers["Content-Type"] = "application/x-dmap-tagged"
++	applyDAAPExtendedHeaders(headers)
++
++	if requestURL == "" {
++		requestURL = fmt.Sprintf("%s/databases/%d/items?includeApplePubBooks=1&includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, daapPurchasedDatabaseID)
++	}
++
++	return http.Request{
++		URL:            requestURL,
++		Method:         http.MethodPOST,
++		ResponseFormat: http.ResponseFormatRaw,
++		Headers:        headers,
++		Payload:        &http.RawPayload{Content: body},
++		ActionSigner:   signer,
++	}
 +}
 +
 +func buildSessionDAAPExtendedItemsRequest(
 +	acc Account,
 +	guid, requestURL string,
-+	sessionID, latestVersion uint32,
++	sessionID, localVersion, deltaVersion uint32,
 +	includeMeta bool,
 +	customQuery, paginationToken string,
 +	signer ActionSigner,
@@ -2094,8 +2149,8 @@ index c2b583f..6656732 100644
 +	tags = append(tags, dmapString("mque", query)...)
 +	tags = append(tags, dmapUint32("mlid", sessionID)...)
 +	tags = append(tags, dmapUint8("mikd", 2)...)
-+	tags = append(tags, dmapUint32("musr", latestVersion)...)
-+	tags = append(tags, dmapUint32("mder", 0)...)
++	tags = append(tags, dmapUint32("musr", localVersion)...)
++	tags = append(tags, dmapUint32("mder", deltaVersion)...)
 +	tags = append(tags, dmapUint8("mhid", 1)...)
 +	tags = append(tags, dmapUint8("ajIp", 1)...)
 +	if paginationToken != "" {
@@ -2110,7 +2165,7 @@ index c2b583f..6656732 100644
 +	applyDAAPExtendedHeaders(headers)
 +
 +	if requestURL == "" {
-+		requestURL = fmt.Sprintf("%s/databases/%d/items?includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, latestVersion)
++		requestURL = fmt.Sprintf("%s/databases/%d/items?includeApplePubBooks=1&includeItemFlavors=1", PrivatePurchaseDAAPBaseURL, localVersion)
 +	}
 +
 +	return http.Request{
@@ -2177,7 +2232,7 @@ index c2b583f..6656732 100644
 +		}
 +
 +		// Do not recurse into mlit at the top level since parseDAAPExtendedMlit walks mlit and its nested containers.
-+		if tag != "mlit" && isDMAPContainer(tag) {
++		if tag != "mlit" && (isDMAPContainer(tag) || tag == "apso" || tag == "aefl" || tag == "ajrl" || tag == "mudl") {
 +			if err := walkDMAPExtended(payload, depth+1, visit); err != nil {
 +				return err
 +			}
@@ -2190,8 +2245,10 @@ index c2b583f..6656732 100644
 +	item := DAAPOwnedAppItem{
 +		App: App{Platforms: []Platform{}},
 +	}
++	var fallbackItemID int64
 +	var mediaKind, supportedProducts uint64
 +	var seenTags []string
++	var rawRPPreview string
 +
 +	var walkFields func(buf []byte, depth int)
 +	walkFields = func(buf []byte, depth int) {
@@ -2216,6 +2273,11 @@ index c2b583f..6656732 100644
 +				// Never use aeAI (uppercase 'I', com.apple.itunes.itms-artistid), which is the developer/artist ID.
 +				if v, err := dmapInt64(payload); err == nil && v > 0 && item.App.ID == 0 {
 +					item.App.ID = v
++				}
++			case "miid", "mild":
++				// dmap.itemid / dmap.longitemid fallback when meta omits aeSI.
++				if v, err := dmapInt64(payload); err == nil && v > 0 && fallbackItemID == 0 {
++					fallbackItemID = v
 +				}
 +			case "aeBI":
 +				if s := strings.TrimSpace(string(payload)); s != "" {
@@ -2247,7 +2309,7 @@ index c2b583f..6656732 100644
 +				if len(payload) == 4 && item.App.PurchaseDate.IsZero() {
 +					item.App.PurchaseDate = time.Unix(int64(binary.BigEndian.Uint32(payload)), 0).UTC()
 +				}
-+			case "mihi", "mihd":
++			case "mihi", "mihd", "ajhj":
 +				if len(payload) > 0 && payload[0] != 0 {
 +					item.Hidden = true
 +				}
@@ -2272,8 +2334,16 @@ index c2b583f..6656732 100644
 +				} else {
 +					supportedProducts = val
 +				}
-+			case "aeRp", "aeRP":
-+				for _, verID := range extractRedownloadVersionIDs(string(payload)) {
++			case "aeRp", "aeRP", "ajpu", "ajPU":
++				rawStr := strings.TrimSpace(string(payload))
++				if rawRPPreview == "" && rawStr != "" {
++					if len(rawStr) > 96 {
++						rawRPPreview = rawStr[:96]
++					} else {
++						rawRPPreview = rawStr
++					}
++				}
++				for _, verID := range extractRedownloadVersionIDs(rawStr) {
 +					item.RedownloadVersionIDs = appendUniqueString(item.RedownloadVersionIDs, verID)
 +				}
 +			case "aefl", "aeif", "alhf", "fhla", "alif", "aelf", "mlcl", "mlit", "mdcl":
@@ -2290,6 +2360,9 @@ index c2b583f..6656732 100644
 +
 +	walkFields(data, 0)
 +
++	if item.App.ID <= 0 && fallbackItemID > 0 {
++		item.App.ID = fallbackItemID
++	}
 +	if item.App.ID <= 0 {
 +		return DAAPOwnedAppItem{}, false
 +	}
@@ -2322,13 +2395,14 @@ index c2b583f..6656732 100644
 +	}
 +
 +	item.DebugSummary = fmt.Sprintf(
-+		"mk=%d,ss=%d,aeli=%v,mihi=%v,ver=%s,rp=%v,tags=%s",
++		"mk=%d,ss=%d,aeli=%v,mihi=%v,ver=%s,rp=%v,rawRP=%q,tags=%s",
 +		mediaKind,
 +		supportedProducts,
 +		item.SupportsLayeredImage,
 +		item.Hidden,
 +		item.App.Version,
 +		item.RedownloadVersionIDs,
++		rawRPPreview,
 +		strings.Join(seenTags, "+"),
 +	)
 +
@@ -2347,7 +2421,7 @@ index c2b583f..6656732 100644
 +	}
 +
 +	if parsed, err := url.ParseQuery(raw); err == nil {
-+		for _, key := range []string{"appExtVrsId", "externalVersionId", "softwareVersionExternalIdentifier"} {
++		for _, key := range []string{"appExtVrsId", "externalVersionId", "softwareVersionExternalIdentifier", "externalId", "versionId", "evid"} {
 +			for _, v := range parsed[key] {
 +				v = strings.TrimSpace(v)
 +				if bareDigitsPattern.MatchString(v) {
