@@ -1190,7 +1190,7 @@ func enrichMissingCatalogFields(apps []appstore.App) {
 		}
 
 		remaining := append([]int64(nil), missingIDs[start:end]...)
-		for _, country := range []string{"", "us", "gb"} {
+		for _, country := range []string{"", "ru", "kz", "by", "am", "uz", "us", "gb"} {
 			if len(remaining) == 0 {
 				break
 			}
@@ -1320,7 +1320,7 @@ func enrichTVOSCatalog(acc appstore.Account, apps []appstore.App) map[int64]stri
 
 	primaryCC := storefrontCountryOrDefault(acc.StoreFront)
 	countries := []string{primaryCC}
-	for _, fallback := range []string{"ru", "us"} {
+	for _, fallback := range []string{"ru", "kz", "by", "am", "uz", "us", "gb"} {
 		if !slices.Contains(countries, fallback) {
 			countries = append(countries, fallback)
 		}
