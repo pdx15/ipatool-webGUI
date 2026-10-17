@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/majd/ipatool/v2/pkg/appstore"
 	pkghttp "github.com/majd/ipatool/v2/pkg/http"
-	"howett.net/plist"
 )
 
 const (
@@ -303,9 +301,7 @@ func collectTVOSVersionSeeds(acc appstore.Account, appID int64) []string {
 	if appID <= 0 {
 		return nil
 	}
-	// Ensure disk cache and local ./apps/*.ipa files have been inspected.
 	_, _, _ = previousPurchasesBaseline(acc)
-	scanLocalIPATVOSeeds()
 
 	var seeds []string
 	addSeed := func(s string) {
@@ -330,121 +326,6 @@ func collectTVOSVersionSeeds(acc appstore.Account, appID int64) []string {
 	versionMetaCache.RUnlock()
 
 	return seeds
-}
-
-func inspectLocalIPATVOSeed(ipaPath string) (int64, string, string, bool) {
-	zr, err := zip.OpenReader(ipaPath)
-	if err != nil {
-		return 0, "", "", false
-	}
-	defer func() { _ = zr.Close() }()
-
-	var itemID int64
-	var extVerID string
-	var displayVer string
-	isTVOS := false
-
-	for _, f := range zr.File {
-		if f.Name == "iTunesMetadata.plist" {
-			rc, openErr := f.Open()
-			if openErr != nil {
-				continue
-			}
-			data, readErr := io.ReadAll(rc)
-			_ = rc.Close()
-			if readErr != nil {
-				continue
-			}
-			meta := map[string]interface{}{}
-			if _, pErr := plist.Unmarshal(data, &meta); pErr == nil {
-				if rawID, ok := meta["itemId"]; ok && rawID != nil {
-					itemID, _ = strconv.ParseInt(strings.TrimSpace(fmt.Sprintf("%v", rawID)), 10, 64)
-				}
-				if rawVer, ok := meta["softwareVersionExternalIdentifier"]; ok && rawVer != nil {
-					s := strings.TrimSpace(fmt.Sprintf("%v", rawVer))
-					if s != "" && s != "<nil>" && s != "0" {
-						extVerID = s
-					}
-				}
-				if rawShort, ok := meta["bundleShortVersionString"]; ok && rawShort != nil {
-					s := strings.TrimSpace(fmt.Sprintf("%v", rawShort))
-					if s != "" && s != "<nil>" {
-						displayVer = s
-					}
-				}
-			}
-			continue
-		}
-
-		parts := strings.Split(f.Name, "/")
-		if len(parts) == 3 && parts[0] == "Payload" && strings.HasSuffix(parts[1], ".app") && parts[2] == "Info.plist" {
-			rc, openErr := f.Open()
-			if openErr != nil {
-				continue
-			}
-			data, readErr := io.ReadAll(rc)
-			_ = rc.Close()
-			if readErr != nil {
-				continue
-			}
-			info := map[string]interface{}{}
-			if _, pErr := plist.Unmarshal(data, &info); pErr == nil {
-				if rawPlats, ok := info["CFBundleSupportedPlatforms"].([]interface{}); ok {
-					for _, p := range rawPlats {
-						if strings.EqualFold(strings.TrimSpace(fmt.Sprintf("%v", p)), "AppleTVOS") {
-							isTVOS = true
-						}
-					}
-				}
-				if dtPlat, ok := info["DTPlatformName"].(string); ok && strings.EqualFold(strings.TrimSpace(dtPlat), "appletvos") {
-					isTVOS = true
-				}
-				if displayVer == "" {
-					if rawShort, ok := info["CFBundleShortVersionString"]; ok && rawShort != nil {
-						s := strings.TrimSpace(fmt.Sprintf("%v", rawShort))
-						if s != "" && s != "<nil>" {
-							displayVer = s
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if isTVOS && itemID > 0 && extVerID != "" {
-		recordAppTVOSSeed(itemID, extVerID, displayVer, nil)
-		return itemID, extVerID, displayVer, true
-	}
-	return 0, "", "", false
-}
-
-func scanLocalIPATVOSeeds() {
-	dirs := []string{defaultDownloadDir()}
-	if wd, err := os.Getwd(); err == nil && wd != "" {
-		dirs = append(dirs, wd, filepath.Join(wd, "apps"))
-	}
-	seen := make(map[string]struct{})
-	for _, dir := range dirs {
-		dir = strings.TrimSpace(dir)
-		if dir == "" {
-			continue
-		}
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".ipa") {
-				continue
-			}
-			fullPath := filepath.Join(dir, entry.Name())
-			if _, dup := seen[fullPath]; dup {
-				continue
-			}
-			seen[fullPath] = struct{}{}
-			_, _, _, _ = inspectLocalIPATVOSeed(fullPath)
-		}
-	}
 }
 
 type commercePurchasesResponse struct {
@@ -522,8 +403,6 @@ func fetchDAAPOwnedAppsForAccount(acc appstore.Account) ([]appstore.App, error) 
 // purchase history (mhid=1, ajIp=1) for hidden items, tvOS layered-image
 // metadata (aeli), and redownload version IDs (aeRp/aeRP).
 func fetchDAAPOwnedApps(acc appstore.Account) (regionalApps []appstore.App, fallbackApps []appstore.App, err error) {
-	scanLocalIPATVOSeeds()
-
 	regionalApps, err = fetchDAAPOwnedAppsForAccount(acc)
 	if err != nil {
 		return nil, nil, err
@@ -1311,7 +1190,7 @@ func enrichMissingCatalogFields(apps []appstore.App) {
 		}
 
 		remaining := append([]int64(nil), missingIDs[start:end]...)
-		for _, country := range []string{"", "us", "gb"} {
+		for _, country := range []string{"", "ru", "kz", "by", "am", "uz", "us", "gb"} {
 			if len(remaining) == 0 {
 				break
 			}
@@ -1441,7 +1320,7 @@ func enrichTVOSCatalog(acc appstore.Account, apps []appstore.App) map[int64]stri
 
 	primaryCC := storefrontCountryOrDefault(acc.StoreFront)
 	countries := []string{primaryCC}
-	for _, fallback := range []string{"ru", "us"} {
+	for _, fallback := range []string{"ru", "kz", "by", "am", "uz", "us", "gb"} {
 		if !slices.Contains(countries, fallback) {
 			countries = append(countries, fallback)
 		}
