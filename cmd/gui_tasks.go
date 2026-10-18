@@ -101,15 +101,6 @@ func purchaseWithRetry(account appstore.Account, app appstore.App, platform apps
 	return account, false, errors.New("purchase failed after refreshing the account session")
 }
 
-func isMissingPlatformCatalogError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "platform version lookup returned no app") ||
-		strings.Contains(msg, "platform version lookup returned no offers")
-}
-
 // downloadWithRetry downloads a package, optionally acquiring its license when
 // needed and refreshing an expired password token at most once.
 func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.DownloadOutput, bool, error) {
@@ -123,45 +114,18 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 	licenseAttempted := false
 	licenseAcquired := false
 	progress := input.Progress
-	externalVersionID := strings.TrimSpace(input.ExternalVersionID)
 
 	for attempt := 0; attempt < 4; attempt++ {
-		if externalVersionID == "" && input.Platform == appstore.PlatformAppleTV && input.App.ID > 0 {
-			if _, catErr := appstore.LookupCatalogExternalVersionID(dependencies.AppStore, account, input.App, appstore.PlatformAppleTV); catErr != nil && isMissingPlatformCatalogError(catErr) {
-				seeds := collectTVOSVersionSeeds(account, input.App.ID)
-				_, latestID, tvErr := appstore.ResolveTVOSVersionsAndLatest(dependencies.AppStore, ctx, account, input.App, seeds)
-				if tvErr == nil && latestID != "" {
-					externalVersionID = latestID
-					rememberResolvedTVOSVersionID(account, input.App.ID, latestID, "")
-				} else if tvErr != nil && errors.Is(tvErr, appstore.ErrPasswordTokenExpired) && !refreshed {
-					updated, refreshErr := refreshAccount(account)
-					if refreshErr != nil {
-						return account, appstore.DownloadOutput{}, licenseAcquired, refreshErr
-					}
-					account = updated
-					refreshed = true
-					continue
-				}
-			}
-		}
-
 		output, err := dependencies.AppStore.Download(appstore.DownloadInput{
 			Context:           ctx,
 			Account:           account,
 			App:               input.App,
 			OutputPath:        input.OutputPath,
-			ExternalVersionID: externalVersionID,
+			ExternalVersionID: input.ExternalVersionID,
 			Platform:          input.Platform,
 			Progress:          progress,
 		})
 		if err == nil {
-			if input.Platform == appstore.PlatformAppleTV && output.DestinationPath != "" {
-				if itemID, extID, dispVer, ok := inspectLocalIPATVOSeed(output.DestinationPath); ok {
-					rememberResolvedTVOSVersionID(account, itemID, extID, dispVer)
-				} else if input.App.ID > 0 && externalVersionID != "" {
-					rememberResolvedTVOSVersionID(account, input.App.ID, externalVersionID, "")
-				}
-			}
 			return account, output, licenseAcquired, nil
 		}
 
@@ -221,25 +185,6 @@ func listVersionsWithRetry(account appstore.Account, app appstore.App, platform 
 			App:      app,
 			Platform: platform,
 		})
-		if err != nil && platform == appstore.PlatformAppleTV && app.ID > 0 && isMissingPlatformCatalogError(err) {
-			seeds := collectTVOSVersionSeeds(account, app.ID)
-			ids, latestID, tvErr := appstore.ResolveTVOSVersionsAndLatest(dependencies.AppStore, context.Background(), account, app, seeds)
-			if tvErr == nil && len(ids) > 0 {
-				rememberResolvedTVOSVersionID(account, app.ID, latestID, "")
-				return account, appstore.ListVersionsOutput{
-					ExternalVersionIdentifiers: ids,
-					LatestExternalVersionID:    latestID,
-				}, nil
-			}
-			if tvErr != nil {
-				if errors.Is(tvErr, appstore.ErrPasswordTokenExpired) || errors.Is(tvErr, appstore.ErrLicenseRequired) {
-					err = tvErr
-				} else {
-					err = fmt.Errorf("%w (%v)", err, tvErr)
-				}
-			}
-		}
-
 		if !errors.Is(err, appstore.ErrPasswordTokenExpired) || attempt != 0 {
 			return account, output, err
 		}
