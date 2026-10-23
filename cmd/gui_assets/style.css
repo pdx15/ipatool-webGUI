@@ -1108,8 +1108,19 @@ body {
   gap: 20px;
 }
 
+.account-management-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  align-items: stretch;
+}
+
 .account-profiles-block {
-  margin-bottom: 24px;
+  min-width: 0;
+  margin-bottom: 0;
+  padding: 20px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
 }
 
 .account-profiles-heading {
@@ -1174,14 +1185,16 @@ body {
 }
 
 .account-details {
-  padding-top: 20px;
+  margin: 24px 0 0;
+  padding-top: 24px;
   border-top: 1px solid var(--border-color);
-  margin-bottom: 24px;
 }
 
 #account-add-box {
-  border-top: 1px solid var(--border-color);
-  padding-top: 20px;
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
 }
 
 .full-grid-width {
@@ -1718,6 +1731,7 @@ body {
   .form-row { flex-direction: column; }
   .apps-grid { grid-template-columns: 1fr; }
   .account-grid { grid-template-columns: 1fr; }
+  .account-management-grid { grid-template-columns: 1fr; }
 }
 
 /* INSTALL .IPA TO IOS DEVICE */
