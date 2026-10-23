@@ -73,14 +73,16 @@ type batchCheckItem struct {
 // real direct-download request and keeps the apps the account holds licenses
 // for. Progress is an overall percentage with equal weight per app.
 type batchCheckJob struct {
-	ID        string           `json:"id"`
-	Status    string           `json:"status"` // "running", "completed"
-	Total     int              `json:"total"`
-	Done      int              `json:"done"`
-	Progress  float64          `json:"progress"`
-	Items     []batchCheckItem `json:"items"`
-	Error     string           `json:"error,omitempty"`
-	CreatedAt int64            `json:"createdAt"`
+	ID           string           `json:"id"`
+	AccountID    string           `json:"accountId,omitempty"`
+	AccountEmail string           `json:"accountEmail,omitempty"`
+	Status       string           `json:"status"` // "running", "completed"
+	Total        int              `json:"total"`
+	Done         int              `json:"done"`
+	Progress     float64          `json:"progress"`
+	Items        []batchCheckItem `json:"items"`
+	Error        string           `json:"error,omitempty"`
+	CreatedAt    int64            `json:"createdAt"`
 }
 
 type batchCheckTracker struct {
@@ -126,7 +128,8 @@ func (t *batchCheckTracker) get(id string) (*batchCheckJob, bool) {
 }
 
 type batchCheckRequestPayload struct {
-	Platform string `json:"platform"`
+	AccountID string `json:"accountId"`
+	Platform  string `json:"platform"`
 	// Purchase is a pointer so an API client that omits the field keeps the
 	// previous default behaviour (auto-acquiring licenses).
 	Purchase *bool `json:"purchase"`
@@ -173,18 +176,20 @@ func handleAPIBatchCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	info, err := dependencies.AppStore.AccountInfo()
+	profile, account, release, err := guiAccounts.authenticatedProfile(req.AccountID)
 	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "you must log in to check apps")
+		jsonError(w, http.StatusUnauthorized, "you must select an authenticated Apple ID account to check apps")
 		return
 	}
 
 	job := &batchCheckJob{
-		ID:        fmt.Sprintf("batch_check_%d", time.Now().UnixNano()),
-		Status:    "running",
-		Total:     len(req.Items),
-		Items:     make([]batchCheckItem, len(req.Items)),
-		CreatedAt: time.Now().Unix(),
+		ID:           fmt.Sprintf("batch_check_%d", time.Now().UnixNano()),
+		AccountID:    profile.ID,
+		AccountEmail: account.Email,
+		Status:       "running",
+		Total:        len(req.Items),
+		Items:        make([]batchCheckItem, len(req.Items)),
+		CreatedAt:    time.Now().Unix(),
 	}
 
 	for i, item := range req.Items {
@@ -194,15 +199,23 @@ func handleAPIBatchCheck(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	batchCheckJobs.add(job)
+	if err := registerGUIAccountJob(profile, func() { batchCheckJobs.add(job) }); err != nil {
+		release()
+		jsonError(w, http.StatusConflict, err.Error())
+		return
+	}
 
-	go executeBatchCheckJob(
-		job,
-		req.Platform,
-		info.Account,
-		batchAutoPurchase(req.Purchase),
-		timeoutFromSeconds(req.ItemTimeoutSec, defaultCheckItemTimeout),
-	)
+	go func() {
+		defer release()
+		executeBatchCheckJob(
+			job,
+			req.Platform,
+			account,
+			batchAutoPurchase(req.Purchase),
+			timeoutFromSeconds(req.ItemTimeoutSec, defaultCheckItemTimeout),
+			profile,
+		)
+	}()
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -230,15 +243,21 @@ type batchCheckResult struct {
 // handful of requests, so a plain timeout is enough here — unlike a download
 // there is no byte stream to watch.
 func runBatchCheckItem(
+	profile *guiAccountProfile,
 	app appstore.App,
 	acc appstore.Account,
 	platform appstore.Platform,
 	purchase bool,
 	timeout time.Duration,
 ) batchCheckResult {
+	release, err := acquireGUIAccountOperation(profile)
+	if err != nil {
+		return batchCheckResult{acc: acc, checkErr: err}
+	}
 	resCh := make(chan batchCheckResult, 1)
 
 	go func() {
+		defer release()
 		res := batchCheckResult{acc: acc}
 
 		// Probe the direct-download endpoint first so apps the account already
@@ -246,18 +265,18 @@ func runBatchCheckItem(
 		// an unnecessary purchase round-trip. Only when Apple reports that a
 		// license is missing and auto-purchase is enabled do we acquire the
 		// license and repeat the probe.
-		refreshed, out, checkErr := listVersionsWithRetry(res.acc, app, platform)
+		refreshed, out, checkErr := listVersionsWithRetry(profile, res.acc, app, platform)
 		res.acc = refreshed
 		res.out = out
 		res.checkErr = checkErr
 
 		if errors.Is(checkErr, appstore.ErrLicenseRequired) && purchase {
-			refreshed, _, purchaseErr := purchaseWithRetry(res.acc, app, platform)
+			refreshed, _, purchaseErr := purchaseWithRetry(profile, res.acc, app, platform)
 			res.acc = refreshed
 			res.purchaseErr = purchaseErr
 
 			if purchaseErr == nil {
-				refreshed, out, checkErr = listVersionsWithRetry(res.acc, app, platform)
+				refreshed, out, checkErr = listVersionsWithRetry(profile, res.acc, app, platform)
 				res.acc = refreshed
 				res.out = out
 				res.checkErr = checkErr
@@ -267,7 +286,7 @@ func runBatchCheckItem(
 		if res.checkErr == nil {
 			// Only apps the account may download get the extra catalog lookup
 			// that supplies the version string for the result list.
-			res.version = catalogVersion(res.acc, app, platform)
+			res.version = catalogVersion(profile, res.acc, app, platform)
 		}
 
 		resCh <- res
@@ -301,6 +320,7 @@ func executeBatchCheckJob(
 	acc appstore.Account,
 	purchase bool,
 	itemTimeout time.Duration,
+	profile *guiAccountProfile,
 ) {
 	platform, _ := appstore.ParsePlatform(platformStr)
 
@@ -316,7 +336,7 @@ func executeBatchCheckJob(
 			j.Items[i].Status = batchItemChecking
 		})
 
-		res := runBatchCheckItem(app, acc, platform, purchase, itemTimeout)
+		res := runBatchCheckItem(profile, app, acc, platform, purchase, itemTimeout)
 
 		var (
 			status  string
@@ -418,13 +438,15 @@ type batchDownloadItem struct {
 // sequentially through the same DownloadJob machinery as single downloads so
 // both the batch progress and the existing job tracker stay consistent.
 type batchDownloadJob struct {
-	ID        string              `json:"id"`
-	Status    string              `json:"status"` // "running", "completed"
-	Total     int                 `json:"total"`
-	Progress  float64             `json:"progress"` // 0-100, equal weight per app
-	Items     []batchDownloadItem `json:"items"`
-	Error     string              `json:"error,omitempty"`
-	CreatedAt int64               `json:"createdAt"`
+	ID           string              `json:"id"`
+	AccountID    string              `json:"accountId,omitempty"`
+	AccountEmail string              `json:"accountEmail,omitempty"`
+	Status       string              `json:"status"` // "running", "completed"
+	Total        int                 `json:"total"`
+	Progress     float64             `json:"progress"` // 0-100, equal weight per app
+	Items        []batchDownloadItem `json:"items"`
+	Error        string              `json:"error,omitempty"`
+	CreatedAt    int64               `json:"createdAt"`
 }
 
 type batchDownloadTracker struct {
@@ -506,6 +528,7 @@ func (t *batchDownloadTracker) get(id string) (*batchDownloadJob, bool) {
 }
 
 type batchDownloadRequestPayload struct {
+	AccountID  string `json:"accountId"`
 	Platform   string `json:"platform"`
 	OutputPath string `json:"outputPath"`
 	// Purchase is a pointer so an API client that omits the field keeps the
@@ -546,18 +569,20 @@ func handleAPIBatchDownload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	info, err := dependencies.AppStore.AccountInfo()
+	profile, account, release, err := guiAccounts.authenticatedProfile(req.AccountID)
 	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "you must log in to download apps")
+		jsonError(w, http.StatusUnauthorized, "you must select an authenticated Apple ID account to download apps")
 		return
 	}
 
 	job := &batchDownloadJob{
-		ID:        fmt.Sprintf("batch_download_%d", time.Now().UnixNano()),
-		Status:    "running",
-		Total:     len(req.Items),
-		Items:     make([]batchDownloadItem, len(req.Items)),
-		CreatedAt: time.Now().Unix(),
+		ID:           fmt.Sprintf("batch_download_%d", time.Now().UnixNano()),
+		AccountID:    profile.ID,
+		AccountEmail: account.Email,
+		Status:       "running",
+		Total:        len(req.Items),
+		Items:        make([]batchDownloadItem, len(req.Items)),
+		CreatedAt:    time.Now().Unix(),
 	}
 
 	for i, item := range req.Items {
@@ -568,9 +593,16 @@ func handleAPIBatchDownload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	batchDownloadJobs.add(job)
+	if err := registerGUIAccountJob(profile, func() { batchDownloadJobs.add(job) }); err != nil {
+		release()
+		jsonError(w, http.StatusConflict, err.Error())
+		return
+	}
 
-	go executeBatchDownloadJob(job, req, info.Account)
+	go func() {
+		defer release()
+		executeBatchDownloadJob(job, req, account, profile)
+	}()
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -591,7 +623,7 @@ type batchWatchdogOutcome struct {
 	reason string
 }
 
-func executeBatchDownloadJob(job *batchDownloadJob, req batchDownloadRequestPayload, acc appstore.Account) {
+func executeBatchDownloadJob(job *batchDownloadJob, req batchDownloadRequestPayload, acc appstore.Account, profile *guiAccountProfile) {
 	stallTimeout := timeoutFromSeconds(req.StallTimeoutSec, defaultStallTimeout)
 	itemTimeout := timeoutFromSeconds(req.ItemTimeoutSec, defaultItemTimeout)
 
@@ -612,7 +644,7 @@ func executeBatchDownloadJob(job *batchDownloadJob, req batchDownloadRequestPayl
 			continue
 		}
 
-		acc = runBatchDownloadItem(job, i, items[i], req, acc, stallTimeout, itemTimeout)
+		acc = runBatchDownloadItem(job, i, items[i], req, acc, profile, stallTimeout, itemTimeout)
 	}
 
 	batchDownloadJobs.update(job.ID, func(j *batchDownloadJob) {
@@ -636,17 +668,20 @@ func runBatchDownloadItem(
 	item batchDownloadItem,
 	req batchDownloadRequestPayload,
 	acc appstore.Account,
+	profile *guiAccountProfile,
 	stallTimeout, itemTimeout time.Duration,
 ) appstore.Account {
 	outputPath := resolveDownloadOutputPath(req.OutputPath)
 
 	downloadJob := &DownloadJob{
-		ID:         fmt.Sprintf("job_%d", time.Now().UnixNano()),
-		AppID:      item.AppID,
-		AppName:    item.Name,
-		Status:     "queued",
-		CreatedAt:  time.Now().Unix(),
-		OutputPath: outputPath,
+		ID:           fmt.Sprintf("job_%d", time.Now().UnixNano()),
+		AccountID:    profile.ID,
+		AccountEmail: acc.Email,
+		AppID:        item.AppID,
+		AppName:      item.Name,
+		Status:       "queued",
+		CreatedAt:    time.Now().Unix(),
+		OutputPath:   outputPath,
 	}
 	activeJobs.set(downloadJob)
 
@@ -660,16 +695,30 @@ func runBatchDownloadItem(
 	})
 
 	done := make(chan appstore.Account, 1)
+	releaseDownload, leaseErr := acquireGUIAccountOperation(profile)
+	if leaseErr != nil {
+		downloadJob.Status = "error"
+		downloadJob.Error = leaseErr.Error()
+		activeJobs.set(downloadJob)
+		batchDownloadJobs.update(job.ID, func(j *batchDownloadJob) {
+			j.Items[index].Status = downloadJob.Status
+			j.Items[index].Error = downloadJob.Error
+			j.Items[index].Progress = 100.0
+		})
+		return acc
+	}
 
 	go func() {
+		defer releaseDownload()
 		done <- executeDownloadJob(downloadJob, downloadRequestPayload{
+			AccountID:         profile.ID,
 			AppID:             item.AppID,
 			AppName:           item.Name,
 			OutputPath:        outputPath,
 			ExternalVersionID: item.VersionID,
 			Platform:          req.Platform,
 			Purchase:          batchAutoPurchase(req.Purchase),
-		}, acc)
+		}, acc, profile)
 	}()
 
 	ticker := time.NewTicker(watchdogTick)

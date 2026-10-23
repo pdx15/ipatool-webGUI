@@ -14,10 +14,18 @@ import (
 
 var accountRefreshMu sync.Mutex
 
+func appStoreForProfile(profile *guiAccountProfile) appstore.AppStore {
+	if profile != nil && profile.AppStore != nil {
+		return profile.AppStore
+	}
+	return dependencies.AppStore
+}
+
 // downloadTaskInput carries the values needed by the App Store download API
 // together with the ipatool progress bar the GUI samples for its job status.
 type downloadTaskInput struct {
 	Context           context.Context
+	Profile           *guiAccountProfile
 	Account           appstore.Account
 	App               appstore.App
 	OutputPath        string
@@ -35,17 +43,23 @@ type downloadTaskInput struct {
 // refreshAccount retries authentication with the stored password when Apple
 // rejects an expired password token. If no password is stored, the user must
 // sign in again to refresh the account.
-func refreshAccount(account appstore.Account) (appstore.Account, error) {
+func refreshAccount(profile *guiAccountProfile, account appstore.Account) (appstore.Account, error) {
 	if account.Password == "" {
 		return account, errors.New("password token is expired and no password is stored; log in again to refresh the session")
 	}
 
-	accountRefreshMu.Lock()
-	defer accountRefreshMu.Unlock()
+	if profile != nil {
+		profile.refreshMu.Lock()
+		defer profile.refreshMu.Unlock()
+	} else {
+		accountRefreshMu.Lock()
+		defer accountRefreshMu.Unlock()
+	}
 
+	store := appStoreForProfile(profile)
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
-		output, err := dependencies.AppStore.Login(appstore.LoginInput{
+		output, err := store.Login(appstore.LoginInput{
 			Email:    account.Email,
 			Password: account.Password,
 		})
@@ -77,9 +91,10 @@ func isTransientRefreshError(err error) bool {
 // purchaseWithRetry attempts to acquire a license, refreshing the account once
 // if Apple's cached password token has expired. The returned bool is true when
 // Apple reported that the license already exists.
-func purchaseWithRetry(account appstore.Account, app appstore.App, platform appstore.Platform) (appstore.Account, bool, error) {
+func purchaseWithRetry(profile *guiAccountProfile, account appstore.Account, app appstore.App, platform appstore.Platform) (appstore.Account, bool, error) {
+	store := appStoreForProfile(profile)
 	for attempt := 0; attempt < 2; attempt++ {
-		err := dependencies.AppStore.Purchase(appstore.PurchaseInput{
+		err := store.Purchase(appstore.PurchaseInput{
 			Account:  account,
 			App:      app,
 			Platform: platform,
@@ -91,7 +106,7 @@ func purchaseWithRetry(account appstore.Account, app appstore.App, platform apps
 			return account, false, err
 		}
 
-		refreshed, refreshErr := refreshAccount(account)
+		refreshed, refreshErr := refreshAccount(profile, account)
 		if refreshErr != nil {
 			return account, false, refreshErr
 		}
@@ -104,6 +119,7 @@ func purchaseWithRetry(account appstore.Account, app appstore.App, platform apps
 // downloadWithRetry downloads a package, optionally acquiring its license when
 // needed and refreshing an expired password token at most once.
 func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.DownloadOutput, bool, error) {
+	store := appStoreForProfile(input.Profile)
 	account := input.Account
 	ctx := input.Context
 	if ctx == nil {
@@ -116,7 +132,7 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 	progress := input.Progress
 
 	for attempt := 0; attempt < 4; attempt++ {
-		output, err := dependencies.AppStore.Download(appstore.DownloadInput{
+		output, err := store.Download(appstore.DownloadInput{
 			Context:           ctx,
 			Account:           account,
 			App:               input.App,
@@ -138,7 +154,7 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 		}
 
 		if errors.Is(err, appstore.ErrPasswordTokenExpired) && !refreshed {
-			updated, refreshErr := refreshAccount(account)
+			updated, refreshErr := refreshAccount(input.Profile, account)
 			if refreshErr != nil {
 				return account, appstore.DownloadOutput{}, licenseAcquired, refreshErr
 			}
@@ -152,7 +168,7 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 			if input.OnPurchase != nil {
 				input.OnPurchase()
 			}
-			updated, alreadyOwned, purchaseErr := purchaseWithRetry(account, input.App, input.Platform)
+			updated, alreadyOwned, purchaseErr := purchaseWithRetry(input.Profile, account, input.App, input.Platform)
 			if purchaseErr != nil {
 				return updated, appstore.DownloadOutput{}, licenseAcquired, purchaseErr
 			}
@@ -177,9 +193,10 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 // download (external version identifiers) and whether a license is missing
 // (ErrLicenseRequired). The session is refreshed once when Apple reports an
 // expired password token.
-func listVersionsWithRetry(account appstore.Account, app appstore.App, platform appstore.Platform) (appstore.Account, appstore.ListVersionsOutput, error) {
+func listVersionsWithRetry(profile *guiAccountProfile, account appstore.Account, app appstore.App, platform appstore.Platform) (appstore.Account, appstore.ListVersionsOutput, error) {
+	store := appStoreForProfile(profile)
 	for attempt := 0; attempt < 2; attempt++ {
-		output, err := dependencies.AppStore.ListVersions(appstore.ListVersionsInput{
+		output, err := store.ListVersions(appstore.ListVersionsInput{
 			Context:  context.Background(),
 			Account:  account,
 			App:      app,
@@ -189,7 +206,7 @@ func listVersionsWithRetry(account appstore.Account, app appstore.App, platform 
 			return account, output, err
 		}
 
-		updated, refreshErr := refreshAccount(account)
+		updated, refreshErr := refreshAccount(profile, account)
 		if refreshErr != nil {
 			return account, appstore.ListVersionsOutput{}, refreshErr
 		}
@@ -210,8 +227,8 @@ func isProgressBarSetupError(err error) bool {
 // catalogVersion resolves the version string shown next to a batch result.
 // ListVersions reports build identifiers, not version numbers, so the value
 // comes from the catalog lookup; delisted apps simply report no version.
-func catalogVersion(account appstore.Account, app appstore.App, platform appstore.Platform) string {
-	output, err := dependencies.AppStore.Lookup(appstore.LookupInput{
+func catalogVersion(profile *guiAccountProfile, account appstore.Account, app appstore.App, platform appstore.Platform) string {
+	output, err := appStoreForProfile(profile).Lookup(appstore.LookupInput{
 		Account:  account,
 		AppID:    app.ID,
 		Platform: platform,

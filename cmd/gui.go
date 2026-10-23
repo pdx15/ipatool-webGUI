@@ -36,21 +36,23 @@ var embeddedAssets embed.FS
 
 // DownloadJob represents an asynchronous download task tracked by the GUI.
 type DownloadJob struct {
-	ID         string  `json:"id"`
-	AppName    string  `json:"appName"`
-	BundleID   string  `json:"bundleId"`
-	AppID      int64   `json:"appId"`
-	Platform   string  `json:"platform,omitempty"`
-	Version    string  `json:"version"`
-	Progress   float64 `json:"progress"`
-	BytesRead  int64   `json:"bytesRead"`
-	TotalBytes int64   `json:"totalBytes"`
-	Speed      string  `json:"speed"`
-	Status     string  `json:"status"` // "queued", "purchasing", "downloading", "patching", "completed", "error"
-	Error      string  `json:"error,omitempty"`
-	Warning    string  `json:"warning,omitempty"` // non-fatal issue, job still completed
-	OutputPath string  `json:"outputPath,omitempty"`
-	CreatedAt  int64   `json:"createdAt"`
+	ID           string  `json:"id"`
+	AccountID    string  `json:"accountId,omitempty"`
+	AccountEmail string  `json:"accountEmail,omitempty"`
+	AppName      string  `json:"appName"`
+	BundleID     string  `json:"bundleId"`
+	AppID        int64   `json:"appId"`
+	Platform     string  `json:"platform,omitempty"`
+	Version      string  `json:"version"`
+	Progress     float64 `json:"progress"`
+	BytesRead    int64   `json:"bytesRead"`
+	TotalBytes   int64   `json:"totalBytes"`
+	Speed        string  `json:"speed"`
+	Status       string  `json:"status"` // "queued", "purchasing", "downloading", "patching", "completed", "error"
+	Error        string  `json:"error,omitempty"`
+	Warning      string  `json:"warning,omitempty"` // non-fatal issue, job still completed
+	OutputPath   string  `json:"outputPath,omitempty"`
+	CreatedAt    int64   `json:"createdAt"`
 	// progress is the ipatool progress bar feeding this job. It is sampled
 	// whenever the job is serialized for a status response and never exposed.
 	progress *downloadProgress `json:"-"`
@@ -212,13 +214,17 @@ func prepareGUIStateDirectory(osImpl operatingsystem.OperatingSystem, homeDirect
 }
 
 func newGUIKeychain(stateDirectory string, interactive bool) keychain.Keychain {
+	return newGUIKeychainWithService(stateDirectory, interactive, guiKeychainServiceName)
+}
+
+func newGUIKeychainWithService(stateDirectory string, interactive bool, serviceName string) keychain.Keychain {
 	ring := util.Must(openKeyring(keyring.Config{
 		AllowedBackends: []keyring.BackendType{
 			keyring.KeychainBackend,
 			keyring.SecretServiceBackend,
 			keyring.FileBackend,
 		},
-		ServiceName:              guiKeychainServiceName,
+		ServiceName:              serviceName,
 		KeychainTrustApplication: true,
 		FileDir:                  stateDirectory,
 		FilePasswordFunc: func(s string) (string, error) {
@@ -242,7 +248,7 @@ func newGUIKeychain(stateDirectory string, interactive bool) keychain.Keychain {
 
 	return keychain.New(keychain.Args{
 		Keyring: ring,
-		Label:   guiKeychainServiceName,
+		Label:   serviceName,
 	})
 }
 
@@ -281,7 +287,7 @@ func initGUIWithCommand(cmd *cobra.Command) error {
 		Machine:         dependencies.Machine,
 	})
 
-	return nil
+	return initializeGUIAccountManager(stateDirectory, !nonInteractive)
 }
 
 func guiCmd() *cobra.Command {
@@ -369,6 +375,9 @@ func runGUIServer(host string, port int, noBrowser bool) error {
 	mux.HandleFunc("/api/auth/login", handleAPILogin)
 	mux.HandleFunc("/api/auth/login/mzfinance", handleAPILoginMZFinance)
 	mux.HandleFunc("/api/auth/revoke", handleAPIRevoke)
+	mux.HandleFunc("/api/accounts", handleAPIAccounts)
+	mux.HandleFunc("/api/accounts/activate", handleAPIActivateAccount)
+	mux.HandleFunc("/api/accounts/remove", handleAPIRemoveAccount)
 	mux.HandleFunc("/api/search", handleAPISearch)
 	mux.HandleFunc("/api/search/all", handleAPISearchAll)
 	mux.HandleFunc("/api/removed-apps", handleAPIRemovedApps)
@@ -482,27 +491,87 @@ func handleAPIStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := dependencies.AppStore.AccountInfo()
-	if err != nil {
-		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"authenticated": false,
-			"account":       nil,
-			"version":       version,
-			"os":            runtime.GOOS,
-		})
-		return
+	accounts, activeID, active := guiAccounts.views()
+	var account interface{}
+	authenticated := active != nil && active.Authenticated
+	if authenticated {
+		account = active
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"authenticated": true,
-		"account": map[string]interface{}{
-			"name":       info.Account.Name,
-			"email":      info.Account.Email,
-			"storefront": info.Account.StoreFront,
-			"dsid":       info.Account.DirectoryServicesID,
-		},
-		"version": version,
-		"os":      runtime.GOOS,
+		"authenticated":   authenticated,
+		"account":         account,
+		"accounts":        accounts,
+		"activeAccountId": activeID,
+		"version":         version,
+		"os":              runtime.GOOS,
+	})
+}
+
+func handleAPIAccounts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	accounts, activeID, _ := guiAccounts.views()
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"success":         true,
+		"accounts":        accounts,
+		"activeAccountId": activeID,
+	})
+}
+
+type accountActionPayload struct {
+	AccountID string `json:"accountId"`
+}
+
+func handleAPIActivateAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req accountActionPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.AccountID) == "" {
+		jsonError(w, http.StatusBadRequest, "accountId is required")
+		return
+	}
+	if err := guiAccounts.setActive(strings.TrimSpace(req.AccountID)); err != nil {
+		jsonError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeGUIAccountStatus(w)
+}
+
+func handleAPIRemoveAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req accountActionPayload
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.AccountID) == "" {
+		jsonError(w, http.StatusBadRequest, "accountId is required")
+		return
+	}
+	if err := guiAccounts.remove(strings.TrimSpace(req.AccountID)); err != nil {
+		jsonError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeGUIAccountStatus(w)
+}
+
+func writeGUIAccountStatus(w http.ResponseWriter) {
+	accounts, activeID, active := guiAccounts.views()
+	var account interface{}
+	authenticated := active != nil && active.Authenticated
+	if authenticated {
+		account = active
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"success":         true,
+		"authenticated":   authenticated,
+		"account":         account,
+		"accounts":        accounts,
+		"activeAccountId": activeID,
 	})
 }
 
@@ -729,9 +798,10 @@ func compareWebGUIVersions(a, b string) int {
 }
 
 type loginRequestPayload struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	AuthCode string `json:"authCode"`
+	Email          string `json:"email"`
+	Password       string `json:"password"`
+	AuthCode       string `json:"authCode"`
+	LoginAttemptID string `json:"loginAttemptId"`
 }
 
 func handleAPILogin(w http.ResponseWriter, r *http.Request) {
@@ -745,28 +815,22 @@ func handleAPILogin(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusBadRequest, "invalid json payload")
 		return
 	}
-
-	if req.Email == "" || req.Password == "" {
-		jsonError(w, http.StatusBadRequest, "email and password are required")
+	if guiAccounts == nil {
+		jsonError(w, http.StatusInternalServerError, "Apple ID account manager is not initialized")
 		return
 	}
 
-	output, err := dependencies.AppStore.Login(appstore.LoginInput{
-		Email:    req.Email,
-		Password: req.Password,
-		AuthCode: req.AuthCode,
-	})
-
+	account, attemptID, err := guiAccounts.login(req.Email, req.Password, req.AuthCode, req.LoginAttemptID)
 	if err != nil {
 		if errors.Is(err, appstore.ErrAuthCodeRequired) {
 			jsonResponse(w, http.StatusOK, map[string]interface{}{
 				"success":          false,
 				"authCodeRequired": true,
+				"loginAttemptId":   attemptID,
 				"message":          "2FA verification code is required",
 			})
 			return
 		}
-
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"success": false,
 			"message": err.Error(),
@@ -774,14 +838,17 @@ func handleAPILogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	accountID := activeGUIAccountID()
+	accounts, activeID, active := guiAccounts.views()
+	if active != nil {
+		accountID = active.ID
+	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"account": map[string]interface{}{
-			"name":       output.Account.Name,
-			"email":      output.Account.Email,
-			"storefront": output.Account.StoreFront,
-			"dsid":       output.Account.DirectoryServicesID,
-		},
+		"success":         true,
+		"authenticated":   true,
+		"account":         guiAccountViewFromAccount(accountID, account, true),
+		"accounts":        accounts,
+		"activeAccountId": activeID,
 	})
 }
 
@@ -795,18 +862,35 @@ func handleAPIRevoke(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-
-	err := dependencies.AppStore.Revoke()
-	if err != nil {
-		jsonError(w, http.StatusInternalServerError, err.Error())
+	if guiAccounts == nil {
+		jsonError(w, http.StatusInternalServerError, "Apple ID account manager is not initialized")
 		return
 	}
+	accountID := strings.TrimSpace(r.URL.Query().Get("accountId"))
+	if accountID == "" {
+		accountID = activeGUIAccountID()
+	}
+	if accountID == "" {
+		jsonError(w, http.StatusUnauthorized, "no Apple ID account is selected")
+		return
+	}
+	if err := guiAccounts.remove(accountID); err != nil {
+		jsonError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeGUIAccountStatus(w)
+}
 
-	invalidatePurchasesCache()
-
-	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-	})
+func guiAccountViewFromAccount(id string, account appstore.Account, active bool) guiAccountView {
+	return guiAccountView{
+		ID:            id,
+		Email:         account.Email,
+		Name:          account.Name,
+		Storefront:    account.StoreFront,
+		DSID:          account.DirectoryServicesID,
+		Authenticated: true,
+		Active:        active,
+	}
 }
 
 // searchLimit parses the "limit" query parameter, falling back to def.
@@ -831,18 +915,29 @@ func searchPlatform(r *http.Request) appstore.Platform {
 	return platform
 }
 
-// appStoreSearch queries the official App Store on behalf of the GUI.
-func appStoreSearch(term string, platform appstore.Platform, limit int64) (appstore.SearchOutput, error) {
-	infoResult, err := dependencies.AppStore.AccountInfo()
+// appStoreSearch queries the official App Store for the selected account's
+// storefront. Unauthenticated searches retain the historical US fallback.
+func appStoreSearch(term string, platform appstore.Platform, limit int64, accountID string) (appstore.SearchOutput, error) {
+	store := dependencies.AppStore
+	if profile, ok := guiAccounts.profile(accountID); ok {
+		release, err := acquireGUIAccountOperation(profile)
+		if err != nil {
+			return appstore.SearchOutput{}, err
+		}
+		defer release()
+		store = profile.AppStore
+	} else if strings.TrimSpace(accountID) != "" {
+		return appstore.SearchOutput{}, errors.New("Apple ID account was not found")
+	}
+
 	var acc appstore.Account
-	if err == nil {
+	if infoResult, err := store.AccountInfo(); err == nil {
 		acc = infoResult.Account
 	} else {
-		// Fallback to default US storefront if not logged in
 		acc = appstore.Account{StoreFront: "143441-1,29"}
 	}
 
-	return dependencies.AppStore.Search(appstore.SearchInput{
+	return store.Search(appstore.SearchInput{
 		Account:  acc,
 		Term:     term,
 		Limit:    limit,
@@ -863,7 +958,7 @@ func handleAPISearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	platform := searchPlatform(r)
-	out, err := appStoreSearch(term, platform, searchLimit(r, 25))
+	out, err := appStoreSearch(term, platform, searchLimit(r, 25), r.URL.Query().Get("accountId"))
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -901,7 +996,7 @@ func handleAPISearchAll(w http.ResponseWriter, r *http.Request) {
 	limit := searchLimit(r, 25)
 
 	removedResults := searchRemovedApps(term, limit)
-	out, searchErr := appStoreSearch(term, platform, limit)
+	out, searchErr := appStoreSearch(term, platform, limit, r.URL.Query().Get("accountId"))
 	if searchErr != nil && len(removedResults) == 0 {
 		jsonError(w, http.StatusInternalServerError, searchErr.Error())
 		return
@@ -1168,8 +1263,9 @@ func isASCIIDigit(b byte) bool {
 }
 
 type purchaseRequestPayload struct {
-	BundleID string `json:"bundleId"`
-	Platform string `json:"platform"`
+	AccountID string `json:"accountId"`
+	BundleID  string `json:"bundleId"`
+	Platform  string `json:"platform"`
 }
 
 func handleAPIPurchase(w http.ResponseWriter, r *http.Request) {
@@ -1186,14 +1282,15 @@ func handleAPIPurchase(w http.ResponseWriter, r *http.Request) {
 
 	platform, _ := appstore.ParsePlatform(req.Platform)
 
-	info, err := dependencies.AppStore.AccountInfo()
+	profile, account, release, err := guiAccounts.authenticatedProfile(req.AccountID)
 	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "you must log in to purchase apps")
+		jsonError(w, http.StatusUnauthorized, "you must select an authenticated Apple ID account to purchase apps")
 		return
 	}
+	defer release()
 
-	lookup, err := dependencies.AppStore.Lookup(appstore.LookupInput{
-		Account:  info.Account,
+	lookup, err := profile.AppStore.Lookup(appstore.LookupInput{
+		Account:  account,
 		BundleID: req.BundleID,
 		Platform: platform,
 	})
@@ -1202,7 +1299,7 @@ func handleAPIPurchase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, alreadyOwned, purchaseErr := purchaseWithRetry(info.Account, lookup.App, platform)
+	_, alreadyOwned, purchaseErr := purchaseWithRetry(profile, account, lookup.App, platform)
 	if purchaseErr != nil {
 		jsonError(w, http.StatusInternalServerError, purchaseErr.Error())
 		return
@@ -1215,6 +1312,7 @@ func handleAPIPurchase(w http.ResponseWriter, r *http.Request) {
 }
 
 type downloadRequestPayload struct {
+	AccountID         string `json:"accountId"`
 	BundleID          string `json:"bundleId"`
 	AppID             int64  `json:"appId"`
 	AppName           string `json:"appName"`
@@ -1289,9 +1387,9 @@ func handleAPIDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := dependencies.AppStore.AccountInfo()
+	profile, account, release, err := guiAccounts.authenticatedProfile(req.AccountID)
 	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "you must log in to download apps")
+		jsonError(w, http.StatusUnauthorized, "you must select an authenticated Apple ID account to download apps")
 		return
 	}
 
@@ -1299,18 +1397,27 @@ func handleAPIDownload(w http.ResponseWriter, r *http.Request) {
 
 	jobID := fmt.Sprintf("job_%d", time.Now().UnixNano())
 	job := &DownloadJob{
-		ID:         jobID,
-		BundleID:   req.BundleID,
-		AppID:      req.AppID,
-		AppName:    req.AppName,
-		Platform:   req.Platform,
-		Status:     "queued",
-		CreatedAt:  time.Now().Unix(),
-		OutputPath: outputPath,
+		ID:           jobID,
+		AccountID:    profile.ID,
+		AccountEmail: account.Email,
+		BundleID:     req.BundleID,
+		AppID:        req.AppID,
+		AppName:      req.AppName,
+		Platform:     req.Platform,
+		Status:       "queued",
+		CreatedAt:    time.Now().Unix(),
+		OutputPath:   outputPath,
 	}
-	activeJobs.set(job)
+	if err := registerGUIAccountJob(profile, func() { activeJobs.set(job) }); err != nil {
+		release()
+		jsonError(w, http.StatusConflict, err.Error())
+		return
+	}
 
-	go executeDownloadJob(job, req, info.Account)
+	go func() {
+		defer release()
+		executeDownloadJob(job, req, account, profile)
+	}()
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success": true,
@@ -1318,7 +1425,7 @@ func handleAPIDownload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appstore.Account) appstore.Account {
+func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appstore.Account, profile *guiAccountProfile) appstore.Account {
 	platform, _ := appstore.ParsePlatform(req.Platform)
 	job.Platform = string(platform)
 	app := appstore.App{ID: req.AppID}
@@ -1336,7 +1443,7 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 			app.Name = req.AppName
 			job.AppName = req.AppName
 		} else if req.AppName == "" {
-			if lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{
+			if lookupResult, err := profile.AppStore.Lookup(appstore.LookupInput{
 				Account:  acc,
 				BundleID: "",
 				AppID:    req.AppID,
@@ -1349,7 +1456,7 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 			app.Name = req.AppName
 		}
 	} else if req.BundleID != "" {
-		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{
+		lookupResult, err := profile.AppStore.Lookup(appstore.LookupInput{
 			Account:  acc,
 			BundleID: req.BundleID,
 			Platform: platform,
@@ -1377,6 +1484,7 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 	activeJobs.set(job)
 
 	refreshed, out, _, err := downloadWithRetry(downloadTaskInput{
+		Profile:           profile,
 		Account:           acc,
 		App:               app,
 		OutputPath:        outputPath,
@@ -1418,7 +1526,7 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 	activeJobs.set(job)
 
 	if !(platform == appstore.PlatformMacOS && len(out.Sinfs) == 0) {
-		err = dependencies.AppStore.ReplicateSinf(appstore.ReplicateSinfInput{
+		err = appStoreForProfile(profile).ReplicateSinf(appstore.ReplicateSinfInput{
 			Sinfs:       out.Sinfs,
 			PackagePath: out.DestinationPath,
 		})
@@ -1546,24 +1654,25 @@ func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := dependencies.AppStore.AccountInfo()
+	profile, account, release, err := guiAccounts.authenticatedProfile(r.URL.Query().Get("accountId"))
 	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "you must log in to list versions")
+		jsonError(w, http.StatusUnauthorized, "you must select an authenticated Apple ID account to list versions")
 		return
 	}
+	defer release()
 
 	displayBundle := bundleID
 	displayName := ""
 	app := appstore.App{ID: appID}
 	if appID == 0 && bundleID != "" {
-		lookupResult, lookupErr := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: bundleID, Platform: platform})
+		lookupResult, lookupErr := profile.AppStore.Lookup(appstore.LookupInput{Account: account, BundleID: bundleID, Platform: platform})
 		if lookupErr == nil {
 			app = lookupResult.App
 			displayName = app.Name
 			if app.BundleID != "" {
 				displayBundle = app.BundleID
 			}
-		} else if cachedApp, ok := lookupCachedPurchaseApp(info.Account, 0, bundleID); ok && cachedApp.ID > 0 {
+		} else if cachedApp, ok := lookupCachedPurchaseApp(account, 0, bundleID); ok && cachedApp.ID > 0 {
 			app = appstore.App{ID: cachedApp.ID}
 			displayName = cachedApp.Name
 			if cachedApp.BundleID != "" {
@@ -1574,7 +1683,7 @@ func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if appID > 0 {
-		if cachedApp, ok := lookupCachedPurchaseApp(info.Account, appID, bundleID); ok {
+		if cachedApp, ok := lookupCachedPurchaseApp(account, appID, bundleID); ok {
 			displayName = cachedApp.Name
 			if displayBundle == "" && cachedApp.BundleID != "" {
 				displayBundle = cachedApp.BundleID
@@ -1582,10 +1691,10 @@ func handleAPIVersions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	acc, out, err := listVersionsWithRetry(info.Account, app, platform)
+	account, out, err := listVersionsWithRetry(profile, account, app, platform)
 	if errors.Is(err, appstore.ErrLicenseRequired) {
-		if updatedAcc, _, purchaseErr := purchaseWithRetry(acc, app, platform); purchaseErr == nil {
-			_, out, err = listVersionsWithRetry(updatedAcc, app, platform)
+		if updatedAccount, _, purchaseErr := purchaseWithRetry(profile, account, app, platform); purchaseErr == nil {
+			_, out, err = listVersionsWithRetry(profile, updatedAccount, app, platform)
 		}
 	}
 	if err != nil {
@@ -1618,7 +1727,12 @@ func handleAPIVersionMetadata(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := lookupVersionMetadataWithAccount(nil, bundleID, appID, versionID, platform)
+	profile, ok := guiAccounts.profile(r.URL.Query().Get("accountId"))
+	if !ok && strings.TrimSpace(r.URL.Query().Get("accountId")) != "" {
+		jsonError(w, http.StatusUnauthorized, "Apple ID account was not found")
+		return
+	}
+	result, err := lookupVersionMetadataWithAccount(profile, nil, bundleID, appID, versionID, platform)
 	if err != nil {
 		if errors.Is(err, errNotAuthenticated) {
 			jsonError(w, http.StatusUnauthorized, "not authenticated")
@@ -1633,6 +1747,7 @@ func handleAPIVersionMetadata(w http.ResponseWriter, r *http.Request) {
 
 // versionMetadataBatchRequest is the body of POST /api/version-metadata/batch.
 type versionMetadataBatchRequest struct {
+	AccountID  string   `json:"accountId"`
 	BundleID   string   `json:"bundleId"`
 	AppID      int64    `json:"appId"`
 	Platform   string   `json:"platform"`
@@ -1675,17 +1790,34 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 
 	platform, _ := appstore.ParsePlatform(req.Platform)
 
-	// Resolve account and bundle ID once for the whole batch instead of per build.
+	// Resolve the selected account and bundle ID once for the whole batch.
+	profile, found := guiAccounts.profile(req.AccountID)
+	if !found && strings.TrimSpace(req.AccountID) != "" {
+		jsonError(w, http.StatusUnauthorized, "Apple ID account was not found")
+		return
+	}
+	if profile != nil {
+		release, err := acquireGUIAccountOperation(profile)
+		if err != nil {
+			jsonError(w, http.StatusUnauthorized, err.Error())
+			return
+		}
+		defer release()
+	}
 	var account *appstore.Account
 	appID := req.AppID
 	if appID == 0 && req.BundleID != "" {
-		info, err := dependencies.AppStore.AccountInfo()
+		if profile == nil {
+			jsonError(w, http.StatusUnauthorized, "not authenticated")
+			return
+		}
+		info, err := profile.AppStore.AccountInfo()
 		if err != nil {
 			jsonError(w, http.StatusUnauthorized, "not authenticated")
 			return
 		}
 		account = &info.Account
-		if lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: req.BundleID, Platform: platform}); err == nil {
+		if lookupResult, err := profile.AppStore.Lookup(appstore.LookupInput{Account: info.Account, BundleID: req.BundleID, Platform: platform}); err == nil {
 			appID = lookupResult.App.ID
 		} else if cachedApp, ok := lookupCachedPurchaseApp(info.Account, 0, req.BundleID); ok && cachedApp.ID > 0 {
 			appID = cachedApp.ID
@@ -1725,7 +1857,11 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(uncached) > 0 && account == nil {
-		info, err := dependencies.AppStore.AccountInfo()
+		if profile == nil {
+			jsonError(w, http.StatusUnauthorized, "not authenticated")
+			return
+		}
+		info, err := profile.AppStore.AccountInfo()
 		if err != nil {
 			jsonError(w, http.StatusUnauthorized, "not authenticated")
 			return
@@ -1743,11 +1879,11 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(versionID string) {
 			defer wg.Done()
-			result, err := lookupVersionMetadataWithAccount(account, req.BundleID, appID, versionID, platform)
+			result, err := lookupVersionMetadataWithAccount(profile, account, req.BundleID, appID, versionID, platform)
 			if err != nil && isTransientAppleError(err) {
 				// One retry for gateway-style failures (502/503/504) that
 				// Apple emits under load; a second attempt usually succeeds.
-				result, err = lookupVersionMetadataWithAccount(account, req.BundleID, appID, versionID, platform)
+				result, err = lookupVersionMetadataWithAccount(profile, account, req.BundleID, appID, versionID, platform)
 			}
 			if err != nil {
 				result = map[string]interface{}{"success": false, "message": err.Error()}
@@ -1783,10 +1919,14 @@ func isTransientAppleError(err error) bool {
 // lookupVersionMetadata returns the JSON payload for one build, served from
 // versionMetaCache when possible and fetched from Apple otherwise.
 func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[string]interface{}, error) {
-	return lookupVersionMetadataWithAccount(nil, bundleID, appID, versionID, "")
+	var profile *guiAccountProfile
+	if guiAccounts != nil {
+		profile, _ = guiAccounts.activeProfile()
+	}
+	return lookupVersionMetadataWithAccount(profile, nil, bundleID, appID, versionID, "")
 }
 
-func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string, appID int64, versionID string, platform appstore.Platform) (map[string]interface{}, error) {
+func lookupVersionMetadataWithAccount(profile *guiAccountProfile, account *appstore.Account, bundleID string, appID int64, versionID string, platform appstore.Platform) (map[string]interface{}, error) {
 	// Serve from cache when available (keyed by platform+appID:versionID).
 	if appID != 0 {
 		cacheKey := versionMetaCacheKey(appID, platform)
@@ -1804,11 +1944,20 @@ func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string
 		}
 	}
 
+	store := dependencies.AppStore
+	if profile != nil {
+		release, err := acquireGUIAccountOperation(profile)
+		if err != nil {
+			return nil, err
+		}
+		defer release()
+		store = profile.AppStore
+	}
 	var acc appstore.Account
 	if account != nil {
 		acc = *account
 	} else {
-		info, err := dependencies.AppStore.AccountInfo()
+		info, err := store.AccountInfo()
 		if err != nil {
 			return nil, errNotAuthenticated
 		}
@@ -1822,7 +1971,7 @@ func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string
 	// Only resolve the bundle ID into an app ID when the caller did not already
 	// supply an app ID; this avoids an extra lookup for every build.
 	if bundleID != "" && appID == 0 {
-		lookupResult, err := dependencies.AppStore.Lookup(appstore.LookupInput{Account: acc, BundleID: bundleID, Platform: platform})
+		lookupResult, err := store.Lookup(appstore.LookupInput{Account: acc, BundleID: bundleID, Platform: platform})
 		if err == nil {
 			app = lookupResult.App
 			appID = app.ID
@@ -1838,7 +1987,7 @@ func lookupVersionMetadataWithAccount(account *appstore.Account, bundleID string
 	// Time the round-trip to Apple so slow responses can be told apart from
 	// slow rendering when investigating "history loads slowly" reports.
 	started := time.Now()
-	out, err := dependencies.AppStore.GetVersionMetadata(appstore.GetVersionMetadataInput{
+	out, err := store.GetVersionMetadata(appstore.GetVersionMetadataInput{
 		Account:   acc,
 		App:       app,
 		VersionID: versionID,
@@ -1997,4 +2146,3 @@ func handleAPISaveList(w http.ResponseWriter, r *http.Request) {
 		"path":     fullPath,
 	})
 }
-

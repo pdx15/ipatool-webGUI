@@ -181,19 +181,21 @@ func (j *guiPersistentCookieJar) Save() error {
 	return j.inner.Save()
 }
 
-// purchasesCache keeps the last purchase-history result per Apple ID so the
-// "Purchase history" tab is populated instantly after the first load. The
-// client asks for a fresh copy explicitly with ?refresh=1.
-type purchasesCache struct {
+// purchasesCache keeps an independent in-memory result and in-flight load for
+// each Apple ID so simultaneous account requests can never share purchase data.
+type purchasesAccountCache struct {
 	sync.Mutex
 	dsid        string
 	apps        []appstore.App
 	hiddenIDs   map[int64]bool
 	tvosVerByID map[int64]string
 	fetchedAt   time.Time
-	// inflight collapses concurrent loads (e.g. a refresh click while the
-	// initial load is still running) into one Apple round-trip.
-	inflight *purchasesLoad
+	inflight    *purchasesLoad
+}
+
+type purchasesCache struct {
+	mu       sync.Mutex
+	accounts map[string]*purchasesAccountCache
 }
 
 type purchasesLoad struct {
@@ -212,7 +214,22 @@ type purchasesDiskCache struct {
 	Items     []purchaseItem `json:"items"`
 }
 
-var purchasesState = &purchasesCache{}
+var purchasesState = &purchasesCache{accounts: make(map[string]*purchasesAccountCache)}
+
+func purchasesCacheForAccount(acc appstore.Account) *purchasesAccountCache {
+	key := sanitizeAccountCacheKey(acc)
+	purchasesState.mu.Lock()
+	defer purchasesState.mu.Unlock()
+	if purchasesState.accounts == nil {
+		purchasesState.accounts = make(map[string]*purchasesAccountCache)
+	}
+	state := purchasesState.accounts[key]
+	if state == nil {
+		state = &purchasesAccountCache{}
+		purchasesState.accounts[key] = state
+	}
+	return state
+}
 
 var commerceRefreshMu sync.Mutex
 
@@ -265,18 +282,18 @@ type catalogEnrichmentResponse struct {
 	Results []catalogEnrichmentItem `json:"results"`
 }
 
-func fetchDAAPOwnedAppsForAccount(acc appstore.Account) ([]appstore.App, error) {
+func fetchDAAPOwnedAppsForAccount(profile *guiAccountProfile, acc appstore.Account) ([]appstore.App, error) {
 	var allApps []appstore.App
 	page := 1
 	for {
-		out, err := dependencies.AppStore.OwnedApps(appstore.OwnedAppsInput{
+		out, err := appStoreForProfile(profile).OwnedApps(appstore.OwnedAppsInput{
 			Account: acc,
 			Page:    page,
 			Limit:   appstore.MaxOwnedAppsLimit,
 		})
 		if err != nil && page == 1 && !errors.Is(err, appstore.ErrPasswordTokenExpired) {
 			time.Sleep(500 * time.Millisecond)
-			out, err = dependencies.AppStore.OwnedApps(appstore.OwnedAppsInput{
+			out, err = appStoreForProfile(profile).OwnedApps(appstore.OwnedAppsInput{
 				Account: acc,
 				Page:    page,
 				Limit:   appstore.MaxOwnedAppsLimit,
@@ -300,8 +317,8 @@ func fetchDAAPOwnedAppsForAccount(acc appstore.Account) ([]appstore.App, error) 
 // fetchDAAPOwnedApps queries the user's primary regional storefront and, when
 // the account is outside the US storefront, also probes the US storefront so
 // purchased apps hidden only in the regional storefront are discovered as well.
-func fetchDAAPOwnedApps(acc appstore.Account) (regionalApps []appstore.App, fallbackApps []appstore.App, err error) {
-	regionalApps, err = fetchDAAPOwnedAppsForAccount(acc)
+func fetchDAAPOwnedApps(profile *guiAccountProfile, acc appstore.Account) (regionalApps []appstore.App, fallbackApps []appstore.App, err error) {
+	regionalApps, err = fetchDAAPOwnedAppsForAccount(profile, acc)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -310,7 +327,7 @@ func fetchDAAPOwnedApps(acc appstore.Account) (regionalApps []appstore.App, fall
 	if !strings.HasPrefix(trimmedSF, "143441") {
 		usAcc := acc
 		usAcc.StoreFront = "143441-1,29"
-		if usApps, usErr := fetchDAAPOwnedAppsForAccount(usAcc); usErr == nil && len(usApps) > 0 {
+		if usApps, usErr := fetchDAAPOwnedAppsForAccount(profile, usAcc); usErr == nil && len(usApps) > 0 {
 			fallbackApps = append(fallbackApps, usApps...)
 		}
 	}
@@ -319,21 +336,22 @@ func fetchDAAPOwnedApps(acc appstore.Account) (regionalApps []appstore.App, fall
 }
 
 func previousPurchasesBaseline(acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string) {
-	purchasesState.Lock()
-	if purchasesState.dsid == acc.DirectoryServicesID && purchasesState.apps != nil {
-		prevApps := append([]appstore.App(nil), purchasesState.apps...)
-		prevHidden := make(map[int64]bool, len(purchasesState.hiddenIDs))
-		for k, v := range purchasesState.hiddenIDs {
+	state := purchasesCacheForAccount(acc)
+	state.Lock()
+	if state.dsid == acc.DirectoryServicesID && state.apps != nil {
+		prevApps := append([]appstore.App(nil), state.apps...)
+		prevHidden := make(map[int64]bool, len(state.hiddenIDs))
+		for k, v := range state.hiddenIDs {
 			prevHidden[k] = v
 		}
-		prevTVOS := make(map[int64]string, len(purchasesState.tvosVerByID))
-		for k, v := range purchasesState.tvosVerByID {
+		prevTVOS := make(map[int64]string, len(state.tvosVerByID))
+		for k, v := range state.tvosVerByID {
 			prevTVOS[k] = v
 		}
-		purchasesState.Unlock()
+		state.Unlock()
 		return prevApps, prevHidden, prevTVOS
 	}
-	purchasesState.Unlock()
+	state.Unlock()
 
 	if diskApps, diskHidden, diskTVOS, _, ok := readPurchasesDiskCache(acc); ok {
 		return diskApps, diskHidden, diskTVOS
@@ -356,10 +374,10 @@ func lookupCachedPurchaseApp(acc appstore.Account, appID int64, bundleID string)
 	return appstore.App{}, false
 }
 
-func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string, error) {
+func fetchAllOwnedApps(profile *guiAccountProfile, acc appstore.Account) ([]appstore.App, map[int64]bool, map[int64]string, error) {
 	prevApps, prevHiddenIDs, prevTVOS := previousPurchasesBaseline(acc)
 
-	regionalDAAPApps, fallbackDAAPApps, daapErr := fetchDAAPOwnedApps(acc)
+	regionalDAAPApps, fallbackDAAPApps, daapErr := fetchDAAPOwnedApps(profile, acc)
 	// If DAAP failed due to an expired password token, let ownedAppsWithRetry
 	// perform a single refreshAccount (which refreshes both PasswordToken and
 	// web cookies) and retry the whole fetch cleanly.
@@ -367,7 +385,7 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 		return nil, nil, nil, daapErr
 	}
 
-	commerceApps, _, commerceErr := fetchCommercePurchaseHistoryOnce(acc)
+	commerceApps, _, commerceErr := fetchCommercePurchaseHistoryOnce(profile, acc)
 
 	// If DAAP succeeded and only the short-lived web cookies for
 	// /commerce/account/purchases expired, refresh once now (after DAAP has
@@ -375,10 +393,10 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 	// (e.g. transient fpinit timeout), keep the DAAP apps rather than failing.
 	if commerceErr != nil && errors.Is(commerceErr, appstore.ErrPasswordTokenExpired) && acc.Password != "" {
 		commerceRefreshMu.Lock()
-		refreshedAcc, refreshErr := refreshAccount(acc)
+		refreshedAcc, refreshErr := refreshAccount(profile, acc)
 		commerceRefreshMu.Unlock()
 		if refreshErr == nil {
-			if retriedApps, _, retryErr := fetchCommercePurchaseHistoryOnce(refreshedAcc); retryErr == nil {
+			if retriedApps, _, retryErr := fetchCommercePurchaseHistoryOnce(profile, refreshedAcc); retryErr == nil {
 				commerceApps = retriedApps
 				commerceErr = nil
 			}
@@ -449,8 +467,8 @@ func fetchAllOwnedApps(acc appstore.Account) ([]appstore.App, map[int64]bool, ma
 	return sortPurchasesByDate(merged), hiddenIDs, tvosVerByID, nil
 }
 
-func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.App, error) {
-	apps, _, err := fetchCommercePurchaseHistoryOnce(acc)
+func fetchCommercePurchaseHistoryWithRelogin(profile *guiAccountProfile, acc appstore.Account) ([]appstore.App, error) {
+	apps, _, err := fetchCommercePurchaseHistoryOnce(profile, acc)
 	if err == nil {
 		return apps, nil
 	}
@@ -460,10 +478,10 @@ func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.A
 	// cookies into dependencies.CookieJar) and we retry immediately.
 	if acc.Password != "" {
 		commerceRefreshMu.Lock()
-		refreshedAcc, refreshErr := refreshAccount(acc)
+		refreshedAcc, refreshErr := refreshAccount(profile, acc)
 		commerceRefreshMu.Unlock()
 		if refreshErr == nil {
-			apps, _, err = fetchCommercePurchaseHistoryOnce(refreshedAcc)
+			apps, _, err = fetchCommercePurchaseHistoryOnce(profile, refreshedAcc)
 			if err == nil {
 				return apps, nil
 			}
@@ -473,7 +491,14 @@ func fetchCommercePurchaseHistoryWithRelogin(acc appstore.Account) ([]appstore.A
 	return nil, err
 }
 
-func newCommerceHTTPClient() *http.Client {
+func profileCookieJar(profile *guiAccountProfile) pkghttp.CookieJar {
+	if profile != nil && profile.CookieJar != nil {
+		return profile.CookieJar
+	}
+	return dependencies.CookieJar
+}
+
+func newCommerceHTTPClient(cookieJar pkghttp.CookieJar) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	// Match sorvigolova/ipatool: do not send Accept-Encoding: gzip so Apple
 	// returns plain JSON directly.
@@ -486,18 +511,18 @@ func newCommerceHTTPClient() *http.Client {
 			return http.ErrUseLastResponse
 		},
 	}
-	if dependencies.CookieJar != nil {
-		client.Jar = dependencies.CookieJar
+	if cookieJar != nil {
+		client.Jar = cookieJar
 	}
 	return client
 }
 
-func fetchCommercePurchaseHistoryOnce(acc appstore.Account) ([]appstore.App, string, error) {
+func fetchCommercePurchaseHistoryOnce(profile *guiAccountProfile, acc appstore.Account) ([]appstore.App, string, error) {
 	if strings.TrimSpace(acc.DirectoryServicesID) == "" {
 		return nil, "", nil
 	}
 
-	client := newCommerceHTTPClient()
+	client := newCommerceHTTPClient(profileCookieJar(profile))
 
 	podMu := sync.Mutex{}
 	activePod := ""
@@ -531,8 +556,8 @@ func fetchCommercePurchaseHistoryOnce(acc appstore.Account) ([]appstore.App, str
 		return nil, getPod(), err
 	}
 
-	if dependencies.CookieJar != nil {
-		_ = dependencies.CookieJar.Save()
+	if cookieJar := profileCookieJar(profile); cookieJar != nil {
+		_ = cookieJar.Save()
 	}
 
 	currentYear := time.Now().UTC().Year()
@@ -576,8 +601,8 @@ func fetchCommercePurchaseHistoryOnce(acc appstore.Account) ([]appstore.App, str
 
 	wg.Wait()
 
-	if dependencies.CookieJar != nil {
-		_ = dependencies.CookieJar.Save()
+	if cookieJar := profileCookieJar(profile); cookieJar != nil {
+		_ = cookieJar.Save()
 	}
 
 	allApps := make([]appstore.App, 0, len(recentApps)+128)
@@ -1294,11 +1319,11 @@ func sortPurchasesByDate(apps []appstore.App) []appstore.App {
 // session once when Apple reports an expired password token.
 //
 //nolint:wrapcheck
-func ownedAppsWithRetry(acc appstore.Account) (appstore.Account, []appstore.App, map[int64]bool, map[int64]string, error) {
+func ownedAppsWithRetry(profile *guiAccountProfile, acc appstore.Account) (appstore.Account, []appstore.App, map[int64]bool, map[int64]string, error) {
 	refreshed := false
 
 	for attempt := 0; attempt < 2; attempt++ {
-		apps, hiddenIDs, tvosVerByID, err := fetchAllOwnedApps(acc)
+		apps, hiddenIDs, tvosVerByID, err := fetchAllOwnedApps(profile, acc)
 		if err == nil {
 			return acc, apps, hiddenIDs, tvosVerByID, nil
 		}
@@ -1308,7 +1333,7 @@ func ownedAppsWithRetry(acc appstore.Account) (appstore.Account, []appstore.App,
 				return acc, nil, nil, nil, errors.New("password token is expired and no password is stored; log in again to refresh the session")
 			}
 
-			refreshedAcc, refreshErr := refreshAccount(acc)
+			refreshedAcc, refreshErr := refreshAccount(profile, acc)
 			if refreshErr != nil {
 				return acc, nil, nil, nil, refreshErr
 			}
@@ -1342,9 +1367,9 @@ func guiPurchasesCacheDirectory() string {
 }
 
 func sanitizeAccountCacheKey(acc appstore.Account) string {
-	raw := strings.TrimSpace(strings.ToLower(acc.Email))
+	raw := strings.TrimSpace(acc.DirectoryServicesID)
 	if raw == "" {
-		raw = strings.TrimSpace(acc.DirectoryServicesID)
+		raw = strings.TrimSpace(strings.ToLower(acc.Email))
 	}
 	if raw == "" {
 		raw = strings.TrimSpace(strings.ToLower(acc.Name))
@@ -1470,54 +1495,54 @@ func writePurchasesDiskCache(acc appstore.Account, apps []appstore.App, hiddenID
 	_ = os.WriteFile(purchasesCacheFilePath(acc), data, 0o600)
 }
 
-// loadPurchases returns the cached purchase list for acc, loading it from
-// purchases_cache.json in the current folder when available, or fetching from
-// Apple when the file does not exist, belongs to another account, or force is set.
-func loadPurchases(acc appstore.Account, force bool) ([]appstore.App, map[int64]bool, map[int64]string, time.Time, bool, error) {
-	purchasesState.Lock()
+// loadPurchases returns an account-scoped cached purchase list, or fetches it
+// from Apple when the cache is missing or force is set.
+func loadPurchases(profile *guiAccountProfile, acc appstore.Account, force bool) ([]appstore.App, map[int64]bool, map[int64]string, time.Time, bool, error) {
+	state := purchasesCacheForAccount(acc)
+	state.Lock()
 
-	if !force && purchasesState.dsid == acc.DirectoryServicesID && purchasesState.apps != nil {
-		apps, hiddenIDs, tvosVerByID, at := purchasesState.apps, purchasesState.hiddenIDs, purchasesState.tvosVerByID, purchasesState.fetchedAt
-		purchasesState.Unlock()
+	if !force && state.dsid == acc.DirectoryServicesID && state.apps != nil {
+		apps, hiddenIDs, tvosVerByID, at := state.apps, state.hiddenIDs, state.tvosVerByID, state.fetchedAt
+		state.Unlock()
 		return apps, hiddenIDs, tvosVerByID, at, true, nil
 	}
 
 	if !force {
 		if diskApps, diskHidden, diskTVOS, diskAt, ok := readPurchasesDiskCache(acc); ok {
-			purchasesState.dsid = acc.DirectoryServicesID
-			purchasesState.apps = diskApps
-			purchasesState.hiddenIDs = diskHidden
-			purchasesState.tvosVerByID = diskTVOS
-			purchasesState.fetchedAt = diskAt
-			purchasesState.Unlock()
+			state.dsid = acc.DirectoryServicesID
+			state.apps = diskApps
+			state.hiddenIDs = diskHidden
+			state.tvosVerByID = diskTVOS
+			state.fetchedAt = diskAt
+			state.Unlock()
 			return diskApps, diskHidden, diskTVOS, diskAt, true, nil
 		}
 	}
 
-	if load := purchasesState.inflight; load != nil {
-		purchasesState.Unlock()
+	if load := state.inflight; load != nil {
+		state.Unlock()
 		<-load.done
 		return load.apps, load.hiddenIDs, load.tvosVerByID, time.Now(), false, load.err
 	}
 
 	load := &purchasesLoad{done: make(chan struct{})}
-	purchasesState.inflight = load
-	purchasesState.Unlock()
+	state.inflight = load
+	state.Unlock()
 
-	_, apps, hiddenIDs, tvosVerByID, err := ownedAppsWithRetry(acc)
+	_, apps, hiddenIDs, tvosVerByID, err := ownedAppsWithRetry(profile, acc)
 
-	purchasesState.Lock()
-	purchasesState.inflight = nil
+	state.Lock()
+	state.inflight = nil
 	now := time.Now()
 	if err == nil {
-		purchasesState.dsid = acc.DirectoryServicesID
-		purchasesState.apps = apps
-		purchasesState.hiddenIDs = hiddenIDs
-		purchasesState.tvosVerByID = tvosVerByID
-		purchasesState.fetchedAt = now
+		state.dsid = acc.DirectoryServicesID
+		state.apps = apps
+		state.hiddenIDs = hiddenIDs
+		state.tvosVerByID = tvosVerByID
+		state.fetchedAt = now
 		writePurchasesDiskCache(acc, apps, hiddenIDs, tvosVerByID, now)
 	}
-	purchasesState.Unlock()
+	state.Unlock()
 
 	load.apps, load.hiddenIDs, load.tvosVerByID, load.err = apps, hiddenIDs, tvosVerByID, err
 	close(load.done)
@@ -1525,15 +1550,26 @@ func loadPurchases(acc appstore.Account, force bool) ([]appstore.App, map[int64]
 	return apps, hiddenIDs, tvosVerByID, now, false, err
 }
 
-// invalidatePurchasesCache drops the in-memory cached list, e.g. after logout.
-func invalidatePurchasesCache() {
-	purchasesState.Lock()
-	purchasesState.dsid = ""
-	purchasesState.apps = nil
-	purchasesState.hiddenIDs = nil
-	purchasesState.tvosVerByID = nil
-	purchasesState.fetchedAt = time.Time{}
-	purchasesState.Unlock()
+// invalidatePurchasesCache clears only the histories associated with the given
+// accounts. With no arguments it retains the legacy "clear all" behavior.
+func invalidatePurchasesCache(accounts ...appstore.Account) {
+	if len(accounts) == 0 {
+		purchasesState.mu.Lock()
+		purchasesState.accounts = make(map[string]*purchasesAccountCache)
+		purchasesState.mu.Unlock()
+		return
+	}
+	for _, account := range accounts {
+		state := purchasesCacheForAccount(account)
+		state.Lock()
+		state.dsid = ""
+		state.apps = nil
+		state.hiddenIDs = nil
+		state.tvosVerByID = nil
+		state.fetchedAt = time.Time{}
+		state.Unlock()
+		_ = os.Remove(purchasesCacheFilePath(account))
+	}
 }
 
 func handleAPIPurchases(w http.ResponseWriter, r *http.Request) {
@@ -1542,15 +1578,16 @@ func handleAPIPurchases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	info, err := dependencies.AppStore.AccountInfo()
+	profile, account, release, err := guiAccounts.authenticatedProfile(r.URL.Query().Get("accountId"))
 	if err != nil {
-		jsonError(w, http.StatusUnauthorized, "you must log in to view purchases")
+		jsonError(w, http.StatusUnauthorized, "you must select an authenticated Apple ID account to view purchases")
 		return
 	}
+	defer release()
 
 	force := r.URL.Query().Get("refresh") == "1"
 
-	apps, hiddenIDs, tvosVerByID, fetchedAt, cached, err := loadPurchases(info.Account, force)
+	apps, hiddenIDs, tvosVerByID, fetchedAt, cached, err := loadPurchases(profile, account, force)
 	if err != nil {
 		jsonError(w, http.StatusInternalServerError, err.Error())
 		return

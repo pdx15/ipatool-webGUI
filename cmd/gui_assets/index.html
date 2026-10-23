@@ -498,6 +498,7 @@
           <div>
             <h3 data-i18n="batch_results_title">Результаты проверки</h3>
             <p class="text-secondary" id="batch-results-summary"></p>
+            <p class="batch-account-context" id="batch-results-account"></p>
           </div>
           <div class="app-actions">
             <button class="btn btn-outline btn-sm" onclick="batchSelectAll(true)">
@@ -528,6 +529,7 @@
         <div class="card-header">
           <h3 data-i18n="batch_download_progress_title">Массовое скачивание...</h3>
           <p class="text-secondary" id="batch-download-progress-text"></p>
+          <p class="batch-account-context" id="batch-download-account"></p>
         </div>
         <div class="dl-progress-bar-bg">
           <div id="batch-download-progress-fill" class="dl-progress-bar-fill" style="width:0%"></div>
@@ -869,7 +871,16 @@
             <p class="text-secondary" data-i18n="account_card_desc">Состояние авторизации и сведения об активной сессии</p>
           </div>
 
-          <!-- Logged In State -->
+          <div class="account-profiles-block">
+            <div class="account-profiles-heading">
+              <h3 data-i18n="accounts_saved_title">Сохранённые аккаунты</h3>
+              <span id="accounts-count" class="text-secondary"></span>
+            </div>
+            <div id="accounts-list" class="accounts-list"></div>
+            <p id="accounts-empty" class="text-secondary" data-i18n="accounts_empty">Добавьте Apple ID ниже, чтобы переключаться между аккаунтами.</p>
+          </div>
+
+          <!-- Active account details -->
           <div id="account-logged-in-box" class="account-details" style="display:none">
             <div class="account-user-header">
               <div class="account-avatar">
@@ -899,13 +910,13 @@
 
             <div class="account-actions">
               <button class="btn btn-danger" onclick="confirmLogout()">
-                🚪 <span data-i18n="logout_btn">Выйти из аккаунта</span>
+                🗑️ <span data-i18n="logout_btn">Удалить аккаунт из программы</span>
               </button>
             </div>
           </div>
 
-          <!-- Logged Out / Login Form State -->
-          <div id="account-logged-out-box">
+          <!-- Add another Apple ID; this form stays available when accounts are saved. -->
+          <div id="account-add-box">
             <div class="login-intro">
               <div class="login-shield-icon">🔐</div>
               <h3 data-i18n="login_prompt_title">Вход в Apple ID</h3>
@@ -947,7 +958,7 @@
 
               <div class="form-actions">
                 <button type="submit" id="login-submit-btn" class="btn btn-primary btn-lg full-width">
-                  <span data-i18n="login_btn">Войти в Apple ID</span>
+                  <span data-i18n="login_btn">Добавить Apple ID</span>
                 </button>
               </div>
             </form>

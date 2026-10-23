@@ -27,12 +27,6 @@ if (Get-Command "ipatool" -ErrorAction SilentlyContinue) {
     exit 0
 }
 
-if (Get-Command "python" -ErrorAction SilentlyContinue) {
-    Write-Host "Starting Python GUI server..." -ForegroundColor Green
-    Start-Process "python" -ArgumentList "ipatool-gui.py", "--port", "54321"
-    exit 0
-}
-
-Write-Host "[ERROR] Could not find ipatool.exe or Python in the folder." -ForegroundColor Red
-Write-Host "Please place ipatool.exe in this folder or install Python." -ForegroundColor Yellow
+Write-Host "[ERROR] Could not find ipatool.exe." -ForegroundColor Red
+Write-Host "Please place ipatool.exe in this folder or add ipatool to PATH." -ForegroundColor Yellow
 Read-Host "Press Enter to exit..."
