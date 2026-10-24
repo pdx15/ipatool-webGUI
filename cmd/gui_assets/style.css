@@ -1034,6 +1034,12 @@ body {
   font-size: 1rem;
 }
 
+.active-dl-account {
+  margin: -4px 0 10px;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
 .dl-progress-bar-bg {
   width: 100%;
   height: 8px;
@@ -1100,6 +1106,95 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 20px;
+}
+
+.account-management-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px;
+  align-items: stretch;
+}
+
+.account-profiles-block {
+  min-width: 0;
+  margin-bottom: 0;
+  padding: 20px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+}
+
+.account-profiles-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.account-profiles-heading h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.accounts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-profile-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-input);
+}
+
+.account-profile-row.is-active {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 1px var(--accent-primary);
+}
+
+.account-profile-details {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.account-profile-details strong,
+.account-profile-email {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-profile-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.account-profile-actions .account-remove-btn {
+  min-width: 34px;
+  padding-inline: 8px;
+  color: var(--danger);
+}
+
+.account-details {
+  margin: 24px 0 0;
+  padding-top: 24px;
+  border-top: 1px solid var(--border-color);
+}
+
+#account-add-box {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
 }
 
 .full-grid-width {
@@ -1521,6 +1616,12 @@ body {
 .batch-status-id { flex-shrink: 0; font-size: 0.8rem; }
 .batch-status-label { flex-shrink: 0; font-size: 0.8rem; color: var(--text-secondary); }
 
+.batch-account-context {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
 .batch-app-card { padding: 14px 16px; }
 .batch-app-select { margin-bottom: 10px; }
 .batch-app-select .checkbox-text { display: flex; flex-direction: column; gap: 2px; }
@@ -1630,6 +1731,7 @@ body {
   .form-row { flex-direction: column; }
   .apps-grid { grid-template-columns: 1fr; }
   .account-grid { grid-template-columns: 1fr; }
+  .account-management-grid { grid-template-columns: 1fr; }
 }
 
 /* INSTALL .IPA TO IOS DEVICE */

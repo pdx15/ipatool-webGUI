@@ -498,6 +498,7 @@
           <div>
             <h3 data-i18n="batch_results_title">Результаты проверки</h3>
             <p class="text-secondary" id="batch-results-summary"></p>
+            <p class="batch-account-context" id="batch-results-account"></p>
           </div>
           <div class="app-actions">
             <button class="btn btn-outline btn-sm" onclick="batchSelectAll(true)">
@@ -528,6 +529,7 @@
         <div class="card-header">
           <h3 data-i18n="batch_download_progress_title">Массовое скачивание...</h3>
           <p class="text-secondary" id="batch-download-progress-text"></p>
+          <p class="batch-account-context" id="batch-download-account"></p>
         </div>
         <div class="dl-progress-bar-bg">
           <div id="batch-download-progress-fill" class="dl-progress-bar-fill" style="width:0%"></div>
@@ -863,13 +865,73 @@
       <div class="account-grid">
 
         <!-- Account Status Card -->
-        <div class="card account-card">
+        <div class="card full-grid-width">
           <div class="card-header">
             <h2 data-i18n="account_card_title">Текущий Apple ID</h2>
             <p class="text-secondary" data-i18n="account_card_desc">Состояние авторизации и сведения об активной сессии</p>
           </div>
 
-          <!-- Logged In State -->
+          <div class="account-management-grid">
+            <div class="account-profiles-block">
+              <div class="account-profiles-heading">
+                <h3 data-i18n="accounts_saved_title">Сохранённые аккаунты</h3>
+                <span id="accounts-count" class="text-secondary"></span>
+              </div>
+              <div id="accounts-list" class="accounts-list"></div>
+              <p id="accounts-empty" class="text-secondary" data-i18n="accounts_empty">Добавьте Apple ID справа, чтобы переключаться между аккаунтами.</p>
+            </div>
+
+            <!-- Add another Apple ID; this form stays available when accounts are saved. -->
+            <div id="account-add-box">
+              <div class="login-intro">
+                <div class="login-shield-icon">🔐</div>
+                <h3 data-i18n="login_prompt_title">Вход в Apple ID</h3>
+                <p class="text-secondary" data-i18n="login_prompt_desc">Авторизация необходима для получения лицензий и зашифрованных установочных файлов из App Store.</p>
+              </div>
+
+              <form id="login-form" onsubmit="handleLogin(event)" class="vertical-form">
+                <div class="form-group">
+                  <label for="login-email">
+                    <span data-i18n="login_email_label">Apple ID (Email):</span>
+                    <span class="required">*</span>
+                  </label>
+                  <input
+                    type="email"
+                    id="login-email"
+                    class="input-control"
+                    placeholder="name@example.com"
+                    required
+                  >
+                </div>
+
+                <div class="form-group">
+                  <label for="login-password">
+                    <span data-i18n="login_password_label">Пароль Apple ID:</span>
+                    <span class="required">*</span>
+                  </label>
+                  <div class="password-input-wrapper">
+                    <input
+                      type="password"
+                      id="login-password"
+                      class="input-control"
+                      placeholder="••••••••••••"
+                      required
+                    >
+                    <button type="button" class="icon-btn-inline" onclick="togglePasswordVisibility('login-password')">👁️</button>
+                  </div>
+                  <small class="form-hint" data-i18n="login_security_hint">Пароль передается напрямую на защищенные серверы Apple (SRP-6a/GSA) и не сохраняется третьими лицами.</small>
+                </div>
+
+                <div class="form-actions">
+                  <button type="submit" id="login-submit-btn" class="btn btn-primary btn-lg full-width">
+                    <span data-i18n="login_btn">Добавить Apple ID</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          <!-- Active account details -->
           <div id="account-logged-in-box" class="account-details" style="display:none">
             <div class="account-user-header">
               <div class="account-avatar">
@@ -899,59 +961,11 @@
 
             <div class="account-actions">
               <button class="btn btn-danger" onclick="confirmLogout()">
-                🚪 <span data-i18n="logout_btn">Выйти из аккаунта</span>
+                🗑️ <span data-i18n="logout_btn">Удалить аккаунт из программы</span>
               </button>
             </div>
           </div>
 
-          <!-- Logged Out / Login Form State -->
-          <div id="account-logged-out-box">
-            <div class="login-intro">
-              <div class="login-shield-icon">🔐</div>
-              <h3 data-i18n="login_prompt_title">Вход в Apple ID</h3>
-              <p class="text-secondary" data-i18n="login_prompt_desc">Авторизация необходима для получения лицензий и зашифрованных установочных файлов из App Store.</p>
-            </div>
-
-            <form id="login-form" onsubmit="handleLogin(event)" class="vertical-form">
-              <div class="form-group">
-                <label for="login-email">
-                  <span data-i18n="login_email_label">Apple ID (Email):</span>
-                  <span class="required">*</span>
-                </label>
-                <input 
-                  type="email" 
-                  id="login-email" 
-                  class="input-control" 
-                  placeholder="name@example.com"
-                  required
-                >
-              </div>
-
-              <div class="form-group">
-                <label for="login-password">
-                  <span data-i18n="login_password_label">Пароль Apple ID:</span>
-                  <span class="required">*</span>
-                </label>
-                <div class="password-input-wrapper">
-                  <input 
-                    type="password" 
-                    id="login-password" 
-                    class="input-control" 
-                    placeholder="••••••••••••"
-                    required
-                  >
-                  <button type="button" class="icon-btn-inline" onclick="togglePasswordVisibility('login-password')">👁️</button>
-                </div>
-                <small class="form-hint" data-i18n="login_security_hint">Пароль передается напрямую на защищенные серверы Apple (SRP-6a/GSA) и не сохраняется третьими лицами.</small>
-              </div>
-
-              <div class="form-actions">
-                <button type="submit" id="login-submit-btn" class="btn btn-primary btn-lg full-width">
-                  <span data-i18n="login_btn">Войти в Apple ID</span>
-                </button>
-              </div>
-            </form>
-          </div>
         </div>
 
         <!-- iCloud Presence Check Card (Windows-only; hidden on macOS) -->

@@ -12,13 +12,16 @@ const state = {
   version: null,
   updateInfo: null,
   account: null,
+  accounts: [],
+  activeAccountId: '',
   isAuthenticated: false,
   activeDownloads: new Map(), // jobId -> job object
   downloadHistory: JSON.parse(localStorage.getItem('ipatool_download_history') || '[]'),
-  lastPendingLogin: null, // { email, password } for 2FA retry
+  lastPendingLogin: null, // { loginAttemptId, endpoint }; password stays server-side for the short 2FA challenge
   currentJobId: null,
   lastVersionsName: '', // app name remembered when opening version history from a search card
   versionsPage: null,   // current version-history page state: { ids, page, ctx }
+  versionsRequestId: 0, // ignores version-history responses from a prior account/request
   isDownloading: false, // prevent double-click on download buttons
   completedJobIds: new Set(), // prevent duplicate toasts/handlers for same job
   purchases: {
@@ -28,7 +31,8 @@ const state = {
     error: '',
     fetchedAt: null,
     fromCache: false,
-    loadedFor: null      // dsid the list belongs to
+    loadedFor: null,     // selected profile and DSID the list belongs to
+    requestId: 0          // invalidates responses from a previously selected account
   }
 };
 
@@ -130,20 +134,28 @@ const i18n = {
     download_history_desc: 'Скачанные файлы .IPA на вашем компьютере',
     refresh_btn: 'Обновить',
     no_history_downloads: 'История пока пуста',
-    account_card_title: 'Текущий Apple ID',
-    account_card_desc: 'Состояние авторизации и сведения об активной сессии',
+    account_card_title: 'Аккаунты Apple ID',
+    account_card_desc: 'Сохранённые аккаунты и активная сессия',
+    accounts_saved_title: 'Сохранённые аккаунты',
+    accounts_empty: 'Добавьте Apple ID справа, чтобы переключаться между аккаунтами.',
+    accounts_active: 'Активный',
+    accounts_switch: 'Переключить',
+    accounts_not_authenticated: 'Требуется вход',
+    accounts_remove_confirm: 'Удалить этот Apple ID из программы? Сессия будет отозвана на этом компьютере.',
+    accounts_removed_toast: 'Аккаунт удалён из программы',
+    accounts_switched_toast: 'Активный Apple ID изменён',
     badge_authenticated: 'Авторизован',
     info_country: 'Регион App Store:',
     info_dsid: 'DSID:',
     info_keychain: 'Хранилище сессии:',
-    info_keychain_ok: 'Системное хранилище Windows',
-    logout_btn: 'Выйти из аккаунта',
-    login_prompt_title: 'Вход в Apple ID',
-    login_prompt_desc: 'Авторизация необходима для получения лицензий и зашифрованных установочных файлов из App Store.',
+    info_keychain_ok: 'Изолированное хранилище профиля',
+    logout_btn: 'Удалить аккаунт из программы',
+    login_prompt_title: 'Добавить Apple ID',
+    login_prompt_desc: 'Добавьте ещё один Apple ID. Аккаунты сохраняются отдельно и переключаются без повторного входа.',
     login_email_label: 'Apple ID (Email):',
     login_password_label: 'Пароль Apple ID:',
-    login_security_hint: 'Пароль передается напрямую на защищенные серверы Apple (SRP-6a/GSA) и не сохраняется третьими лицами.',
-    login_btn: 'Войти в Apple ID',
+    login_security_hint: 'Пароль передаётся Apple по защищённому соединению и хранится только в защищённом хранилище профиля для обновления сессии; в accounts.json он не записывается. При запросе 2FA пароль временно хранится в памяти сервера не более 10 минут.',
+    login_btn: 'Добавить Apple ID',
     anisette_card_title: '⚙️ Проверка iCloud для Windows',
     anisette_card_desc: 'Проверьте, установлена ли нужная версия iCloud на этом компьютере',
     anisette_alert_title: 'Для Windows-версии ipatool:',
@@ -210,6 +222,8 @@ const i18n = {
     batch_check_progress_text: 'Проверено {done} из {total} (каждый прогон = {pct}% работы).',
     batch_results_title: 'Результаты проверки',
     batch_results_summary: 'Доступно для загрузки: {available} из {total}. Отфильтровано: {filtered}.',
+    batch_account_label: 'Apple ID для этого списка: {email}',
+    batch_download_account_label: 'Apple ID загрузки: {email}',
     batch_select_all: 'Выбрать все',
     batch_select_none: 'Снять все',
     batch_download_selected: 'Скачать выбранные',
@@ -389,20 +403,28 @@ const i18n = {
     download_history_desc: 'Completed .IPA packages on your computer',
     refresh_btn: 'Refresh',
     no_history_downloads: 'History is empty',
-    account_card_title: 'Current Apple ID',
-    account_card_desc: 'Authentication state and active session details',
+    account_card_title: 'Apple ID Accounts',
+    account_card_desc: 'Saved accounts and the active session',
+    accounts_saved_title: 'Saved accounts',
+    accounts_empty: 'Add an Apple ID on the right to switch between accounts.',
+    accounts_active: 'Active',
+    accounts_switch: 'Switch',
+    accounts_not_authenticated: 'Sign-in required',
+    accounts_remove_confirm: 'Remove this Apple ID from the app? Its session will be revoked on this computer.',
+    accounts_removed_toast: 'Account removed from the app',
+    accounts_switched_toast: 'Active Apple ID changed',
     badge_authenticated: 'Authenticated',
     info_country: 'App Store Storefront:',
     info_dsid: 'DSID:',
     info_keychain: 'Session Storage:',
-    info_keychain_ok: 'Windows Credential Storage',
-    logout_btn: 'Log Out (Revoke)',
-    login_prompt_title: 'Sign in with Apple ID',
-    login_prompt_desc: 'Authentication is required to obtain license signatures and encrypted packages from the App Store.',
+    info_keychain_ok: 'Isolated profile keychain',
+    logout_btn: 'Remove account from app',
+    login_prompt_title: 'Add an Apple ID',
+    login_prompt_desc: 'Add another Apple ID. Accounts are stored separately and can be switched without signing in again.',
     login_email_label: 'Apple ID (Email):',
     login_password_label: 'Apple ID Password:',
-    login_security_hint: 'Your password is sent directly to Apple secure servers (SRP-6a/GSA) over HTTPS and is never stored unencrypted.',
-    login_btn: 'Sign In',
+    login_security_hint: 'Your password is sent to Apple over a secure connection and stored only in the profile keychain so ipatool can refresh the session; it is not written to accounts.json. During a 2FA challenge, the password is held temporarily in server memory for up to 10 minutes.',
+    login_btn: 'Add Apple ID',
     anisette_card_title: '⚙️ iCloud Check for Windows',
     anisette_card_desc: 'Verify that the required iCloud version is installed on this computer',
     anisette_alert_title: 'For Windows users of ipatool:',
@@ -469,6 +491,8 @@ const i18n = {
     batch_check_progress_text: 'Checked {done} of {total} (each pass = {pct}% of the work).',
     batch_results_title: 'Check Results',
     batch_results_summary: 'Available for download: {available} of {total}. Filtered out: {filtered}.',
+    batch_account_label: 'Apple ID for this list: {email}',
+    batch_download_account_label: 'Download account: {email}',
     batch_select_all: 'Select all',
     batch_select_none: 'Select none',
     batch_download_selected: 'Download selected',
@@ -582,8 +606,10 @@ function applyLanguage() {
   if (typeof renderPurchases === 'function') renderPurchases();
   if (typeof renderVersionsPage === 'function' && state.versionsPage) renderVersionsPage();
 
-  // Update account status pill
+  // Refresh dynamic account labels as well as the static translated markup.
   updateAccountStatusPill();
+  renderAccountsList();
+  updateBatchAccountContextLabels();
   renderBrandVersion();
 
   // Re-run iCloud presence check so its text follows the selected language.
@@ -712,6 +738,17 @@ function togglePasswordVisibility(inputId) {
 // API Interaction & Account Management
 // ==========================================
 
+function activeAccountField(accountId = state.activeAccountId) {
+  return accountId ? { accountId } : {};
+}
+
+function withActiveAccountQuery(query = '', accountId = state.activeAccountId) {
+  const accountID = accountId;
+  if (!accountID) return query;
+  const separator = query ? '&' : '';
+  return `${query}${separator}accountId=${encodeURIComponent(accountID)}`;
+}
+
 // Shows/hides platform-specific pieces of the UI once the server-reported OS
 // is known. The iCloud-for-Windows card is hidden on macOS.
 function applyPlatformVisibility() {
@@ -756,27 +793,36 @@ async function checkICloudStatus() {
   }
 }
 
+function applyAccountStatus(data) {
+  const previousActiveAccountId = state.activeAccountId;
+  state.isAuthenticated = Boolean(data && data.authenticated);
+  state.account = data && data.account ? data.account : null;
+  state.accounts = data && Array.isArray(data.accounts) ? data.accounts : [];
+  state.activeAccountId = (data && data.activeAccountId) || (state.account && state.account.id) || '';
+  if (previousActiveAccountId && previousActiveAccountId !== state.activeAccountId) {
+    clearVersionHistoryForAccountChange();
+  }
+  if (data && data.os) state.os = data.os;
+  if (data && data.version) state.version = data.version;
+  updateAccountUI();
+  onAuthStateChanged();
+}
+
 async function fetchStatus() {
   try {
     const res = await fetch('/api/status');
     const data = await res.json();
-    
-    state.isAuthenticated = data.authenticated;
-    state.account = data.account || null;
-    state.os = data.os || null;
-    if (data.version) {
-      state.version = data.version;
-    }
+    applyAccountStatus(data);
 
     renderBrandVersion();
     checkAppUpdate();
     applyPlatformVisibility();
-    updateAccountUI();
-    onAuthStateChanged();
   } catch (err) {
     console.error('Failed to fetch status:', err);
     state.isAuthenticated = false;
     state.account = null;
+    state.accounts = [];
+    state.activeAccountId = '';
     updateAccountUI();
   }
 }
@@ -909,27 +955,81 @@ function updateAccountStatusPill() {
   if (!pill || !text) return;
 
   const dict = i18n[state.lang] || i18n.ru;
-
   if (state.isAuthenticated && state.account) {
     pill.className = 'account-pill logged-in';
-    const name = state.account.name || state.account.email.split('@')[0];
-    text.textContent = `🟢 ${name} (${state.account.email})`;
+    const email = state.account.email || '';
+    const name = state.account.name || email.split('@')[0] || email || 'Apple ID';
+    text.textContent = `🟢 ${name}${email ? ` (${email})` : ''}`;
   } else {
     pill.className = 'account-pill logged-out';
     text.textContent = `🔴 ${dict.auth_not_logged_in}`;
   }
 }
 
+function renderAccountsList() {
+  const list = document.getElementById('accounts-list');
+  const empty = document.getElementById('accounts-empty');
+  const count = document.getElementById('accounts-count');
+  if (!list) return;
+
+  list.replaceChildren();
+  const accounts = Array.isArray(state.accounts) ? state.accounts : [];
+  if (count) count.textContent = String(accounts.length);
+  if (empty) empty.style.display = accounts.length ? 'none' : 'block';
+
+  const dict = i18n[state.lang] || i18n.ru;
+  accounts.forEach(account => {
+    const row = document.createElement('div');
+    row.className = `account-profile-row${account.id === state.activeAccountId ? ' is-active' : ''}`;
+
+    const details = document.createElement('div');
+    details.className = 'account-profile-details';
+    const title = document.createElement('strong');
+    title.textContent = account.name || (account.email ? account.email.split('@')[0] : account.email) || 'Apple ID';
+    const email = document.createElement('span');
+    email.className = 'text-secondary account-profile-email';
+    email.textContent = account.email || '';
+    details.append(title, email);
+
+    const badge = document.createElement('span');
+    badge.className = account.active ? 'badge badge-success' : 'badge';
+    badge.textContent = account.active ? dict.accounts_active : (account.authenticated ? dict.auth_logged_in : dict.accounts_not_authenticated);
+
+    const actions = document.createElement('div');
+    actions.className = 'account-profile-actions';
+    if (!account.active) {
+      const switchButton = document.createElement('button');
+      switchButton.type = 'button';
+      switchButton.className = 'btn btn-outline btn-sm';
+      switchButton.textContent = dict.accounts_switch;
+      switchButton.addEventListener('click', () => activateAccount(account.id));
+      actions.appendChild(switchButton);
+    }
+    const removeButton = document.createElement('button');
+    removeButton.type = 'button';
+    removeButton.className = 'btn btn-outline btn-sm account-remove-btn';
+    removeButton.textContent = '×';
+    removeButton.title = dict.logout_btn;
+    removeButton.setAttribute('aria-label', dict.logout_btn);
+    removeButton.addEventListener('click', () => removeAccount(account.id));
+    actions.appendChild(removeButton);
+
+    row.append(details, badge, actions);
+    list.appendChild(row);
+  });
+}
+
 function updateAccountUI() {
   updateAccountStatusPill();
+  renderAccountsList();
 
   const loggedInBox = document.getElementById('account-logged-in-box');
-  const loggedOutBox = document.getElementById('account-logged-out-box');
+  const addBox = document.getElementById('account-add-box');
+  const authenticated = Boolean(state.isAuthenticated && state.account);
+  if (loggedInBox) loggedInBox.style.display = authenticated ? 'block' : 'none';
+  if (addBox) addBox.style.display = 'block';
 
-  if (state.isAuthenticated && state.account) {
-    if (loggedInBox) loggedInBox.style.display = 'block';
-    if (loggedOutBox) loggedOutBox.style.display = 'none';
-
+  if (authenticated) {
     const nameEl = document.getElementById('account-user-name');
     const emailEl = document.getElementById('account-user-email');
     const countryEl = document.getElementById('account-country');
@@ -937,16 +1037,55 @@ function updateAccountUI() {
     const initialsEl = document.getElementById('account-initials');
 
     if (nameEl) nameEl.textContent = state.account.name || 'Пользователь Apple';
-    if (emailEl) emailEl.textContent = state.account.email;
+    if (emailEl) emailEl.textContent = state.account.email || '';
     if (countryEl) countryEl.textContent = state.account.storefront || 'Apple App Store';
     if (dsidEl) dsidEl.textContent = state.account.dsid || '—';
     if (initialsEl) {
-      const char = (state.account.name ? state.account.name[0] : state.account.email[0]).toUpperCase();
+      const char = (state.account.name || state.account.email || 'A')[0].toUpperCase();
       initialsEl.textContent = char;
     }
-  } else {
-    if (loggedInBox) loggedInBox.style.display = 'none';
-    if (loggedOutBox) loggedOutBox.style.display = 'block';
+  }
+}
+
+async function activateAccount(accountId) {
+  if (!accountId || accountId === state.activeAccountId) return;
+  try {
+    const res = await fetch('/api/accounts/activate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      showToast(data.message || 'Не удалось переключить Apple ID', 'error');
+      return;
+    }
+    applyAccountStatus(data);
+    showToast((i18n[state.lang] || i18n.ru).accounts_switched_toast, 'success');
+  } catch (err) {
+    showToast('Ошибка переключения аккаунта', 'error');
+  }
+}
+
+async function removeAccount(accountId) {
+  if (!accountId) return;
+  const dict = i18n[state.lang] || i18n.ru;
+  if (!confirm(dict.accounts_remove_confirm)) return;
+  try {
+    const res = await fetch('/api/accounts/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId })
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      showToast(data.message || 'Не удалось удалить аккаунт', 'error');
+      return;
+    }
+    applyAccountStatus(data);
+    showToast(dict.accounts_removed_toast, 'success');
+  } catch (err) {
+    showToast('Ошибка удаления аккаунта', 'error');
   }
 }
 
@@ -971,31 +1110,32 @@ async function handleLogin(e) {
 
 // Login submission helper (reused for 2FA retry).
 async function submitLogin(endpoint, email, password, authCode, submitBtn, originalHtml) {
+  const isChallenge = Boolean(authCode && state.lastPendingLogin?.loginAttemptId);
+  const payload = isChallenge
+    ? { loginAttemptId: state.lastPendingLogin.loginAttemptId, authCode }
+    : { email, password };
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, authCode })
+      body: JSON.stringify(payload)
     });
     const data = await res.json();
 
     if (data.authCodeRequired) {
-      // 2FA required! Open 2FA modal, remembering which flow triggered it.
-      state.lastPendingLogin = { email, password, endpoint };
+      // The backend keeps the short-lived password challenge; the browser only
+      // retains its opaque attempt ID while the user enters the 2FA code.
+      state.lastPendingLogin = { loginAttemptId: data.loginAttemptId, endpoint };
       open2FAModal();
       showToast('Требуется код двухфакторной аутентификации', 'info');
     } else if (data.anisetteRequired) {
-      // Windows GSA login needs a locally installed & signed-in iCloud to
-      // produce anisette headers. Show the precise reason returned by the
-      // backend so the user knows exactly which check failed.
       showToast('Ошибка iCloud (anisette): ' + (data.message || 'проверьте установку iCloud'), 'error');
       switchTab('account');
     } else if (data.success) {
       close2FAModal();
-      state.isAuthenticated = true;
-      state.account = data.account;
-      updateAccountUI();
-      onAuthStateChanged();
+      const form = document.getElementById('login-form');
+      if (form) form.reset();
+      applyAccountStatus(data);
       showToast(`Успешный вход: ${data.account.email}`, 'success');
     } else {
       showToast(data.message || 'Ошибка авторизации Apple ID', 'error');
@@ -1003,6 +1143,8 @@ async function submitLogin(endpoint, email, password, authCode, submitBtn, origi
   } catch (err) {
     showToast('Ошибка сетевого соединения с локальным сервером', 'error');
   } finally {
+    const passwordInput = document.getElementById('login-password');
+    if (!isChallenge && passwordInput) passwordInput.value = '';
     if (submitBtn) {
       submitBtn.disabled = false;
       if (originalHtml) submitBtn.innerHTML = originalHtml;
@@ -1052,35 +1194,12 @@ async function handle2FASubmit(e) {
   // Reuse the same login flow that triggered the 2FA prompt (standard or the
   // macOS MZFinance test path), so the retry does not switch flows.
   const endpoint = state.lastPendingLogin.endpoint || '/api/auth/login';
-  await submitLogin(
-    endpoint,
-    state.lastPendingLogin.email,
-    state.lastPendingLogin.password,
-    code,
-    submitBtn,
-    originalHtml
-  );
+  await submitLogin(endpoint, '', '', code, submitBtn, originalHtml);
 }
 
-// Handle Logout / Revoke
+// Remove the active Apple ID profile and revoke its local session.
 async function confirmLogout() {
-  if (!confirm('Вы действительно хотите выйти из учетной записи Apple ID?')) return;
-
-  try {
-    const res = await fetch('/api/auth/revoke', { method: 'POST' });
-    const data = await res.json();
-    if (data.success) {
-      state.isAuthenticated = false;
-      state.account = null;
-      updateAccountUI();
-      onAuthStateChanged();
-      showToast('Вы успешно вышли из аккаунта', 'success');
-    } else {
-      showToast(data.message || 'Ошибка выхода', 'error');
-    }
-  } catch (err) {
-    showToast('Ошибка запроса выхода', 'error');
-  }
+  if (state.activeAccountId) await removeAccount(state.activeAccountId);
 }
 
 // ==========================================
@@ -1117,7 +1236,7 @@ function clearSearch() {
 async function fetchSearchResults(term, platform, limit) {
   const termParam = `term=${encodeURIComponent(term)}`;
   try {
-    const res = await fetch(`/api/search/all?${termParam}&platform=${platform}&limit=${limit}`);
+    const res = await fetch(`/api/search/all?${withActiveAccountQuery(`${termParam}&platform=${platform}&limit=${limit}`)}`);
     if (res.ok) {
       const data = await res.json();
       if (data && data.success) {
@@ -1131,7 +1250,7 @@ async function fetchSearchResults(term, platform, limit) {
   } catch (e) { /* merged endpoint unavailable — use the separate ones */ }
 
   const [searchRes, removedRes] = await Promise.all([
-    fetch(`/api/search?${termParam}&platform=${platform}&limit=${limit}`),
+    fetch(`/api/search?${withActiveAccountQuery(`${termParam}&platform=${platform}&limit=${limit}`)}`),
     fetch(`/api/removed-apps?${termParam}&limit=${limit}`)
   ]);
   const data = await searchRes.json();
@@ -1360,7 +1479,7 @@ async function purchaseApp(bundleId, platform = 'iphone') {
     const res = await fetch('/api/purchase', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bundleId, platform })
+      body: JSON.stringify({ bundleId, platform, ...activeAccountField() })
     });
     const data = await res.json();
 
@@ -1403,6 +1522,7 @@ async function startAppDownload(bundleId, appId, platform, appName, iconUrl, ver
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        ...activeAccountField(),
         bundleId: bundleId || '',
         appId: appId ? parseInt(appId, 10) : 0,
         appName: appName || '',
@@ -1688,6 +1808,31 @@ async function handleDirectDownload(e) {
 // Version History Tab
 // ==========================================
 
+function clearVersionHistoryForAccountChange() {
+  state.versionsRequestId += 1;
+  state.versionsPage = null;
+  state.lastVersionsName = '';
+  state.lastVersionsAppId = 0;
+  state.lastVersionsInput = '';
+
+  const loading = document.getElementById('versions-loading');
+  const container = document.getElementById('versions-container');
+  const tableBody = document.getElementById('versions-table-body');
+  const title = document.getElementById('versions-app-title');
+  const bundle = document.getElementById('versions-app-bundle');
+  const badge = document.getElementById('versions-count-badge');
+  if (loading) loading.style.display = 'none';
+  if (container) container.style.display = 'none';
+  if (tableBody) tableBody.replaceChildren();
+  if (title) title.textContent = '';
+  if (bundle) bundle.textContent = '';
+  if (badge) badge.textContent = '';
+  ['versions-pager-top', 'versions-pager-bottom'].forEach(id => {
+    const pager = document.getElementById(id);
+    if (pager) pager.replaceChildren();
+  });
+}
+
 async function viewAppVersions(bundleId, appId, appName, platform = 'iphone') {
   switchTab('versions');
   // Remember the app name and numeric ID so /api/versions and metadata batches
@@ -1708,9 +1853,10 @@ async function viewAppVersions(bundleId, appId, appName, platform = 'iphone') {
 
 // Fetches the Display Version and Release Date for a single build and fills
 // the corresponding cells in the version history table.
-async function fetchVersionMetadata(bundleId, appId, versionId, platform = 'iphone') {
+async function fetchVersionMetadata(bundleId, appId, versionId, platform = 'iphone', accountId = state.activeAccountId) {
   try {
-    const res = await fetch(`/api/version-metadata?bundleId=${encodeURIComponent(bundleId)}&appId=${encodeURIComponent(appId)}&versionId=${encodeURIComponent(versionId)}&platform=${encodeURIComponent(platform)}`);
+    const params = new URLSearchParams({ bundleId, appId: String(appId), versionId: String(versionId), platform, ...activeAccountField(accountId) });
+    const res = await fetch(`/api/version-metadata?${params}`);
     const data = await res.json();
     const dispEl = document.getElementById(`disp-ver-${versionId}`);
     const dateEl = document.getElementById(`date-ver-${versionId}`);
@@ -1799,13 +1945,17 @@ async function handleFetchVersions(e) {
   const titleEl = document.getElementById('versions-app-title');
   const badgeEl = document.getElementById('versions-count-badge');
   const bundleEl = document.getElementById('versions-app-bundle');
+  const accountId = state.activeAccountId;
+  const requestId = ++state.versionsRequestId;
 
   loading.style.display = 'block';
   container.style.display = 'none';
 
   try {
-    const res = await fetch(`/api/versions?bundleId=${encodeURIComponent(bundleId)}&appId=${encodeURIComponent(appId)}&platform=${encodeURIComponent(platform)}`);
+    const params = new URLSearchParams({ bundleId, appId, platform, ...activeAccountField(accountId) });
+    const res = await fetch(`/api/versions?${params}`);
     const data = await res.json();
+    if (requestId !== state.versionsRequestId || accountId !== state.activeAccountId) return;
     loading.style.display = 'none';
 
     if (!data.success) {
@@ -1833,13 +1983,15 @@ async function handleFetchVersions(e) {
         bundleId: data.bundleID || bundleId,
         appId: resolvedAppId,
         appName: appName || data.bundleID || parsed,
-        platform
+        platform,
+        accountId
       }
     };
 
     container.style.display = 'block';
     renderVersionsPage();
   } catch (err) {
+    if (requestId !== state.versionsRequestId || accountId !== state.activeAccountId) return;
     loading.style.display = 'none';
     showToast('Ошибка связи с сервером', 'error');
   }
@@ -1962,7 +2114,7 @@ async function fillVersionMetadata(ids, params, fill, isStale) {
         const res = await fetch('/api/version-metadata/batch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...params, versionIds: chunk }),
+          body: JSON.stringify({ ...params, ...activeAccountField(params.accountId || state.activeAccountId), versionIds: chunk }),
         });
         const data = await res.json();
         results = (data && data.results) || {};
@@ -2026,14 +2178,14 @@ function renderVersionsPage() {
 
   fillVersionMetadata(
     info.ids,
-    { bundleId: bundleId || '', appId: Number(appId) || 0, platform },
+    { bundleId: bundleId || '', appId: Number(appId) || 0, platform, accountId: ps.ctx.accountId || state.activeAccountId },
     (vId, data) => {
       const dispEl = document.getElementById(`disp-ver-${vId}`);
       const dateEl = document.getElementById(`date-ver-${vId}`);
       if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion, platform) : '—';
       if (dateEl) dateEl.textContent = data ? (data.releaseDate || '—') : '—';
     },
-    () => ps.renderToken !== token
+    () => ps.renderToken !== token || ps.ctx.accountId !== state.activeAccountId
   );
 }
 
@@ -2052,8 +2204,10 @@ function scrollVersionsTableIntoView() {
 function onAuthStateChanged() {
   const p = state.purchases;
   const dsid = state.isAuthenticated && state.account ? (state.account.dsid || state.account.email) : null;
+  const accountKey = dsid ? `${state.activeAccountId}:${dsid}` : null;
 
-  if (!dsid) {
+  if (!accountKey) {
+    p.requestId += 1;
     p.apps = [];
     p.loaded = false;
     p.loading = false;
@@ -2065,13 +2219,16 @@ function onAuthStateChanged() {
     return;
   }
 
-  if (p.loadedFor !== dsid) {
+  if (p.loadedFor !== accountKey) {
+    p.requestId += 1;
     p.apps = [];
     p.loaded = false;
+    p.loading = false;
     p.error = '';
     p.fetchedAt = null;
     p.fromCache = false;
-    p.loadedFor = dsid;
+    p.loadedFor = accountKey;
+    renderPurchases();
     refreshPurchases(false);
   }
 }
@@ -2086,13 +2243,18 @@ async function refreshPurchases(force) {
   }
   if (p.loading) return;
 
+  const accountId = state.activeAccountId;
+  const requestId = ++p.requestId;
+  const isCurrentRequest = () => requestId === p.requestId && accountId === state.activeAccountId;
   p.loading = true;
   p.error = '';
   renderPurchases();
 
   try {
-    const res = await fetch(`/api/purchases${force ? '?refresh=1' : ''}`);
+    const query = withActiveAccountQuery(force ? 'refresh=1' : '');
+    const res = await fetch(`/api/purchases${query ? `?${query}` : ''}`);
     const data = await res.json().catch(() => ({}));
+    if (!isCurrentRequest()) return;
 
     if (!res.ok || !data.success) {
       p.error = data.message || `HTTP ${res.status}`;
@@ -2117,11 +2279,14 @@ async function refreshPurchases(force) {
       showToast(batchText('purchases_loaded_toast', { count: p.apps.length }), 'success');
     }
   } catch (err) {
+    if (!isCurrentRequest()) return;
     p.error = err.message || String(err);
     if (force) showToast(batchText('purchases_load_failed'), 'error');
   } finally {
-    p.loading = false;
-    renderPurchases();
+    if (isCurrentRequest()) {
+      p.loading = false;
+      renderPurchases();
+    }
   }
 }
 
@@ -2439,6 +2604,9 @@ function renderActiveDownloadsTab() {
     const statusLabel = (i18n[state.lang] || i18n.ru)[`batch_download_status_${job.status}`] || job.status;
     const el = document.createElement('div');
     el.className = 'active-download-card';
+    const accountLabel = job.accountEmail
+      ? `<div class="active-dl-account">Apple ID: ${batchEscapeHtml(job.accountEmail)}</div>`
+      : '';
     el.innerHTML = `
       <div class="active-dl-header">
         <div class="active-dl-title" title="${(job.appName || job.bundleId || job.id || '').replace(/"/g, '&quot;')}">
@@ -2446,6 +2614,7 @@ function renderActiveDownloadsTab() {
         </div>
         <span class="badge ${job.status === 'error' ? 'badge-error' : 'badge-version'}">${statusLabel}</span>
       </div>
+      ${accountLabel}
       <div class="dl-progress-bar-bg">
         <div class="dl-progress-bar-fill" style="width:${pct}%"></div>
       </div>
@@ -2627,7 +2796,15 @@ const batchState = {
   checkPoll: null,
   downloadPoll: null,
   batchId: null,        // id of the running mass-download job (needed to skip)
-  retryable: [],        // items left over when a batch finished (retry queue)
+  accountId: '',        // account used for the current check and its follow-up downloads
+  accountEmail: '',     // visible identity for that batch context
+  contextId: 0,         // invalidates version-history responses from an older batch
+  downloadContextId: 0, // invalidates status responses from an older download batch
+  downloadAccountId: '',
+  downloadAccountEmail: '',
+  retryAccountId: '',    // keeps retries tied to the account used by the failed batch
+  retryAccountEmail: '',
+  retryable: [],         // items left over when a batch finished (retry queue)
   retrying: false
 };
 
@@ -2693,6 +2870,21 @@ function batchText(key, vars) {
   return text;
 }
 
+function updateBatchAccountContextLabels() {
+  const resultsEl = document.getElementById('batch-results-account');
+  const downloadEl = document.getElementById('batch-download-account');
+  if (resultsEl) {
+    resultsEl.textContent = batchState.accountEmail
+      ? batchText('batch_account_label', { email: batchState.accountEmail })
+      : '';
+  }
+  if (downloadEl) {
+    downloadEl.textContent = batchState.downloadAccountEmail
+      ? batchText('batch_download_account_label', { email: batchState.downloadAccountEmail })
+      : '';
+  }
+}
+
 function batchEscapeHtml(str) {
   return String(str || '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -2738,12 +2930,15 @@ async function handleBatchCheck(e) {
   const outputEl = document.getElementById('batch-parsed-summary');
   const btn = document.getElementById('batch-check-btn');
   if (btn) btn.disabled = true;
+  const batchAccountId = state.activeAccountId;
+  const batchAccountEmail = state.account?.email || '';
 
   try {
     const res = await fetch('/api/batch/check', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        ...activeAccountField(batchAccountId),
         platform,
         items,
         purchase,
@@ -2757,16 +2952,20 @@ async function handleBatchCheck(e) {
       showToast(data.message || 'Ошибка запуска проверки', 'error');
       return;
     }
+    const batchContextId = ++batchState.contextId;
     batchState.items = items;
+    batchState.accountId = batchAccountId;
+    batchState.accountEmail = batchAccountEmail;
     batchState.results = null;
     batchState.selected = new Set();
+    batchState.selectedVersions = {};
     batchState.addedToHistory = new Set();
     document.getElementById('batch-results-card').style.display = 'none';
     document.getElementById('batch-download-card').style.display = 'none';
     document.getElementById('batch-check-progress-card').style.display = 'block';
     document.getElementById('batch-check-progress-fill').style.width = '0%';
     document.getElementById('batch-check-progress-percent').textContent = '0%';
-    pollBatchCheck(data.jobId, items);
+    pollBatchCheck(data.jobId, items, batchContextId);
   } catch (err) {
     showToast('Ошибка связи с сервером', 'error');
   } finally {
@@ -2774,8 +2973,9 @@ async function handleBatchCheck(e) {
   }
 }
 
-function pollBatchCheck(jobId, items) {
+function pollBatchCheck(jobId, items, contextId = batchState.contextId) {
   if (batchState.checkPoll) clearInterval(batchState.checkPoll);
+  batchState.checkPoll = null;
   const fillEl = document.getElementById('batch-check-progress-fill');
   const percentEl = document.getElementById('batch-check-progress-percent');
   const textEl = document.getElementById('batch-check-progress-text');
@@ -2798,14 +2998,25 @@ function pollBatchCheck(jobId, items) {
     });
   }
 
-  batchState.checkPoll = setInterval(async () => {
+  let pollId = null;
+  const stopPolling = () => {
+    if (pollId) clearInterval(pollId);
+    if (batchState.checkPoll === pollId) batchState.checkPoll = null;
+  };
+  pollId = setInterval(async () => {
     try {
       const res = await fetch(`/api/batch/check/status?jobId=${jobId}`);
       const job = await res.json();
-      if (!job.id) {
-        clearInterval(batchState.checkPoll);
+      if (contextId !== batchState.contextId) {
+        stopPolling();
         return;
       }
+      if (!job.id) {
+        stopPolling();
+        return;
+      }
+      if (job.accountId) batchState.accountId = job.accountId;
+      if (job.accountEmail) batchState.accountEmail = job.accountEmail;
 
       const pct = Math.min(100, Math.max(0, job.progress || 0));
       if (fillEl) fillEl.style.width = `${pct}%`;
@@ -2834,7 +3045,7 @@ function pollBatchCheck(jobId, items) {
       });
 
       if (job.status === 'completed') {
-        clearInterval(batchState.checkPoll);
+        stopPolling();
         batchState.results = job;
         renderBatchResults(job);
       }
@@ -2842,9 +3053,12 @@ function pollBatchCheck(jobId, items) {
       console.error('Batch check poll error:', err);
     }
   }, 500);
+  batchState.checkPoll = pollId;
 }
 
 function renderBatchResults(job) {
+  if (job.accountId) batchState.accountId = job.accountId;
+  if (job.accountEmail) batchState.accountEmail = job.accountEmail;
   const resultsCard = document.getElementById('batch-results-card');
   const summaryEl = document.getElementById('batch-results-summary');
   const availableEl = document.getElementById('batch-available-list');
@@ -2863,6 +3077,7 @@ function renderBatchResults(job) {
       filtered: filtered.length
     });
   }
+  updateBatchAccountContextLabels();
 
   if (availableEl) {
     availableEl.innerHTML = '';
@@ -2949,14 +3164,18 @@ async function loadBatchVersions(item, platform, outputPath) {
   const container = document.getElementById(`batch-versions-${item.appId}`);
   if (!container || container.dataset.loaded === '1') return;
   container.dataset.loaded = '1';
+  const contextId = batchState.contextId;
+  const accountId = batchState.accountId || state.activeAccountId;
 
   let ids = item.externalVersionIdentifiers || [];
   if (ids.length === 0) {
     // Fall back to the version-history endpoint when the check response did
     // not carry the build list.
     try {
-      const res = await fetch(`/api/versions?appId=${item.appId}&platform=${encodeURIComponent(platform || 'iphone')}`);
+      const params = new URLSearchParams({ appId: String(item.appId), platform: platform || 'iphone', ...activeAccountField(accountId) });
+      const res = await fetch(`/api/versions?${params}`);
       const data = await res.json();
+      if (contextId !== batchState.contextId) return;
       if (data.success && (data.externalVersionIdentifiers || []).length > 0) {
         ids = data.externalVersionIdentifiers;
       }
@@ -2969,7 +3188,13 @@ async function loadBatchVersions(item, platform, outputPath) {
   }
 
   const reversed = [...ids].reverse();
-  const pageState = { page: 1, renderToken: 0, platform: platform || 'iphone' };
+  const pageState = {
+    page: 1,
+    renderToken: 0,
+    platform: platform || 'iphone',
+    accountId,
+    contextId
+  };
 
   // If a specific build was picked earlier, open the page that contains it.
   const picked = batchState.selectedVersions[item.appId];
@@ -3044,14 +3269,14 @@ function renderBatchVersionsPage(container, item, reversed, pageState) {
 
   fillVersionMetadata(
     info.ids,
-    { appId: Number(item.appId) || 0, platform: pageState.platform || 'iphone' },
+    { appId: Number(item.appId) || 0, platform: pageState.platform || 'iphone', accountId: pageState.accountId },
     (vId, data) => {
       // Only the display version is filled in: unlike the version history on
       // its own tab, the batch table has no release-date column.
       const dispEl = document.getElementById(`batch-disp-${item.appId}-${vId}`);
       if (dispEl) dispEl.innerHTML = data ? renderDisplayVersionCell(data.displayVersion, data.minimumOSVersion, pageState.platform) : '—';
     },
-    () => pageState.renderToken !== token
+    () => pageState.renderToken !== token || pageState.contextId !== batchState.contextId
   );
 }
 
@@ -3151,15 +3376,19 @@ async function startBatchDownload() {
     return;
   }
 
-  await startBatchDownloadFor(selected, 'batch-download-btn');
+  await startBatchDownloadFor(selected, 'batch-download-btn', batchState.accountId || state.activeAccountId);
 }
 
 // Shared entry point for a fresh mass download and for a retry of the items a
 // previous run gave up on.
-async function startBatchDownloadFor(items, btnId) {
+async function startBatchDownloadFor(items, btnId, requestedAccountId = '') {
   const platform = document.getElementById('batch-platform')?.value || 'iphone';
   const outputPath = document.getElementById('batch-output-path')?.value.trim() || '';
   const purchase = document.getElementById('batch-purchase')?.checked !== false;
+  const accountId = requestedAccountId || batchState.accountId || state.activeAccountId;
+  const accountEmail = btnId === 'batch-retry-btn'
+    ? (batchState.retryAccountEmail || batchState.downloadAccountEmail || '')
+    : (batchState.accountEmail || state.account?.email || '');
 
   const btn = btnId ? document.getElementById(btnId) : null;
   if (btn) btn.disabled = true;
@@ -3169,6 +3398,7 @@ async function startBatchDownloadFor(items, btnId) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        ...activeAccountField(accountId),
         platform,
         outputPath,
         purchase,
@@ -3187,15 +3417,21 @@ async function startBatchDownloadFor(items, btnId) {
     }
 
     // A new batch replaces the previous rows, so drop the old retry queue.
+    const downloadContextId = ++batchState.downloadContextId;
     batchState.batchId = data.batchId;
+    batchState.downloadAccountId = accountId;
+    batchState.downloadAccountEmail = accountEmail;
+    updateBatchAccountContextLabels();
     batchState.retryable = [];
+    batchState.retryAccountId = '';
+    batchState.retryAccountEmail = '';
     hideBatchRetry();
 
     const downloadCard = document.getElementById('batch-download-card');
     downloadCard.style.display = 'block';
     document.getElementById('batch-download-progress-fill').style.width = '0%';
     document.getElementById('batch-download-progress-percent').textContent = '0%';
-    pollBatchDownload(data.batchId, items);
+    pollBatchDownload(data.batchId, items, accountId, downloadContextId);
     // The progress card renders at the bottom of the page, so bring it into
     // view right away — otherwise it is not obvious the download has started.
     requestAnimationFrame(() => {
@@ -3262,14 +3498,19 @@ async function retryBatchFailed() {
   batchState.retrying = true;
 
   try {
-    await startBatchDownloadFor(batchState.retryable, 'batch-retry-btn');
+    await startBatchDownloadFor(
+      batchState.retryable,
+      'batch-retry-btn',
+      batchState.retryAccountId || batchState.downloadAccountId || batchState.accountId || state.activeAccountId
+    );
   } finally {
     batchState.retrying = false;
   }
 }
 
-function pollBatchDownload(batchId, items) {
+function pollBatchDownload(batchId, items, accountId = batchState.downloadAccountId, contextId = batchState.downloadContextId) {
   if (batchState.downloadPoll) clearInterval(batchState.downloadPoll);
+  batchState.downloadPoll = null;
   const fillEl = document.getElementById('batch-download-progress-fill');
   const percentEl = document.getElementById('batch-download-progress-percent');
   const textEl = document.getElementById('batch-download-progress-text');
@@ -3301,14 +3542,26 @@ function pollBatchDownload(batchId, items) {
     });
   }
 
-  batchState.downloadPoll = setInterval(async () => {
+  let pollId = null;
+  const stopPolling = () => {
+    if (pollId) clearInterval(pollId);
+    if (batchState.downloadPoll === pollId) batchState.downloadPoll = null;
+  };
+  pollId = setInterval(async () => {
     try {
       const res = await fetch(`/api/batch/download/status?batchId=${batchId}`);
       const job = await res.json();
-      if (!job.id) {
-        clearInterval(batchState.downloadPoll);
+      if (contextId !== batchState.downloadContextId) {
+        stopPolling();
         return;
       }
+      if (!job.id) {
+        stopPolling();
+        return;
+      }
+      if (job.accountId) batchState.downloadAccountId = job.accountId;
+      if (job.accountEmail) batchState.downloadAccountEmail = job.accountEmail;
+      updateBatchAccountContextLabels();
 
       const pct = Math.min(100, Math.max(0, job.progress || 0));
       if (fillEl) fillEl.style.width = `${pct}%`;
@@ -3416,19 +3669,22 @@ function pollBatchDownload(batchId, items) {
       });
 
       if (job.status === 'completed') {
-        clearInterval(batchState.downloadPoll);
+        stopPolling();
         showToast(batchText('batch_download_done_title'), 'success');
 
         // Queue everything that did not make it through so the user can retry
         // just those apps without touching the successful ones.
         batchState.retryable = (job.items || []).filter(isBatchRetryable)
           .map(i => ({ appId: i.appId, name: i.name, versionId: i.versionId || '' }));
+        batchState.retryAccountId = accountId || batchState.downloadAccountId;
+        batchState.retryAccountEmail = job.accountEmail || batchState.downloadAccountEmail || '';
         showBatchRetry(batchState.retryable.length);
       }
     } catch (err) {
       console.error('Batch download poll error:', err);
     }
   }, 500);
+  batchState.downloadPoll = pollId;
 }
 
 // ==========================================

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/majd/ipatool/v2/pkg/appstore"
 	"github.com/majd/ipatool/v2/resources"
@@ -51,6 +52,7 @@ type fakeAppStore struct {
 	purchase           func(appstore.PurchaseInput) error
 	listVersions       func(appstore.ListVersionsInput) (appstore.ListVersionsOutput, error)
 	download           func(appstore.DownloadInput) (appstore.DownloadOutput, error)
+	replicateSinf      func(appstore.ReplicateSinfInput) error
 	getVersionMetadata func(appstore.GetVersionMetadataInput) (appstore.GetVersionMetadataOutput, error)
 }
 
@@ -100,7 +102,12 @@ func (f *fakeAppStore) Download(input appstore.DownloadInput) (appstore.Download
 	return f.download(input)
 }
 
-func (f *fakeAppStore) ReplicateSinf(appstore.ReplicateSinfInput) error { return nil }
+func (f *fakeAppStore) ReplicateSinf(input appstore.ReplicateSinfInput) error {
+	if f.replicateSinf == nil {
+		return nil
+	}
+	return f.replicateSinf(input)
+}
 
 func (f *fakeAppStore) ListVersions(input appstore.ListVersionsInput) (appstore.ListVersionsOutput, error) {
 	if f.listVersions == nil {
@@ -146,7 +153,7 @@ func TestListVersionsWithRetryReportsMissingLicense(t *testing.T) {
 		},
 	})
 
-	_, _, err := listVersionsWithRetry(appstore.Account{Email: "user@example.com"}, appstore.App{ID: 12345}, appstore.PlatformIPhone)
+	_, _, err := listVersionsWithRetry(nil, appstore.Account{Email: "user@example.com"}, appstore.App{ID: 12345}, appstore.PlatformIPhone)
 	if !errors.Is(err, appstore.ErrLicenseRequired) {
 		t.Fatalf("expected ErrLicenseRequired, got %v", err)
 	}
@@ -191,6 +198,7 @@ func TestListVersionsWithRetryRefreshesExpiredToken(t *testing.T) {
 	})
 
 	account, output, err := listVersionsWithRetry(
+		nil,
 		appstore.Account{Email: "user@example.com", Password: "old-password"},
 		appstore.App{ID: 12345},
 		appstore.PlatformIPhone,
@@ -225,7 +233,7 @@ func TestCatalogVersionFallsBackToEmpty(t *testing.T) {
 		},
 	})
 
-	if got := catalogVersion(appstore.Account{}, appstore.App{ID: 12345}, appstore.PlatformIPhone); got != "1.2.3" {
+	if got := catalogVersion(nil, appstore.Account{}, appstore.App{ID: 12345}, appstore.PlatformIPhone); got != "1.2.3" {
 		t.Fatalf("expected 1.2.3, got %q", got)
 	}
 
@@ -235,7 +243,7 @@ func TestCatalogVersionFallsBackToEmpty(t *testing.T) {
 		},
 	})
 
-	if got := catalogVersion(appstore.Account{}, appstore.App{ID: 12345}, appstore.PlatformIPhone); got != "" {
+	if got := catalogVersion(nil, appstore.Account{}, appstore.App{ID: 12345}, appstore.PlatformIPhone); got != "" {
 		t.Fatalf("expected no version for a delisted app, got %q", got)
 	}
 }
@@ -262,6 +270,7 @@ func TestRunBatchCheckItemSkipsPurchaseWhenAlreadyLicensed(t *testing.T) {
 	})
 
 	res := runBatchCheckItem(
+		nil,
 		appstore.App{ID: 12345},
 		appstore.Account{Email: "user@example.com"},
 		appstore.PlatformIPhone,
@@ -308,6 +317,7 @@ func TestRunBatchCheckItemPurchasesOnlyWhenLicenseRequired(t *testing.T) {
 	})
 
 	res := runBatchCheckItem(
+		nil,
 		appstore.App{ID: 12345},
 		appstore.Account{Email: "user@example.com"},
 		appstore.PlatformIPhone,
@@ -351,7 +361,7 @@ func TestExecuteDownloadJobDownloadsBeforePurchasing(t *testing.T) {
 		AppID:    12345,
 		AppName:  "Owned App",
 		Purchase: true,
-	}, appstore.Account{Email: "user@example.com"})
+	}, appstore.Account{Email: "user@example.com"}, nil)
 
 	if downloads != 1 {
 		t.Fatalf("expected 1 download call, got %d", downloads)
@@ -367,7 +377,7 @@ func TestExecuteDownloadJobDownloadsBeforePurchasing(t *testing.T) {
 func TestLookupVersionMetadataReturnsAndCachesMinimumOSVersion(t *testing.T) {
 	const testAppID = int64(987654321)
 	versionID := "test-version-minimum-os"
-	appKey := appIDKey(testAppID)
+	appKey := versionMetaCacheKey(testAppID, appstore.PlatformIPhone)
 
 	versionMetaCache.Lock()
 	previous, hadPrevious := versionMetaCache.m[appKey]
@@ -648,7 +658,7 @@ func TestExecuteDownloadJobMacOSSkipsReplicateSinfWithoutSinfs(t *testing.T) {
 		AppName:  "Mac App",
 		Platform: "macos",
 		Purchase: true,
-	}, appstore.Account{Email: "user@example.com"})
+	}, appstore.Account{Email: "user@example.com"}, nil)
 
 	if job.Status != "completed" {
 		t.Fatalf("expected completed job, got status=%q error=%q", job.Status, job.Error)
@@ -791,7 +801,7 @@ func TestPurchasesDiskCacheRoundTrip(t *testing.T) {
 	fetchedAt := time.Unix(1760486400, 0).UTC()
 
 	cachePath := purchasesCacheFilePath(acc)
-	if filepath.Base(cachePath) != "purchases_cache_user@example.com.json" {
+	if filepath.Base(cachePath) != "purchases_cache_123456789.json" {
 		t.Fatalf("unexpected cache filename: %q", cachePath)
 	}
 	if filepath.Base(filepath.Dir(cachePath)) != guiConfigDirectoryName {
@@ -825,9 +835,3 @@ func TestPurchasesDiskCacheRoundTrip(t *testing.T) {
 		t.Fatalf("expected cache for another account not to exist yet")
 	}
 }
-
-
-
-
-
-
