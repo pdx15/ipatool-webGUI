@@ -13,6 +13,16 @@ The graphical user interface (GUI) for **ipatool** enables any user without tech
 
 ---
 
+## 🔨 Building on Windows (`build.bat`)
+
+If you downloaded or cloned the source repository and want to compile `ipatool.exe` locally:
+1. Make sure **Go** (1.20+) and **Git** are installed.
+2. Double-click **`build.bat`**.
+3. The script will automatically fetch `majd/ipatool`, apply the WebGUI integration patches, and compile `ipatool.exe`.
+4. It will also prompt to download the `libimobiledevice` Windows tools suite into `tools\` for the "Install to device" tab.
+
+---
+
 ## 🌟 Key Features
 
 1. **Apple ID Authentication with 2FA Support:**

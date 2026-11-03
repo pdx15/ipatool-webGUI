@@ -38,7 +38,7 @@ upstream `ipatool` maintainers.
   browser; its at-rest protection relies on the operating system's file
   permissions. A file-backed session encrypted earlier with a different,
   manually entered passphrase may need one new Apple ID login.
-- Russian and English interface, dark and light themes.
+- English, Vietnamese, and Russian interface, dark and light themes.
 
 ## Install
 
@@ -75,6 +75,13 @@ A Windows build ships as `ipatool.exe`. Double-click `ipatool-gui.bat` (or run
 `ipatool.exe gui`) and the interface opens in your default browser. See
 [WINDOWS_GUI_GUIDE.md](WINDOWS_GUI_GUIDE.md) (English) or
 [ИНСТРУКЦИЯ_GUI.md](ИНСТРУКЦИЯ_GUI.md) (Russian) for a detailed walkthrough.
+
+#### Building on Windows from source
+
+To build `ipatool.exe` directly on Windows:
+1. Ensure **Go** (1.20+) and **Git** are installed and added to PATH.
+2. Run `build.bat` (or double-click it in Windows Explorer).
+3. The script will automatically fetch upstream `majd/ipatool`, apply all integration patches, compile `ipatool.exe`, and can optionally download the `libimobiledevice` Windows tools suite into `tools\`.
 
 ## Requirements and limitations
 

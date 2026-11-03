@@ -52,7 +52,7 @@
       </div>
 
       <!-- Theme Switcher -->
-      <button id="theme-toggle" class="icon-btn" title="Сменить тему" onclick="toggleTheme()">
+      <button id="theme-toggle" class="icon-btn" title="Toggle theme" data-i18n-title="theme_toggle_title" onclick="toggleTheme()">
         <svg id="theme-icon-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
         </svg>
@@ -176,7 +176,7 @@
             <input 
               type="text" 
               id="search-input" 
-              placeholder="Например: Telegram, Minecraft, VK или https://apps.apple.com/app/id..." 
+              placeholder="e.g. Telegram, Minecraft, VK or https://apps.apple.com/app/id..." data-i18n-placeholder="search_placeholder" 
               autocomplete="off"
             >
             <button type="button" id="search-clear-btn" class="clear-btn" onclick="clearSearch()" style="display:none">✕</button>
@@ -265,7 +265,7 @@
         <div id="official-results-section">
           <div class="results-header" id="official-results-header">
             <h3 class="results-section-title" data-i18n="search_official_title">Результаты App Store</h3>
-            <span id="results-count" class="results-count-text">Найдено 0 приложений</span>
+            <span id="results-count" class="results-count-text">0 apps found</span>
           </div>
           <div id="search-results-grid" class="apps-grid"></div>
         </div>
@@ -290,7 +290,7 @@
               type="text" 
               id="direct-app-id" 
               class="input-control" 
-              placeholder="например: org.telegram.Telegram-iOS, 686449807 или https://apps.apple.com/..."
+              placeholder="e.g. org.telegram.Telegram-iOS, 686449807 or https://apps.apple.com/..." data-i18n-placeholder="direct_id_placeholder"
               required
             >
             <small class="form-hint" data-i18n="direct_id_hint">Вы можете указать Bundle Identifier (например <code>com.example.app</code>), цифровой Track ID (например <code>686449807</code>) или ссылку на страницу в App Store.</small>
@@ -315,7 +315,7 @@
                 type="text" 
                 id="direct-version-id" 
                 class="input-control" 
-                placeholder="Оставьте пустым для последней версии"
+                placeholder="Leave empty for latest version" data-i18n-placeholder="version_id_placeholder"
               >
             </div>
           </div>
@@ -330,7 +330,7 @@
                 data-i18n-placeholder="output_folder_placeholder"
                 placeholder="По умолчанию: папка apps в текущей папке"
               >
-              <button type="button" class="btn btn-outline" onclick="openOutputFolder(document.getElementById('direct-output-path').value.trim())" title="Открыть папку сохранения">
+              <button type="button" class="btn btn-outline" onclick="openOutputFolder(document.getElementById('direct-output-path').value.trim())" title="Open output folder" data-i18n-title="open_output_folder_title">
                 📂 <span data-i18n="open_folder_btn">Открыть</span>
               </button>
             </div>
@@ -392,7 +392,7 @@
               id="batch-paste-area"
               class="input-control"
               rows="5"
-              placeholder="1Password 7: 568903335&#10;2ГИС: 1474481751&#10;568903335 246890568"
+              placeholder="1Password 7: 568903335&#10;Telegram: 686449807&#10;568903335 246890568" data-i18n-placeholder="batch_paste_placeholder"
             ></textarea>
           </div>
 
@@ -423,7 +423,7 @@
                   data-i18n-placeholder="output_folder_placeholder"
                   placeholder="По умолчанию: папка apps в текущей папке"
                 >
-                <button type="button" class="btn btn-outline" onclick="openOutputFolder(document.getElementById('batch-output-path').value.trim())" title="Открыть папку сохранения">
+                <button type="button" class="btn btn-outline" onclick="openOutputFolder(document.getElementById('batch-output-path').value.trim())" title="Open output folder" data-i18n-title="open_output_folder_title">
                   📂 <span data-i18n="open_folder_btn">Открыть</span>
                 </button>
               </div>
@@ -580,7 +580,7 @@
             <input 
               type="text" 
               id="versions-input" 
-              placeholder="Введите Bundle ID (например, org.telegram.Telegram-iOS) или App ID"
+              placeholder="Enter Bundle ID (e.g. org.telegram.Telegram-iOS) or App ID" data-i18n-placeholder="versions_search_placeholder"
               required
             >
           </div>
@@ -610,8 +610,8 @@
         <div id="versions-container" class="versions-result-wrapper" style="display:none">
           <div class="versions-meta-card">
             <div class="versions-header-info">
-              <h3 id="versions-app-title">Приложение</h3>
-              <span id="versions-count-badge" class="badge">0 версий</span>
+              <h3 id="versions-app-title" data-i18n="versions_app_default">App</h3>
+              <span id="versions-count-badge" class="badge">0 versions</span>
             </div>
             <p id="versions-app-bundle" class="text-secondary"></p>
           </div>
@@ -674,7 +674,7 @@
               <option value="visionOS">visionOS</option>
             </select>
           </div>
-          <label class="purchases-hidden-toggle" id="purchases-hidden-toggle-wrap" title="Показать только приложения, скрытые или удалённые из региональной витрины App Store">
+          <label class="purchases-hidden-toggle" id="purchases-hidden-toggle-wrap" title="Show only apps hidden or removed from the regional App Store storefront" data-i18n-title="purchases_only_hidden_title">
             <input type="checkbox" id="purchases-only-hidden" onchange="renderPurchases()">
             <span class="purchases-hidden-toggle-track"><span class="purchases-hidden-toggle-thumb"></span></span>
             <span class="purchases-hidden-toggle-label">
@@ -814,7 +814,7 @@
             <span class="alert-icon" id="install-driver-icon">🖥️</span>
             <div>
               <strong id="install-driver-title" data-i18n="install_driver_check_title">Драйвер Apple Mobile Device Support</strong>
-              <p id="install-driver-text">Проверка драйвера...</p>
+              <p id="install-driver-text" data-i18n="install_driver_checking">Checking driver...</p>
               <span id="install-driver-links" style="margin-top:8px; display:inline-flex; gap:8px; flex-wrap:wrap;"></span>
             </div>
           </div>
@@ -898,7 +898,7 @@
                 <span id="account-initials">A</span>
               </div>
               <div class="account-user-meta">
-                <h3 id="account-user-name">Имя Фамилия</h3>
+                <h3 id="account-user-name" data-i18n="default_user_name">Apple User</h3>
                 <span id="account-user-email" class="text-secondary">email@example.com</span>
                 <span class="badge badge-success" data-i18n="badge_authenticated">Авторизован</span>
               </div>
@@ -988,7 +988,7 @@
               <span class="alert-icon" id="icloud-status-icon">💡</span>
               <div>
                 <strong data-i18n="anisette_alert_title">Для Windows-версии ipatool:</strong>
-                <p id="icloud-status-text">Проверка установленного iCloud…</p>
+                <p id="icloud-status-text" data-i18n="anisette_alert_desc">Checking installed iCloud…</p>
                 <p id="icloud-status-actions" style="margin-top:8px;">
                   <a id="icloud-download-link" href="#" target="_blank" rel="noopener" class="btn btn-outline btn-sm" style="display:none;">
                     ⬇️ <span data-i18n="icloud_download_btn">Скачать iCloud для Windows</span>
@@ -1180,8 +1180,8 @@
     <div class="modal-card">
       <div class="modal-header">
         <div id="dl-modal-icon" class="modal-app-icon">📦</div>
-        <h3 id="dl-modal-title">Скачивание приложения</h3>
-        <p id="dl-modal-subtitle" class="text-secondary">Подготовка к загрузке...</p>
+        <h3 id="dl-modal-title" data-i18n="dl_modal_default_title">Downloading App</h3>
+        <p id="dl-modal-subtitle" class="text-secondary" data-i18n="dl_modal_default_subtitle">Preparing download...</p>
       </div>
 
       <div class="dl-progress-box">
@@ -1215,7 +1215,7 @@
       </div>
 
       <div id="dl-error-box" class="alert-error" style="display:none">
-        <span id="dl-error-text">Произошла ошибка</span>
+        <span id="dl-error-text" data-i18n="status_error_label">Error</span>
       </div>
 
       <div id="dl-warning-box" class="alert-warning" style="display:none">

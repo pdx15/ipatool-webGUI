@@ -475,7 +475,7 @@ func checkAppleMobileDeviceSupport() map[string]interface{} {
 		return map[string]interface{}{
 			"installed":  true,
 			"required":   false,
-			"message":    "Проверка драйвера Apple Mobile Device Support требуется только на Windows.",
+			"message":    "Apple Mobile Device Support driver check is only required on Windows.",
 			"downloadUrl": "",
 		}
 	}
@@ -531,7 +531,7 @@ func checkAppleMobileDeviceSupport() map[string]interface{} {
 		"required":  true,
 		"path":      foundPath,
 		"service":   serviceInstalled,
-		"message":   "Драйвер и служба Apple Mobile Device Support не найдены. Установите iTunes (встроенный Apple Mobile Device Support) или обновите драйвер USB.",
+		"message":   "Apple Mobile Device Support driver and service not found. Install iTunes (bundled Apple Mobile Device Support) or update the USB driver.",
 		"downloadUrl": "https://support.apple.com/en-us/HT210384",
 		"itunesUrl":   "https://www.apple.com/itunes/",
 	}
@@ -662,7 +662,7 @@ func handleAPIInstallUpload(w http.ResponseWriter, r *http.Request) {
 func executeInstallJob(job *installJob, installer, udid string) {
 	installJobs.update(job.ID, func(j *installJob) {
 		j.Status = "installing"
-		j.Message = "Подключение и установка .IPA на устройство..."
+		j.Message = "Connecting and installing .IPA on device..."
 	})
 
 	cmd := exec.Command(installer, "-u", udid, "install", job.FilePath)
@@ -686,12 +686,12 @@ func executeInstallJob(job *installJob, installer, udid string) {
 		if err != nil {
 			j.Status = "error"
 			j.Error = err.Error()
-			j.Message = "Ошибка установки"
+			j.Message = "Installation failed"
 			return
 		}
 		j.Status = "completed"
 		j.Progress = 100.0
-		j.Message = "Приложение успешно установлено"
+		j.Message = "App installed successfully"
 	})
 }
 
