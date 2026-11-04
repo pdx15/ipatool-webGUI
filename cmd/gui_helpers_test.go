@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -833,5 +835,84 @@ func TestPurchasesDiskCacheRoundTrip(t *testing.T) {
 	}
 	if _, _, _, _, ok := readPurchasesDiskCache(otherAcc); ok {
 		t.Fatalf("expected cache for another account not to exist yet")
+	}
+}
+
+func TestHandleAPIDownloadFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	ipaPath := filepath.Join(tmpDir, "test_app.ipa")
+	if err := os.WriteFile(ipaPath, []byte("PK-dummy-ipa-content"), 0o644); err != nil {
+		t.Fatalf("failed to create dummy ipa: %v", err)
+	}
+
+	// 1. Successful download by path
+	req := httptest.NewRequest(http.MethodGet, "/api/download/file?path="+ipaPath, nil)
+	rr := httptest.NewRecorder()
+	handleAPIDownloadFile(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if cd := rr.Header().Get("Content-Disposition"); !strings.Contains(cd, "test_app.ipa") {
+		t.Fatalf("unexpected Content-Disposition header: %q", cd)
+	}
+	if ct := rr.Header().Get("Content-Type"); ct != "application/octet-stream" {
+		t.Fatalf("unexpected Content-Type header: %q", ct)
+	}
+	if rr.Body.String() != "PK-dummy-ipa-content" {
+		t.Fatalf("unexpected body content: %q", rr.Body.String())
+	}
+
+	// 2. Reject non-ipa/pkg files
+	txtPath := filepath.Join(tmpDir, "secret.txt")
+	_ = os.WriteFile(txtPath, []byte("sensitive"), 0o644)
+	reqTxt := httptest.NewRequest(http.MethodGet, "/api/download/file?path="+txtPath, nil)
+	rrTxt := httptest.NewRecorder()
+	handleAPIDownloadFile(rrTxt, reqTxt)
+	if rrTxt.Code != http.StatusForbidden {
+		t.Fatalf("expected status 403 for .txt, got %d", rrTxt.Code)
+	}
+
+	// 3. Reject sensitive directory (.ipatool)
+	sensPath := filepath.Join(tmpDir, ".ipatool", "fake.ipa")
+	reqSens := httptest.NewRequest(http.MethodGet, "/api/download/file?path="+sensPath, nil)
+	rrSens := httptest.NewRecorder()
+	handleAPIDownloadFile(rrSens, reqSens)
+	if rrSens.Code != http.StatusForbidden {
+		t.Fatalf("expected status 403 for .ipatool, got %d", rrSens.Code)
+	}
+
+	// 4. Missing file -> 404
+	missingPath := filepath.Join(tmpDir, "nonexistent.ipa")
+	reqMiss := httptest.NewRequest(http.MethodGet, "/api/download/file?path="+missingPath, nil)
+	rrMiss := httptest.NewRecorder()
+	handleAPIDownloadFile(rrMiss, reqMiss)
+	if rrMiss.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404 for missing file, got %d", rrMiss.Code)
+	}
+
+	// 5. Method not allowed
+	reqPost := httptest.NewRequest(http.MethodPost, "/api/download/file?path="+ipaPath, nil)
+	rrPost := httptest.NewRecorder()
+	handleAPIDownloadFile(rrPost, reqPost)
+	if rrPost.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected status 405 for POST, got %d", rrPost.Code)
+	}
+}
+
+func TestHandleAPIListDownloadedFiles(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/download/files", nil)
+	rr := httptest.NewRecorder()
+	handleAPIListDownloadedFiles(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var res map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if res["success"] != true {
+		t.Fatalf("expected success true, got %v", res["success"])
 	}
 }

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title data-i18n="window_title">ipatool webGUI — App Store IPA Downloader</title>
-  <link rel="stylesheet" href="/assets/style.css">
+  <link rel="stylesheet" href="/assets/style.css?v=2.7.0k-webgui-v5">
 </head>
 <body>
   <!-- Header / Navigation Bar -->
@@ -94,6 +94,13 @@
         </svg>
         <span data-i18n="tab_purchases">История покупок</span>
         <span id="purchases-badge" class="badge" style="display:none">0</span>
+      </button>
+      <button class="tab-btn" data-tab="bookmarks" onclick="switchTab('bookmarks')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+        </svg>
+        <span data-i18n="tab_bookmarks">Закладки</span>
+        <span id="bookmarks-badge" class="badge" style="display:none">0</span>
       </button>
       <button class="tab-btn" data-tab="downloads" onclick="switchTab('downloads')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -243,7 +250,29 @@
         <div id="official-results-section">
           <div class="results-header" id="official-results-header">
             <h3 class="results-section-title" data-i18n="search_official_title">Результаты App Store</h3>
-            <span id="results-count" class="results-count-text">0 apps found</span>
+            <div class="results-header-right">
+              <span id="results-count" class="results-count-text">0 apps found</span>
+              <div class="view-mode-toggle">
+                <button type="button" class="view-mode-btn" data-mode="grid" onclick="setViewMode('grid')" title="Lưới / Grid" data-i18n-title="view_grid_title">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                    <rect x="3" y="3" width="7" height="7" rx="1.5"></rect>
+                    <rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
+                    <rect x="3" y="14" width="7" height="7" rx="1.5"></rect>
+                    <rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
+                  </svg>
+                </button>
+                <button type="button" class="view-mode-btn" data-mode="list" onclick="setViewMode('list')" title="Danh sách / List" data-i18n-title="view_list_title">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                    <line x1="8" y1="6" x2="21" y2="6"></line>
+                    <line x1="8" y1="12" x2="21" y2="12"></line>
+                    <line x1="8" y1="18" x2="21" y2="18"></line>
+                    <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                    <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                    <line x1="3" y1="18" x2="3.01" y2="18"></line>
+                  </svg>
+                </button>
+              </div>
+            </div>
           </div>
           <div id="search-results-grid" class="apps-grid"></div>
         </div>
@@ -713,6 +742,66 @@
       </div>
     </section>
 
+    <!-- TAB: Bookmarks / Watchlist & Update Tracking -->
+    <section id="tab-bookmarks" class="tab-content">
+      <div class="card">
+        <div class="card-header flex-between">
+          <div>
+            <h2 data-i18n="bookmarks_title">Отслеживаемые приложения (Закладки)</h2>
+            <p class="text-secondary" data-i18n="bookmarks_desc">Отслеживайте нужные приложения и проверяйте появление новых версий в App Store.</p>
+          </div>
+          <div class="bookmarks-actions">
+            <button type="button" id="bookmarks-check-updates-btn" class="btn btn-primary" onclick="checkBookmarksUpdates(true)">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <polyline points="1 20 1 14 7 14"></polyline>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+              <span data-i18n="bookmarks_check_updates_btn">Проверить обновления</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="bookmarks-toolbar">
+          <div class="search-input-wrapper">
+            <input type="text" id="bookmarks-filter" data-i18n-placeholder="bookmarks_filter_placeholder" placeholder="Фильтр по названию или Bundle ID..." oninput="renderBookmarks()">
+          </div>
+          <div class="bookmarks-toolbar-right">
+            <span id="bookmarks-count-badge" class="badge">0</span>
+            <span id="bookmarks-updates-badge" class="badge badge-accent" style="display:none">0</span>
+            <div class="view-mode-toggle">
+              <button type="button" class="view-mode-btn" data-mode="grid" onclick="setViewMode('grid')" title="Lưới / Grid" data-i18n-title="view_grid_title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                  <rect x="3" y="3" width="7" height="7" rx="1.5"></rect>
+                  <rect x="14" y="3" width="7" height="7" rx="1.5"></rect>
+                  <rect x="3" y="14" width="7" height="7" rx="1.5"></rect>
+                  <rect x="14" y="14" width="7" height="7" rx="1.5"></rect>
+                </svg>
+              </button>
+              <button type="button" class="view-mode-btn" data-mode="list" onclick="setViewMode('list')" title="Danh sách / List" data-i18n-title="view_list_title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                  <line x1="8" y1="6" x2="21" y2="6"></line>
+                  <line x1="8" y1="12" x2="21" y2="12"></line>
+                  <line x1="8" y1="18" x2="21" y2="18"></line>
+                  <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                  <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                  <line x1="3" y1="18" x2="3.01" y2="18"></line>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="bookmarks-empty" class="state-container" style="display:none">
+          <div class="empty-icon">⭐</div>
+          <p data-i18n="bookmarks_empty">В закладках пока нет приложений</p>
+          <p class="text-muted" data-i18n="bookmarks_empty_hint">Нажмите на звездочку ⭐️ на карточке любого приложения в Поиске, Покупках или Загрузках, чтобы отслеживать его.</p>
+        </div>
+
+        <div id="bookmarks-grid" class="bookmarks-grid"></div>
+      </div>
+    </section>
+
     <!-- TAB 4: Downloads -->
     <section id="tab-downloads" class="tab-content">
       <div class="downloads-layout">
@@ -742,9 +831,17 @@
               <h3 data-i18n="download_history_title">История завершенных загрузок</h3>
               <p class="text-secondary" data-i18n="download_history_desc">Скачанные файлы .IPA на вашем компьютере</p>
             </div>
-            <button class="btn btn-outline btn-sm" onclick="refreshDownloadsHistory()">
-              🔄 <span data-i18n="refresh_btn">Обновить</span>
-            </button>
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+              <button class="btn btn-outline btn-sm" onclick="openOutputFolder()">
+                📂 <span data-i18n="open_downloads_folder">Открыть папку загрузок</span>
+              </button>
+              <button class="btn btn-outline btn-sm" onclick="checkDownloadsUpdates(true)">
+                🔍 <span data-i18n="check_downloads_updates_btn">Проверить обновления файлов</span>
+              </button>
+              <button class="btn btn-primary btn-sm" onclick="refreshDownloadsHistory()">
+                🔄 <span data-i18n="refresh_btn">Обновить</span>
+              </button>
+            </div>
           </div>
 
           <div id="downloads-history-list" class="history-list">
@@ -1218,9 +1315,12 @@
         <button type="button" id="dl-modal-cancel-btn" class="btn btn-outline" onclick="closeDownloadModal()">
           <span data-i18n="close_btn">Закрыть</span>
         </button>
-        <button type="button" id="dl-modal-open-btn" class="btn btn-primary" style="display:none" onclick="openCompletedFolder()">
+        <button type="button" id="dl-modal-open-btn" class="btn btn-outline" style="display:none" onclick="openCompletedFolder()">
           📂 <span data-i18n="open_in_explorer_btn">Показать в проводнике</span>
         </button>
+        <a id="dl-modal-download-file-btn" class="btn btn-primary" style="display:none" href="#" download>
+          ⬇️ <span data-i18n="download_file_btn">Скачать файл</span>
+        </a>
       </div>
     </div>
   </div>
@@ -1229,6 +1329,6 @@
   <div id="toast-container" class="toast-container"></div>
 
   <!-- App JS -->
-  <script src="/assets/app.js"></script>
+  <script src="/assets/app.js?v=2.7.0k-webgui-v5"></script>
 </body>
 </html>

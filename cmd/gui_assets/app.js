@@ -17,6 +17,8 @@ const state = {
   isAuthenticated: false,
   activeDownloads: new Map(), // jobId -> job object
   downloadHistory: JSON.parse(localStorage.getItem('ipatool_download_history') || '[]'),
+  bookmarks: JSON.parse(localStorage.getItem('ipatool_bookmarks') || '[]'),
+  viewMode: localStorage.getItem('ipatool_view_mode') || 'grid',
   lastPendingLogin: null, // { loginAttemptId, endpoint }; password stays server-side for the short 2FA challenge
   currentJobId: null,
   lastVersionsName: '', // app name remembered when opening version history from a search card
@@ -157,6 +159,9 @@ const i18n = {
     donate_qr_caption: 'QR-код для поддержки проекта',
     donate_title: 'Поддержать проект',
     download_btn: 'Скачать IPA',
+    download_file_btn: 'Скачать файл',
+    download_file_tooltip: 'Скачать этот файл на устройство',
+    downloads_server_synced: 'Список файлов синхронизирован с сервером',
     download_btn_pkg: 'Скачать PKG',
     download_history_desc: 'Скачанные файлы .IPA на вашем компьютере',
     download_history_title: 'История завершенных загрузок',
@@ -311,6 +316,36 @@ const i18n = {
     purchases_unknown_app: 'Без названия',
     purchases_updated_at: 'Обновлено: {time}',
     purchases_versions: 'Версии',
+    purchased_badge: 'Куплено',
+    tab_bookmarks: 'Закладки',
+    bookmarks_title: 'Отслеживаемые приложения (Закладки)',
+    bookmarks_desc: 'Отслеживайте нужные приложения и проверяйте появление новых версий в App Store.',
+    bookmarks_empty: 'В закладках пока нет приложений',
+    bookmarks_empty_hint: 'Нажмите на звездочку ⭐️ на карточке любого приложения в Поиске, Покупках или Загрузках, чтобы отслеживать его.',
+    bookmarks_check_updates_btn: 'Проверить обновления',
+    bookmarks_filter_placeholder: 'Фильтр по названию, Bundle ID или App ID...',
+    bookmarks_count_label: '{count} прил.',
+    bookmarks_updates_badge_label: '🔄 {count} новых',
+    view_grid_title: 'Сетка',
+    view_list_title: 'Список',
+    bookmarks_checking_updates: 'Проверка новых версий в App Store...',
+    bookmarks_all_updated: 'Все приложения обновлены до актуальных версий',
+    bookmarks_updates_found: 'Найдено обновлений: {count}!',
+    add_bookmark_title: 'Добавить в закладки',
+    remove_bookmark_title: 'Удалить из закладок',
+    bookmark_added: 'Приложение "{name}" добавлено в закладки',
+    bookmark_removed: 'Приложение "{name}" удалено из закладок',
+    update_available_badge: 'Есть обновление',
+    up_to_date_badge: 'Актуальная версия',
+    download_update_btn: 'Скачать новую версию',
+    tracked_version_label: 'Отслеживаемая:',
+    latest_store_version_label: 'В App Store:',
+    check_downloads_updates_btn: 'Проверить обновления файлов',
+    not_purchased_paid_badge: 'Не куплено',
+    purchased_badge_tooltip: 'Этот Apple ID уже владеет данным приложением (можно сразу скачивать)',
+    not_purchased_paid_tooltip: 'Платное приложение, не куплено на данном аккаунте. Сначала купите в App Store.',
+    already_licensed_btn: 'Уже куплено',
+    removed_not_owned_tooltip: 'Удаленное приложение доступно только если оно есть в истории покупок вашего аккаунта',
     refresh_btn: 'Обновить',
     remove_from_list_title: 'Удалить из списка',
     removed_badge: 'Удалено из App Store',
@@ -488,6 +523,9 @@ Telegram: 686449807
     donate_qr_caption: 'QR code to support the project',
     donate_title: 'Support the project',
     download_btn: 'Download IPA',
+    download_file_btn: 'Download File',
+    download_file_tooltip: 'Download this file to your device',
+    downloads_server_synced: 'File list synced with server',
     download_btn_pkg: 'Download PKG',
     download_history_desc: 'Completed .IPA packages on your computer',
     download_history_title: 'Download History',
@@ -642,6 +680,36 @@ Telegram: 686449807
     purchases_unknown_app: 'Untitled',
     purchases_updated_at: 'Updated: {time}',
     purchases_versions: 'Versions',
+    purchased_badge: 'Purchased',
+    tab_bookmarks: 'Watchlist',
+    bookmarks_title: 'Tracked Apps (Watchlist)',
+    bookmarks_desc: 'Track favorite apps and check whether newer versions are available on the App Store.',
+    bookmarks_empty: 'No apps in your watchlist yet',
+    bookmarks_empty_hint: 'Click the ⭐️ icon on any app in Search, Purchases, or Downloads to track it.',
+    bookmarks_check_updates_btn: 'Check for Updates',
+    bookmarks_filter_placeholder: 'Filter by name, Bundle ID or App ID...',
+    bookmarks_count_label: '{count} apps',
+    bookmarks_updates_badge_label: '🔄 {count} updates',
+    view_grid_title: 'Grid view',
+    view_list_title: 'List view',
+    bookmarks_checking_updates: 'Checking App Store for newer versions...',
+    bookmarks_all_updated: 'All tracked apps are up to date',
+    bookmarks_updates_found: 'Found {count} apps with new updates!',
+    add_bookmark_title: 'Add to Watchlist',
+    remove_bookmark_title: 'Remove from Watchlist',
+    bookmark_added: 'Added "{name}" to Watchlist',
+    bookmark_removed: 'Removed "{name}" from Watchlist',
+    update_available_badge: 'Update available',
+    up_to_date_badge: 'Up to date',
+    download_update_btn: 'Download update',
+    tracked_version_label: 'Tracked version:',
+    latest_store_version_label: 'Store version:',
+    check_downloads_updates_btn: 'Check for updates',
+    not_purchased_paid_badge: 'Not owned',
+    purchased_badge_tooltip: 'This Apple ID already owns this app (you can download it directly)',
+    not_purchased_paid_tooltip: 'Paid app not owned by this account. Purchase on App Store first.',
+    already_licensed_btn: 'Already owned',
+    removed_not_owned_tooltip: 'Delisted app can only be downloaded if it exists in your account purchase history',
     refresh_btn: 'Refresh',
     remove_from_list_title: 'Remove from list',
     removed_badge: 'Removed from App Store',
@@ -819,6 +887,9 @@ Telegram: 686449807
     donate_qr_caption: 'Mã QR ủng hộ dự án',
     donate_title: 'Ủng hộ dự án',
     download_btn: 'Tải IPA',
+    download_file_btn: 'Tải tệp về máy',
+    download_file_tooltip: 'Tải tệp tin này về thiết bị của bạn',
+    downloads_server_synced: 'Đã đồng bộ danh sách tệp từ máy chủ',
     download_btn_pkg: 'Tải PKG',
     download_history_desc: 'Các gói .IPA đã tải hoàn tất trên máy tính của bạn',
     download_history_title: 'Lịch sử tải xuống',
@@ -973,6 +1044,36 @@ Telegram: 686449807
     purchases_unknown_app: 'Không có tên',
     purchases_updated_at: 'Đã cập nhật: {time}',
     purchases_versions: 'Phiên bản',
+    purchased_badge: 'Đã mua',
+    tab_bookmarks: 'Theo dõi',
+    bookmarks_title: 'Danh sách theo dõi (Bookmarks)',
+    bookmarks_desc: 'Theo dõi các ứng dụng quan trọng và tự động kiểm tra xem App Store đã có phiên bản mới hay chưa.',
+    bookmarks_empty: 'Chưa có ứng dụng nào trong danh sách theo dõi',
+    bookmarks_empty_hint: 'Bấm vào biểu tượng ⭐️ trên bất kỳ ứng dụng nào trong mục Tìm kiếm, Lịch sử mua hàng hoặc Tải xuống để đưa vào danh sách theo dõi.',
+    bookmarks_check_updates_btn: 'Kiểm tra cập nhật',
+    bookmarks_filter_placeholder: 'Lọc theo tên, Bundle ID hoặc App ID...',
+    bookmarks_count_label: '{count} ứng dụng',
+    bookmarks_updates_badge_label: '🔄 {count} bản mới',
+    view_grid_title: 'Chế độ lưới',
+    view_list_title: 'Chế độ danh sách',
+    bookmarks_checking_updates: 'Đang kiểm tra phiên bản mới từ App Store...',
+    bookmarks_all_updated: 'Tất cả ứng dụng đang ở phiên bản mới nhất',
+    bookmarks_updates_found: 'Tìm thấy {count} ứng dụng có bản cập nhật mới!',
+    add_bookmark_title: 'Thêm vào danh sách theo dõi',
+    remove_bookmark_title: 'Bỏ khỏi danh sách theo dõi',
+    bookmark_added: 'Đã thêm "{name}" vào danh sách theo dõi',
+    bookmark_removed: 'Đã bỏ "{name}" khỏi danh sách theo dõi',
+    update_available_badge: 'Có bản mới',
+    up_to_date_badge: 'Bản mới nhất',
+    download_update_btn: 'Tải bản mới',
+    tracked_version_label: 'Bản theo dõi:',
+    latest_store_version_label: 'Bản App Store:',
+    check_downloads_updates_btn: 'Kiểm tra cập nhật tệp',
+    not_purchased_paid_badge: 'Chưa mua',
+    purchased_badge_tooltip: 'Tài khoản Apple ID này đã mua/sở hữu app này (có thể tải trực tiếp)',
+    not_purchased_paid_tooltip: 'App có phí chưa được mua trên tài khoản này. Cần mua trên App Store trước.',
+    already_licensed_btn: 'Đã có bản quyền',
+    removed_not_owned_tooltip: 'Ứng dụng đã gỡ chỉ tải được nếu đã có sẵn trong lịch sử mua của tài khoản',
     refresh_btn: 'Làm mới',
     remove_from_list_title: 'Xóa khỏi danh sách',
     removed_badge: 'Đã gỡ khỏi App Store',
@@ -1119,6 +1220,8 @@ function toggleTheme() {
   state.theme = state.theme === 'dark' ? 'light' : 'dark';
   localStorage.setItem('ipatool_theme', state.theme);
   applyTheme();
+  updateBookmarksBadge();
+  setViewMode(state.viewMode || 'grid');
 }
 
 // Tab Switching
@@ -1133,9 +1236,14 @@ function switchTab(tabName) {
 
   if (tabName === 'downloads') {
     renderDownloadsTab();
+    loadServerDownloads();
     startActiveDownloadsPolling();
   } else {
     stopActiveDownloadsPolling();
+  }
+
+  if (tabName === 'bookmarks') {
+    renderBookmarks();
   }
 
   if (tabName === 'install') {
@@ -1806,6 +1914,8 @@ async function handleSearch(e) {
     if (apps.length > 0) {
       officialSection.style.display = 'block';
       resultsCount.textContent = batchText('results_found', { count: apps.length });
+      resultsGrid.classList.toggle('view-mode-list', state.viewMode === 'list');
+      if (removedGrid) removedGrid.classList.toggle('view-mode-list', state.viewMode === 'list');
       apps.forEach(app => resultsGrid.appendChild(createAppCard(app, platform)));
     } else {
       officialSection.style.display = 'none';
@@ -1831,23 +1941,574 @@ async function handleSearch(e) {
   }
 }
 
+
+function isAppPurchased(trackId, bundleId) {
+  if (!state.isAuthenticated || !state.purchases || !Array.isArray(state.purchases.apps)) {
+    return false;
+  }
+  const tId = Number(trackId) || 0;
+  const bId = (bundleId || '').toLowerCase().trim();
+  return state.purchases.apps.some(p => {
+    if (tId && (Number(p.appId) === tId || Number(p.id) === tId || Number(p.trackId) === tId)) {
+      return true;
+    }
+    if (bId && (p.bundleId || '').toLowerCase().trim() === bId) {
+      return true;
+    }
+    return false;
+  });
+}
+
+function updateSearchResultsOwnership() {
+  const cards = document.querySelectorAll('.app-card[data-track-id]');
+  cards.forEach(card => {
+    const trackId = card.dataset.trackId;
+    const bundleId = card.dataset.bundleId;
+    const price = parseFloat(card.dataset.price) || 0;
+    const isRemoved = card.classList.contains('removed-app-card');
+    const purchased = isAppPurchased(trackId, bundleId);
+    const purchasesLoaded = state.isAuthenticated && state.purchases && state.purchases.loaded;
+
+    const badgesContainer = card.querySelector('.app-badges');
+    if (badgesContainer) {
+      let badge = badgesContainer.querySelector('.badge-ownership');
+      if (purchased) {
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'badge badge-ownership badge-purchased';
+          badgesContainer.appendChild(badge);
+        } else {
+          badge.className = 'badge badge-ownership badge-purchased';
+        }
+        badge.title = t('purchased_badge_tooltip');
+        badge.textContent = `✅ ${t('purchased_badge')}`;
+        badge.style.display = 'inline-flex';
+      } else if ((price > 0 || isRemoved) && purchasesLoaded) {
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'badge badge-ownership badge-unowned';
+          badgesContainer.appendChild(badge);
+        } else {
+          badge.className = 'badge badge-ownership badge-unowned';
+        }
+        badge.title = isRemoved ? t('removed_not_owned_tooltip') : t('not_purchased_paid_tooltip');
+        badge.textContent = `⚠️ ${t('not_purchased_paid_badge')}`;
+        badge.style.display = 'inline-flex';
+      } else if (badge) {
+        badge.style.display = 'none';
+      }
+    }
+
+    const licenseBtn = card.querySelector('.btn-license-action');
+    if (licenseBtn) {
+      if (purchased) {
+        licenseBtn.className = 'btn btn-outline btn-owned btn-license-action';
+        licenseBtn.disabled = true;
+        licenseBtn.title = t('purchased_badge_tooltip');
+        licenseBtn.innerHTML = `✅ ${t('already_licensed_btn')}`;
+      } else {
+        licenseBtn.className = 'btn btn-outline btn-license-action';
+        licenseBtn.disabled = false;
+        licenseBtn.title = price > 0 ? t('not_purchased_paid_tooltip') : t('acquire_license_tooltip');
+        const dict = i18n[state.lang] || i18n.ru;
+        licenseBtn.innerHTML = `🛒 ${dict.license_btn}`;
+      }
+    }
+  });
+}
+
+
+// ==========================================
+// BOOKMARKS & VERSION UPDATE TRACKING
+// ==========================================
+
+
+function starSvg(filled = false) {
+  if (filled) {
+    return `<svg class="star-icon" viewBox="0 0 24 24" width="16" height="16" fill="#f59e0b" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`;
+  }
+  return `<svg class="star-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>`;
+}
+
+function setViewMode(mode) {
+  if (mode !== 'grid' && mode !== 'list') mode = 'grid';
+  state.viewMode = mode;
+  localStorage.setItem('ipatool_view_mode', mode);
+
+  document.querySelectorAll('.view-mode-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  });
+
+  const grids = [
+    document.getElementById('search-results-grid'),
+    document.getElementById('removed-results-grid'),
+    document.getElementById('bookmarks-grid')
+  ];
+  grids.forEach(g => {
+    if (g) g.classList.toggle('view-mode-list', mode === 'list');
+  });
+}
+
+function isAppBookmarked(trackId, bundleId) {
+  if (!state.bookmarks || !Array.isArray(state.bookmarks)) return false;
+  const tId = Number(trackId) || 0;
+  const bId = (bundleId || '').toLowerCase().trim();
+  return state.bookmarks.some(b => {
+    if (tId && Number(b.trackId) === tId) return true;
+    if (bId && (b.bundleId || '').toLowerCase().trim() === bId) return true;
+    return false;
+  });
+}
+
+function handleBookmarkClick(event, trackId, bundleId, name, artistName, iconUrl, version, platform) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
+  const tId = Number(trackId) || 0;
+  const bId = (bundleId || '').trim();
+  const existingIdx = state.bookmarks.findIndex(b => {
+    if (tId && Number(b.trackId) === tId) return true;
+    if (bId && (b.bundleId || '').toLowerCase().trim() === bId.toLowerCase()) return true;
+    return false;
+  });
+
+  if (existingIdx >= 0) {
+    const removed = state.bookmarks.splice(existingIdx, 1)[0];
+    localStorage.setItem('ipatool_bookmarks', JSON.stringify(state.bookmarks));
+    showToast(batchText('bookmark_removed', { name: removed.name || name || 'App' }), 'info');
+  } else {
+    const newBookmark = {
+      trackId: tId,
+      bundleId: bId,
+      name: name || 'App',
+      artistName: artistName || '',
+      iconUrl: iconUrl || '',
+      platform: platform || 'iphone',
+      currentVersion: version || '',
+      latestVersion: version || '',
+      latestReleaseDate: '',
+      hasUpdate: false,
+      addedAt: Date.now()
+    };
+    state.bookmarks.unshift(newBookmark);
+    localStorage.setItem('ipatool_bookmarks', JSON.stringify(state.bookmarks));
+    showToast(batchText('bookmark_added', { name: name || 'App' }), 'success');
+    // Silently check update in background for this app
+    checkSingleBookmarkUpdate(newBookmark);
+  }
+
+  updateBookmarkStars();
+  updateBookmarksBadge();
+  renderBookmarks();
+}
+
+function handleRemoveBookmark(trackId, bundleId) {
+  const tId = Number(trackId) || 0;
+  const bId = (bundleId || '').toLowerCase().trim();
+  const idx = state.bookmarks.findIndex(b => {
+    if (tId && Number(b.trackId) === tId) return true;
+    if (bId && (b.bundleId || '').toLowerCase().trim() === bId) return true;
+    return false;
+  });
+  if (idx >= 0) {
+    const removed = state.bookmarks.splice(idx, 1)[0];
+    localStorage.setItem('ipatool_bookmarks', JSON.stringify(state.bookmarks));
+    showToast(batchText('bookmark_removed', { name: removed.name || 'App' }), 'info');
+    updateBookmarkStars();
+    updateBookmarksBadge();
+    renderBookmarks();
+  }
+}
+
+function updateBookmarkStars() {
+  document.querySelectorAll('.bookmark-star-btn[data-track-id]').forEach(btn => {
+    const tId = btn.dataset.trackId;
+    const bId = btn.dataset.bundleId;
+    const bookmarked = isAppBookmarked(tId, bId);
+    btn.classList.toggle('is-bookmarked', bookmarked);
+    btn.innerHTML = starSvg(bookmarked);
+    btn.title = bookmarked ? t('remove_bookmark_title') : t('add_bookmark_title');
+  });
+
+  document.querySelectorAll('.bookmark-star-btn-inline[data-bundle-id]').forEach(btn => {
+    const tId = btn.dataset.trackId;
+    const bId = btn.dataset.bundleId;
+    const bookmarked = isAppBookmarked(tId, bId);
+    btn.classList.toggle('is-bookmarked', bookmarked);
+    btn.innerHTML = starSvg(bookmarked);
+    btn.title = bookmarked ? t('remove_bookmark_title') : t('add_bookmark_title');
+  });
+}
+
+function updateBookmarksBadge() {
+  const badge = document.getElementById('bookmarks-badge');
+  if (!badge) return;
+  const count = state.bookmarks ? state.bookmarks.length : 0;
+  const updateCount = state.bookmarks ? state.bookmarks.filter(b => b.hasUpdate).length : 0;
+
+  if (count > 0) {
+    badge.style.display = 'inline-flex';
+    if (updateCount > 0) {
+      badge.textContent = `🔄 ${updateCount}`;
+      badge.className = 'badge badge-accent badge-pulse';
+      badge.title = `${updateCount} bản cập nhật mới`;
+    } else {
+      badge.textContent = String(count);
+      badge.className = 'badge';
+      badge.title = `${count} ứng dụng theo dõi`;
+    }
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function compareAppVersions(remoteV, localV) {
+  if (!remoteV || !localV) return 0;
+  const cleanR = String(remoteV).replace(/^[^0-9]*/, '').split(/[^0-9]/).filter(Boolean).map(Number);
+  const cleanL = String(localV).replace(/^[^0-9]*/, '').split(/[^0-9]/).filter(Boolean).map(Number);
+  const maxLen = Math.max(cleanR.length, cleanL.length);
+  for (let i = 0; i < maxLen; i++) {
+    const r = cleanR[i] || 0;
+    const l = cleanL[i] || 0;
+    if (r > l) return 1;
+    if (r < l) return -1;
+  }
+  return 0;
+}
+
+async function lookupAppStoreMetadata(trackIds = [], bundleIds = []) {
+  const results = {};
+  const validIds = trackIds.filter(id => id && Number(id) > 0);
+  const validBundles = bundleIds.filter(b => b && String(b).trim() !== '');
+
+  for (let i = 0; i < validIds.length; i += 50) {
+    const chunk = validIds.slice(i, i + 50);
+    try {
+      const url = `https://itunes.apple.com/lookup?id=${chunk.join(',')}&entity=software,iPadSoftware,macSoftware`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.results && Array.isArray(data.results)) {
+          data.results.forEach(item => {
+            if (item.trackId) results[`id_${item.trackId}`] = item;
+            if (item.bundleId) results[`bundle_${item.bundleId.toLowerCase()}`] = item;
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('itunes lookup error:', e);
+    }
+  }
+
+  for (const bId of validBundles) {
+    if (results[`bundle_${bId.toLowerCase()}`]) continue;
+    try {
+      const url = `https://itunes.apple.com/lookup?bundleId=${encodeURIComponent(bId)}`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.results && Array.isArray(data.results)) {
+          data.results.forEach(item => {
+            if (item.trackId) results[`id_${item.trackId}`] = item;
+            if (item.bundleId) results[`bundle_${item.bundleId.toLowerCase()}`] = item;
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('itunes bundle lookup error:', e);
+    }
+  }
+
+  return results;
+}
+
+async function checkSingleBookmarkUpdate(bookmark) {
+  if (!bookmark) return;
+  const tIds = bookmark.trackId ? [bookmark.trackId] : [];
+  const bIds = bookmark.bundleId ? [bookmark.bundleId] : [];
+  const metaMap = await lookupAppStoreMetadata(tIds, bIds);
+  const meta = (bookmark.trackId && metaMap[`id_${bookmark.trackId}`]) || (bookmark.bundleId && metaMap[`bundle_${bookmark.bundleId.toLowerCase()}`]);
+  if (meta) {
+    bookmark.latestVersion = meta.version || bookmark.latestVersion;
+    bookmark.latestReleaseDate = meta.currentVersionReleaseDate || bookmark.latestReleaseDate;
+    bookmark.releaseNotes = meta.releaseNotes || bookmark.releaseNotes;
+    if (meta.artworkUrl100 && !bookmark.iconUrl) bookmark.iconUrl = meta.artworkUrl100;
+    if (meta.artistName && !bookmark.artistName) bookmark.artistName = meta.artistName;
+    if (bookmark.currentVersion && bookmark.latestVersion) {
+      bookmark.hasUpdate = compareAppVersions(bookmark.latestVersion, bookmark.currentVersion) > 0;
+    }
+    localStorage.setItem('ipatool_bookmarks', JSON.stringify(state.bookmarks));
+    updateBookmarksBadge();
+    renderBookmarks();
+  }
+}
+
+async function checkBookmarksUpdates(showNotification = false) {
+  if (!state.bookmarks || state.bookmarks.length === 0) {
+    if (showNotification) showToast(t('bookmarks_empty'), 'info');
+    return;
+  }
+
+  const btn = document.getElementById('bookmarks-check-updates-btn');
+  if (btn) btn.disabled = true;
+  if (showNotification) showToast(t('bookmarks_checking_updates'), 'info');
+
+  const tIds = state.bookmarks.map(b => b.trackId).filter(Boolean);
+  const bIds = state.bookmarks.map(b => b.bundleId).filter(Boolean);
+
+  try {
+    const metaMap = await lookupAppStoreMetadata(tIds, bIds);
+    let updatesCount = 0;
+
+    state.bookmarks.forEach(b => {
+      const meta = (b.trackId && metaMap[`id_${b.trackId}`]) || (b.bundleId && metaMap[`bundle_${b.bundleId.toLowerCase()}`]);
+      if (meta) {
+        b.latestVersion = meta.version || b.latestVersion;
+        b.latestReleaseDate = meta.currentVersionReleaseDate || b.latestReleaseDate;
+        b.releaseNotes = meta.releaseNotes || b.releaseNotes;
+        if (meta.artworkUrl100 && !b.iconUrl) b.iconUrl = meta.artworkUrl100;
+        if (meta.artistName && !b.artistName) b.artistName = meta.artistName;
+        if (b.currentVersion && b.latestVersion) {
+          b.hasUpdate = compareAppVersions(b.latestVersion, b.currentVersion) > 0;
+        } else {
+          b.hasUpdate = false;
+        }
+        if (b.hasUpdate) updatesCount++;
+      }
+    });
+
+    localStorage.setItem('ipatool_bookmarks', JSON.stringify(state.bookmarks));
+    updateBookmarksBadge();
+    renderBookmarks();
+
+    if (showNotification) {
+      if (updatesCount > 0) {
+        showToast(batchText('bookmarks_updates_found', { count: updatesCount }), 'success');
+      } else {
+        showToast(t('bookmarks_all_updated'), 'info');
+      }
+    }
+  } catch (err) {
+    console.error('Failed to check bookmark updates:', err);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function checkDownloadsUpdates(showNotification = false) {
+  if (!state.downloadHistory || state.downloadHistory.length === 0) {
+    if (showNotification) showToast(t('no_history_downloads'), 'info');
+    return;
+  }
+
+  if (showNotification) showToast(t('bookmarks_checking_updates'), 'info');
+
+  const tIds = state.downloadHistory.map(h => h.appId).filter(Boolean);
+  const bIds = state.downloadHistory.map(h => h.bundleId).filter(Boolean);
+
+  try {
+    const metaMap = await lookupAppStoreMetadata(tIds, bIds);
+    let updatesFound = 0;
+
+    state.downloadHistory.forEach(item => {
+      const meta = (item.appId && metaMap[`id_${item.appId}`]) || (item.bundleId && metaMap[`bundle_${item.bundleId.toLowerCase()}`]);
+      if (meta) {
+        item.latestStoreVersion = meta.version || item.latestStoreVersion;
+        item.latestReleaseDate = meta.currentVersionReleaseDate || item.latestReleaseDate;
+        if (item.version && item.latestStoreVersion) {
+          item.hasUpdate = compareAppVersions(item.latestStoreVersion, item.version) > 0;
+        }
+        if (item.hasUpdate) updatesFound++;
+      }
+    });
+
+    localStorage.setItem('ipatool_download_history', JSON.stringify(state.downloadHistory));
+    renderDownloadsTab();
+
+    if (showNotification) {
+      if (updatesFound > 0) {
+        showToast(batchText('bookmarks_updates_found', { count: updatesFound }), 'success');
+      } else {
+        showToast(t('bookmarks_all_updated'), 'info');
+      }
+    }
+  } catch (err) {
+    console.error('Failed to check downloads updates:', err);
+  }
+}
+
+function renderBookmarks() {
+  const grid = document.getElementById('bookmarks-grid');
+  const emptyEl = document.getElementById('bookmarks-empty');
+  const countBadge = document.getElementById('bookmarks-count-badge');
+  const updatesBadge = document.getElementById('bookmarks-updates-badge');
+  const filterInput = document.getElementById('bookmarks-filter');
+  if (!grid) return;
+
+  const filter = (filterInput ? filterInput.value : '').toLowerCase().trim();
+  const list = (state.bookmarks || []).filter(b => {
+    if (!filter) return true;
+    return (b.name && b.name.toLowerCase().includes(filter)) ||
+           (b.bundleId && b.bundleId.toLowerCase().includes(filter)) ||
+           (String(b.trackId).includes(filter));
+  });
+
+  const totalCount = state.bookmarks ? state.bookmarks.length : 0;
+  const updateCount = state.bookmarks ? state.bookmarks.filter(b => b.hasUpdate).length : 0;
+
+  if (countBadge) countBadge.textContent = batchText('bookmarks_count_label', { count: totalCount }) || `${totalCount} apps`;
+  if (updatesBadge) {
+    if (updateCount > 0) {
+      updatesBadge.style.display = 'inline-flex';
+      updatesBadge.textContent = batchText('bookmarks_updates_badge_label', { count: updateCount }) || `🔄 ${updateCount}`;
+    } else {
+      updatesBadge.style.display = 'none';
+    }
+  }
+  grid.classList.toggle('view-mode-list', state.viewMode === 'list');
+
+  if (totalCount === 0) {
+    grid.innerHTML = '';
+    if (emptyEl) emptyEl.style.display = 'block';
+    return;
+  }
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  grid.innerHTML = '';
+  const dict = i18n[state.lang] || i18n.ru;
+
+  list.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'bookmark-card app-card';
+    card.dataset.trackId = String(item.trackId || '');
+    card.dataset.bundleId = String(item.bundleId || '');
+
+    const nameEsc = (item.name || '').replace(/'/g, "\\'");
+    const dateFormatted = item.latestReleaseDate ? item.latestReleaseDate.slice(0, 10) : '';
+
+    card.innerHTML = `
+      <button type="button" class="bookmark-star-btn is-bookmarked" 
+        onclick="handleRemoveBookmark('${item.trackId || ''}', '${item.bundleId || ''}')" 
+        title="${t('remove_bookmark_title')}">${starSvg(true)}</button>
+
+      <div class="app-main-info">
+        ${item.iconUrl ? `<img src="${item.iconUrl}" alt="${batchEscapeHtml(item.name)}" class="app-icon-img" loading="lazy">` : `<div class="app-icon-fallback">📱</div>`}
+        <div class="app-meta">
+          <h3 class="app-name" title="${batchEscapeHtml(item.name)}">${batchEscapeHtml(item.name)}</h3>
+          <p class="app-artist">${batchEscapeHtml(item.artistName || 'Apple Developer')}</p>
+          <div class="app-badges">
+            ${item.hasUpdate ? `<span class="badge badge-update-available">🔄 ${t('update_available_badge')}: v${item.latestVersion}</span>` : `<span class="badge badge-success">✅ ${t('up_to_date_badge')}: v${item.latestVersion || item.currentVersion}</span>`}
+            <span class="badge">${(item.platform || 'iphone').toUpperCase()}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="bookmark-version-details">
+        <div class="version-row">
+          <span class="version-label">${t('tracked_version_label')}</span>
+          <span class="version-value"><code>${item.currentVersion ? 'v' + item.currentVersion : '-'}</code></span>
+        </div>
+        <div class="version-row">
+          <span class="version-label">${t('latest_store_version_label')}</span>
+          <span class="version-value"><code>${item.latestVersion ? 'v' + item.latestVersion : '-'}</code> ${dateFormatted ? `(${dateFormatted})` : ''}</span>
+        </div>
+        ${item.releaseNotes ? `<div class="bookmark-release-notes" title="${batchEscapeHtml(item.releaseNotes)}">📝 ${batchEscapeHtml(item.releaseNotes)}</div>` : ''}
+      </div>
+
+      <div class="app-identifiers">
+        <div class="id-row">
+          <span class="id-label">Bundle ID:</span>
+          <span class="id-value">
+            <code>${item.bundleId}</code>
+            <button type="button" class="copy-icon-btn" onclick="copyToClipboard('${item.bundleId}')" title="${t('copy_tooltip')}">📋</button>
+          </span>
+        </div>
+        ${item.trackId ? `
+        <div class="id-row">
+          <span class="id-label">App ID:</span>
+          <span class="id-value">
+            <code>${item.trackId}</code>
+            <button type="button" class="copy-icon-btn" onclick="copyToClipboard('${item.trackId}')" title="${t('copy_tooltip')}">📋</button>
+          </span>
+        </div>` : ''}
+      </div>
+
+      <div class="app-actions">
+        <button class="btn btn-primary" onclick="startAppDownload('${item.bundleId}', ${item.trackId || 0}, '${item.platform || 'iphone'}', '${nameEsc}', '${item.iconUrl || ''}')">
+          ⬇️ ${item.hasUpdate ? t('download_update_btn') : t('download_btn')}
+        </button>
+        <button class="btn btn-outline" onclick="viewAppVersions('${item.bundleId}', ${item.trackId || 0}, '${nameEsc}', '${item.platform || 'iphone'}')" title="${t('version_history_tooltip')}">
+          🕒 ${dict.versions_btn}
+        </button>
+        <button class="btn btn-outline text-danger" onclick="handleRemoveBookmark('${item.trackId || ''}', '${item.bundleId || ''}')" title="${t('remove_bookmark_title')}">
+          🗑️
+        </button>
+      </div>
+    `;
+
+    grid.appendChild(card);
+  });
+}
+
 function createAppCard(app, platform) {
   const card = document.createElement('div');
   card.className = 'app-card';
+  card.dataset.trackId = String(app.trackId || app.id || app.appId || '');
+  card.dataset.bundleId = String(app.bundleId || '');
+  card.dataset.price = String(app.price || '0');
+  card.dataset.platform = String(platform || '');
 
   const iconUrl = app.artworkUrl512 || app.artworkUrl100 || app.artworkUrl60;
-  const priceText = app.price === 0 || !app.price ? t('free_price') : (app.formattedPrice || `$${app.price}`);
+  const isPaid = app.price > 0;
+  const priceText = !isPaid ? t('free_price') : (app.formattedPrice || `$${app.price}`);
   const dict = i18n[state.lang] || i18n.ru;
   const dlBtnText = platformOSLabel(platform) === 'macOS' ? (dict.download_btn_pkg || dict.download_btn) : dict.download_btn;
 
+  const purchased = isAppPurchased(app.trackId, app.bundleId);
+  const purchasesLoaded = state.isAuthenticated && state.purchases && state.purchases.loaded;
+
+  let ownershipBadge = '';
+  if (purchased) {
+    ownershipBadge = `<span class="badge badge-ownership badge-purchased" title="${t('purchased_badge_tooltip')}">✅ ${t('purchased_badge')}</span>`;
+  } else if (isPaid && purchasesLoaded) {
+    ownershipBadge = `<span class="badge badge-ownership badge-unowned" title="${t('not_purchased_paid_tooltip')}">⚠️ ${t('not_purchased_paid_badge')}</span>`;
+  }
+
+  let licenseBtnHtml = '';
+  if (purchased) {
+    licenseBtnHtml = `
+      <button class="btn btn-outline btn-owned btn-license-action" disabled title="${t('purchased_badge_tooltip')}">
+        ✅ ${t('already_licensed_btn')}
+      </button>
+    `;
+  } else {
+    licenseBtnHtml = `
+      <button class="btn btn-outline btn-license-action" onclick="purchaseApp('${app.bundleId}', '${platform}')" title="${isPaid ? t('not_purchased_paid_tooltip') : t('acquire_license_tooltip')}">
+        🛒 ${dict.license_btn}
+      </button>
+    `;
+  }
+
+  const isBookmarked = isAppBookmarked(app.trackId, app.bundleId);
+  const artistEsc = (app.artistName || app.sellerName || '').replace(/'/g, "\\'");
+  const nameEsc = (app.trackName || '').replace(/'/g, "\\'");
+
   card.innerHTML = `
+    <button type="button" class="bookmark-star-btn ${isBookmarked ? 'is-bookmarked' : ''}" 
+      data-track-id="${app.trackId}" data-bundle-id="${app.bundleId}"
+      onclick="handleBookmarkClick(event, ${app.trackId}, '${app.bundleId}', '${nameEsc}', '${artistEsc}', '${iconUrl || ''}', '${app.version || ''}', '${platform}')" 
+      title="${isBookmarked ? t('remove_bookmark_title') : t('add_bookmark_title')}">
+      ${starSvg(isBookmarked)}
+    </button>
     <div class="app-main-info">
-      ${iconUrl ? `<img src="${iconUrl}" alt="${app.trackName}" class="app-icon-img" loading="lazy" onerror="this.outerHTML='<div class=\\'app-icon-fallback\\'>📱</div>'">` : `<div class="app-icon-fallback">📱</div>`}
+      ${iconUrl ? `<img src="${iconUrl}" alt="${app.trackName}" class="app-icon-img" loading="lazy" onerror="this.outerHTML='<div class=\'app-icon-fallback\'>📱</div>'">` : `<div class="app-icon-fallback">📱</div>`}
       <div class="app-meta">
         <h3 class="app-name" title="${app.trackName}">${app.trackName || t('purchases_unknown_app')}</h3>
         <p class="app-artist" title="${app.artistName || app.sellerName || ''}">${app.artistName || app.sellerName || 'Apple Developer'}</p>
         <div class="app-badges">
           <span class="badge badge-price">${priceText}</span>
+          ${ownershipBadge}
           ${app.version ? `<span class="badge badge-version">v${app.version}</span>` : ''}
           ${app.fileSizeBytes ? `<span class="badge">${formatBytes(app.fileSizeBytes)}</span>` : ''}
           <span class="badge">${platform.toUpperCase()}</span>
@@ -1876,9 +2537,7 @@ function createAppCard(app, platform) {
       <button class="btn btn-primary" onclick="startAppDownload('${app.bundleId}', ${app.trackId}, '${platform}', '${app.trackName.replace(/'/g, "\\'")}', '${iconUrl || ''}')">
         ⬇️ ${dlBtnText}
       </button>
-      <button class="btn btn-outline" onclick="purchaseApp('${app.bundleId}', '${platform}')" title="${t('acquire_license_tooltip')}">
-        🛒 ${dict.license_btn}
-      </button>
+      ${licenseBtnHtml}
       <button class="btn btn-outline" onclick="viewAppVersions('${app.bundleId}', ${app.trackId}, '${app.trackName.replace(/'/g, "\\'")}', '${platform}')" title="${t('version_history_tooltip')}">
         🕒 ${dict.versions_btn}
       </button>
@@ -1895,12 +2554,26 @@ function createAppCard(app, platform) {
 function createRemovedAppCard(app, platform) {
   const card = document.createElement('div');
   card.className = 'app-card removed-app-card';
+  const appId = Number(app.appId) || 0;
+  card.dataset.trackId = String(appId);
+  card.dataset.bundleId = '';
+  card.dataset.price = '0';
+  card.dataset.platform = String(platform || '');
 
   const dict = i18n[state.lang] || i18n.ru;
   const dlBtnText = platformOSLabel(platform) === 'macOS' ? (dict.download_btn_pkg || dict.download_btn) : dict.download_btn;
   const name = app.name || String(app.appId);
   const nameEsc = String(name).replace(/'/g, "\\'");
-  const appId = Number(app.appId) || 0;
+
+  const purchased = isAppPurchased(appId, '');
+  const purchasesLoaded = state.isAuthenticated && state.purchases && state.purchases.loaded;
+
+  let ownershipBadge = '';
+  if (purchased) {
+    ownershipBadge = `<span class="badge badge-ownership badge-purchased" title="${t('purchased_badge_tooltip')}">✅ ${t('purchased_badge')}</span>`;
+  } else if (purchasesLoaded) {
+    ownershipBadge = `<span class="badge badge-ownership badge-unowned" title="${t('removed_not_owned_tooltip')}">⚠️ ${t('not_purchased_paid_badge')}</span>`;
+  }
 
   card.innerHTML = `
     <div class="app-main-info">
@@ -1910,6 +2583,7 @@ function createRemovedAppCard(app, platform) {
         <p class="app-artist">App ID: <code>${appId}</code></p>
         <div class="app-badges">
           <span class="badge badge-removed">${dict.removed_badge}</span>
+          ${ownershipBadge}
           <span class="badge">${platform.toUpperCase()}</span>
         </div>
       </div>
@@ -1962,6 +2636,7 @@ async function purchaseApp(bundleId, platform = 'iphone') {
       } else {
         showToast(t('license_success'), 'success');
       }
+      refreshPurchases(true);
     } else {
       showToast(data.message || t('license_error'), 'error');
     }
@@ -2060,6 +2735,11 @@ function openDownloadModal(title, subtitle, iconUrl, platform = 'iphone') {
   if (errorBox) errorBox.style.display = 'none';
   updateDownloadModalWarning('');
   if (openBtn) openBtn.style.display = 'none';
+  const dlFileBtn = document.getElementById('dl-modal-download-file-btn');
+  if (dlFileBtn) {
+    dlFileBtn.style.display = 'none';
+    dlFileBtn.removeAttribute('href');
+  }
 
   // Reset steps
   document.querySelectorAll('.dl-step').forEach(step => step.className = 'dl-step');
@@ -2204,8 +2884,16 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl, platform = 'ip
           openBtn.style.display = 'inline-flex';
           openBtn.setAttribute('data-path', job.outputPath || '');
         }
+        const dlModalFileBtn = document.getElementById('dl-modal-download-file-btn');
+        if (dlModalFileBtn && job.outputPath) {
+          const dlName = job.outputPath.split(/[\\/]/).pop() || `${job.bundleId || 'app'}.ipa`;
+          dlModalFileBtn.href = `/api/download/file?path=${encodeURIComponent(job.outputPath)}`;
+          dlModalFileBtn.setAttribute('download', dlName);
+          dlModalFileBtn.style.display = 'inline-flex';
+        }
 
         addToHistory({
+          appId: job.appId || appId || 0,
           appName: job.appName || appName || bundleId,
           bundleId: job.bundleId || bundleId,
           version: job.version || '',
@@ -2689,6 +3377,7 @@ function onAuthStateChanged() {
     p.fromCache = false;
     p.loadedFor = null;
     renderPurchases();
+    updateSearchResultsOwnership();
     return;
   }
 
@@ -2759,6 +3448,7 @@ async function refreshPurchases(force) {
     if (isCurrentRequest()) {
       p.loading = false;
       renderPurchases();
+      updateSearchResultsOwnership();
     }
   }
 }
@@ -3193,21 +3883,42 @@ function renderDownloadsTab() {
   state.downloadHistory.forEach((item, idx) => {
     const el = document.createElement('div');
     el.className = 'history-item';
-    const fileName = item.outputPath ? item.outputPath.split(/[\\/]/).pop() : `${item.bundleId}.ipa`;
+    const fileName = item.outputPath ? item.outputPath.split(/[\\/]/).pop() : (item.fileName || `${item.bundleId || 'app'}.ipa`);
+    const dlUrl = `/api/download/file?path=${encodeURIComponent(item.outputPath || '')}&name=${encodeURIComponent(fileName)}`;
+
+    const bookmarked = isAppBookmarked(item.appId, item.bundleId);
+    const itemAppNameEsc = (item.appName || fileName).replace(/'/g, "\\'");
+    const hasUpdate = !!item.hasUpdate;
+    const updateBadge = hasUpdate ? `<span class="badge badge-update-available">🔄 ${t('update_available_badge')}: v${item.latestStoreVersion}</span>` : '';
+    const updateBtn = (hasUpdate && item.bundleId) ? `
+      <button class="btn btn-primary btn-sm" onclick="startAppDownload('${item.bundleId}', ${item.appId || 0}, 'iphone', '${itemAppNameEsc}', '')" title="${t('download_update_btn')}">
+        ⬇️ ${t('download_update_btn')}
+      </button>
+    ` : '';
 
     el.innerHTML = `
       <div class="history-info">
+        <button type="button" class="bookmark-star-btn-inline ${bookmarked ? 'is-bookmarked' : ''}" 
+          data-track-id="${item.appId || ''}" data-bundle-id="${item.bundleId || ''}"
+          onclick="handleBookmarkClick(event, ${item.appId || 0}, '${item.bundleId || ''}', '${itemAppNameEsc}', '', '', '${item.version || ''}', 'iphone')" 
+          title="${bookmarked ? t('remove_bookmark_title') : t('add_bookmark_title')}">
+          ${starSvg(bookmarked)}
+        </button>
         <div class="history-file-icon">📦</div>
         <div>
-          <div class="history-filename">${item.appName || fileName}</div>
-          <div class="history-meta">${fileName} • ${formatBytes(item.bytes)} • ${item.date || ''}</div>
+          <div class="history-filename">${batchEscapeHtml(item.appName || fileName)} ${updateBadge}</div>
+          <div class="history-meta">${batchEscapeHtml(fileName)} • ${item.version ? 'v' + item.version + ' • ' : ''}${formatBytes(item.bytes)} • ${item.date || ''}</div>
         </div>
       </div>
       <div class="app-actions">
-        <button class="btn btn-outline btn-sm" onclick="openOutputFolder('${item.outputPath ? item.outputPath.replace(/\\/g, '\\\\') : ''}')">
+        ${updateBtn}
+        <a class="btn btn-primary btn-sm" href="${dlUrl}" download="${batchEscapeHtml(fileName)}" title="${t('download_file_tooltip')}">
+          ⬇️ ${t('download_file_btn')}
+        </a>
+        <button class="btn btn-outline btn-sm" onclick="openOutputFolder('${item.outputPath ? item.outputPath.replace(/\\/g, '\\\\') : ''}')" title="${t('in_explorer_btn')}">
           📂 ${t('in_explorer_btn')}
         </button>
-        <button class="btn btn-outline btn-sm" onclick="copyToClipboard('${item.outputPath ? item.outputPath.replace(/\\/g, '\\\\') : ''}')">
+        <button class="btn btn-outline btn-sm" onclick="copyToClipboard('${item.outputPath ? item.outputPath.replace(/\\/g, '\\\\') : ''}')" title="${t('copy_path_btn')}">
           📋 ${t('copy_path_btn')}
         </button>
         <button class="icon-btn-inline" onclick="removeFromHistory(${idx})" title="${t('remove_from_list_title')}">
@@ -3225,9 +3936,53 @@ function removeFromHistory(idx) {
   renderDownloadsTab();
 }
 
-function refreshDownloadsHistory() {
-  renderDownloadsTab();
-  showToast(t('history_refreshed'), 'info');
+async function loadServerDownloads(showNotification = false) {
+  try {
+    const res = await fetch('/api/download/files');
+    const data = await res.json();
+    if (data.success && Array.isArray(data.files)) {
+      let changed = false;
+      data.files.forEach(sf => {
+        const sfNormPath = (sf.path || '').replace(/\\/g, '/').toLowerCase();
+        const exists = state.downloadHistory.some(h => {
+          const hNormPath = (h.outputPath || '').replace(/\\/g, '/').toLowerCase();
+          if (hNormPath && hNormPath === sfNormPath) return true;
+          const hName = (h.outputPath ? h.outputPath.split(/[\\/]/).pop() : (h.fileName || '')).toLowerCase();
+          return hName && hName === (sf.name || '').toLowerCase();
+        });
+        if (!exists) {
+          state.downloadHistory.push({
+            appName: sf.name.replace(/\.(ipa|pkg)$/i, ''),
+            bundleId: '',
+            fileName: sf.name,
+            version: '',
+            outputPath: sf.path,
+            bytes: sf.size,
+            date: sf.date,
+            _timestamp: sf.modTime ? sf.modTime * 1000 : Date.now()
+          });
+          changed = true;
+        }
+      });
+      if (changed) {
+        state.downloadHistory.sort((a, b) => (b._timestamp || 0) - (a._timestamp || 0));
+        if (state.downloadHistory.length > 100) {
+          state.downloadHistory = state.downloadHistory.slice(0, 100);
+        }
+        localStorage.setItem('ipatool_download_history', JSON.stringify(state.downloadHistory));
+      }
+      renderDownloadsTab();
+      if (showNotification) {
+        showToast(t('downloads_server_synced'), 'info');
+      }
+    }
+  } catch (err) {
+    console.error('Failed to load server files:', err);
+  }
+}
+
+async function refreshDownloadsHistory() {
+  await loadServerDownloads(true);
 }
 
 async function openOutputFolder(path = '') {
@@ -3992,6 +4747,7 @@ function pollBatchDownload(batchId, items, accountId = batchState.downloadAccoun
         <div class="batch-download-row-foot">
           <span id="batch-dl-detail-${item.appId}" class="text-secondary">—</span>
           <button id="batch-dl-skip-${item.appId}" class="btn btn-outline btn-sm" style="display:none" onclick="skipBatchItem(${item.appId})">⏭ ${batchText('batch_skip_btn')}</button>
+          <a id="batch-dl-file-${item.appId}" class="btn btn-primary btn-sm" style="display:none" href="#" download>⬇️ ${t('download_file_btn')}</a>
           <button id="batch-dl-open-${item.appId}" class="btn btn-outline btn-sm" style="display:none" onclick="openOutputFolder('')">📂 ${batchText('open_folder_btn')}</button>
         </div>
       `;
@@ -4083,6 +4839,13 @@ function pollBatchDownload(batchId, items, accountId = batchState.downloadAccoun
           if (openBtn) {
             openBtn.style.display = 'inline-flex';
             openBtn.setAttribute('onclick', `openOutputFolder('${(item.outputPath || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'")}')`);
+          }
+          const batchDlBtn = document.getElementById(`batch-dl-file-${item.appId}`);
+          if (batchDlBtn && item.outputPath) {
+            const bFileName = item.outputPath.split(/[\\/]/).pop() || `${item.appId}.ipa`;
+            batchDlBtn.href = `/api/download/file?path=${encodeURIComponent(item.outputPath)}`;
+            batchDlBtn.setAttribute('download', bFileName);
+            batchDlBtn.style.display = 'inline-flex';
           }
           if (!batchState.addedToHistory.has(item.appId)) {
             batchState.addedToHistory.add(item.appId);
@@ -4461,6 +5224,7 @@ document.addEventListener('DOMContentLoaded', () => {
   fetchStatus();
   checkICloudStatus();
   renderDownloadsTab();
+  loadServerDownloads();
   refreshActiveDownloads();
 
   // Search input typing listeners

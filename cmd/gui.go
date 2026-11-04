@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -333,6 +334,11 @@ func runGUIServer(host string, port int, noBrowser bool) error {
 	fileServer := http.FileServer(assetsFS)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Prevent aggressive caching from Cloudflare CDN edge and browsers (especially mobile)
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			data, readErr := fs.ReadFile(assetsSub, "index.html")
 			if readErr != nil {
@@ -385,6 +391,8 @@ func runGUIServer(host string, port int, noBrowser bool) error {
 	mux.HandleFunc("/api/purchase", handleAPIPurchase)
 	mux.HandleFunc("/api/download", handleAPIDownload)
 	mux.HandleFunc("/api/download/status", handleAPIDownloadStatus)
+	mux.HandleFunc("/api/download/file", handleAPIDownloadFile)
+	mux.HandleFunc("/api/download/files", handleAPIListDownloadedFiles)
 	mux.HandleFunc("/api/icloud/status", handleAPIICloudStatus)
 	mux.HandleFunc("/api/downloads/active", handleAPIActiveDownloads)
 	mux.HandleFunc("/api/versions", handleAPIVersions)
@@ -405,7 +413,7 @@ func runGUIServer(host string, port int, noBrowser bool) error {
 	// Wrap mux with CORS headers for local/preview access
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 		if r.Method == http.MethodOptions {
@@ -470,6 +478,7 @@ func openBrowser(url string) {
 // API JSON Helpers
 func jsonResponse(w http.ResponseWriter, statusCode int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate")
 	w.WriteHeader(statusCode)
 	_ = json.NewEncoder(w).Encode(data)
 }
@@ -2145,4 +2154,167 @@ func handleAPISaveList(w http.ResponseWriter, r *http.Request) {
 		"filename": filename,
 		"path":     fullPath,
 	})
+}
+
+// DownloadedFileInfo contains metadata for an IPA or PKG file available in the downloads folder.
+type DownloadedFileInfo struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"modTime"`
+	Date    string `json:"date"`
+	Ext     string `json:"ext"`
+}
+
+// handleAPIListDownloadedFiles returns the list of all downloaded IPA and PKG files.
+func handleAPIListDownloadedFiles(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	dlDir := defaultDownloadDir()
+	entries, err := os.ReadDir(dlDir)
+	if err != nil && !os.IsNotExist(err) {
+		jsonError(w, http.StatusInternalServerError, fmt.Sprintf("failed to read downloads directory: %v", err))
+		return
+	}
+
+	files := make([]DownloadedFileInfo, 0)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if ext != ".ipa" && ext != ".pkg" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		fullPath := filepath.Join(dlDir, entry.Name())
+		files = append(files, DownloadedFileInfo{
+			Name:    entry.Name(),
+			Path:    fullPath,
+			Size:    info.Size(),
+			ModTime: info.ModTime().Unix(),
+			Date:    info.ModTime().Format("2006-01-02 15:04:05"),
+			Ext:     ext,
+		})
+	}
+
+	// Also include completed jobs if outputted elsewhere
+	activeJobs.Lock()
+	for _, job := range activeJobs.jobs {
+		if job.Status == "completed" && job.OutputPath != "" {
+			cleanOut := filepath.Clean(job.OutputPath)
+			alreadyListed := false
+			for _, f := range files {
+				if filepath.Clean(f.Path) == cleanOut {
+					alreadyListed = true
+					break
+				}
+			}
+			if !alreadyListed {
+				if fi, err := os.Stat(cleanOut); err == nil && !fi.IsDir() {
+					ext := strings.ToLower(filepath.Ext(cleanOut))
+					if ext == ".ipa" || ext == ".pkg" {
+						files = append(files, DownloadedFileInfo{
+							Name:    filepath.Base(cleanOut),
+							Path:    cleanOut,
+							Size:    fi.Size(),
+							ModTime: fi.ModTime().Unix(),
+							Date:    fi.ModTime().Format("2006-01-02 15:04:05"),
+							Ext:     ext,
+						})
+					}
+				}
+			}
+		}
+	}
+	activeJobs.Unlock()
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].ModTime > files[j].ModTime
+	})
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"success":     true,
+		"downloadDir": dlDir,
+		"files":       files,
+	})
+}
+
+// handleAPIDownloadFile streams an IPA or PKG file to the client browser for direct download.
+func handleAPIDownloadFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		jsonError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	jobID := strings.TrimSpace(r.URL.Query().Get("jobId"))
+	reqPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+
+	var targetPath string
+	if jobID != "" {
+		if job, found := activeJobs.get(jobID); found && job.OutputPath != "" {
+			targetPath = job.OutputPath
+		}
+	}
+
+	if targetPath == "" && reqPath != "" {
+		targetPath = reqPath
+	}
+
+	if targetPath == "" && name != "" {
+		targetPath = filepath.Join(defaultDownloadDir(), filepath.Base(name))
+	}
+
+	if targetPath == "" {
+		jsonError(w, http.StatusBadRequest, "path, name, or jobId query parameter is required")
+		return
+	}
+
+	cleanPath := filepath.Clean(targetPath)
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = filepath.Join(appWorkingDir(), cleanPath)
+	}
+
+	// Security: prevent path traversal and sensitive directory access
+	cleanLower := strings.ToLower(cleanPath)
+	if strings.Contains(cleanLower, ".ipatool") || strings.Contains(cleanLower, ".git") {
+		jsonError(w, http.StatusForbidden, "access denied")
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(cleanPath))
+	if ext != ".ipa" && ext != ".pkg" {
+		jsonError(w, http.StatusForbidden, "only .ipa and .pkg files can be downloaded")
+		return
+	}
+
+	fi, err := os.Stat(cleanPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			jsonError(w, http.StatusNotFound, "file not found")
+		} else {
+			jsonError(w, http.StatusInternalServerError, fmt.Sprintf("failed to read file: %v", err))
+		}
+		return
+	}
+
+	if fi.IsDir() {
+		jsonError(w, http.StatusBadRequest, "path is a directory")
+		return
+	}
+
+	fileName := filepath.Base(cleanPath)
+	escapedName := url.PathEscape(fileName)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, escapedName, escapedName))
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
+
+	http.ServeFile(w, r, cleanPath)
 }
