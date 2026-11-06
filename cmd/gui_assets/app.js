@@ -291,7 +291,7 @@ function copyToClipboard(text, msg) {
   navigator.clipboard.writeText(text).then(() => {
     showToast(msg || getDict().copied_toast, 'success');
   }).catch(() => {
-    showToast('Failed to copy', 'error');
+    showToast(t('copy_failed'), 'error');
   });
 }
 
@@ -620,7 +620,7 @@ function updateAccountUI() {
     const dsidEl = document.getElementById('account-dsid');
     const initialsEl = document.getElementById('account-initials');
 
-    if (nameEl) nameEl.textContent = state.account.name || 'Пользователь Apple';
+    if (nameEl) nameEl.textContent = state.account.name || t('default_user_name');
     if (emailEl) emailEl.textContent = state.account.email || '';
     if (countryEl) countryEl.textContent = state.account.storefront || 'Apple App Store';
     if (dsidEl) dsidEl.textContent = state.account.dsid || '—';
@@ -641,13 +641,13 @@ async function activateAccount(accountId) {
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
-      showToast(data.message || 'Не удалось переключить Apple ID', 'error');
+      showToast(data.message || t('account_switch_failed'), 'error');
       return;
     }
     applyAccountStatus(data);
     showToast(getDict().accounts_switched_toast, 'success');
   } catch (err) {
-    showToast('Ошибка переключения аккаунта', 'error');
+    showToast(t('account_switch_error'), 'error');
   }
 }
 
@@ -663,13 +663,13 @@ async function removeAccount(accountId) {
     });
     const data = await res.json();
     if (!res.ok || !data.success) {
-      showToast(data.message || 'Не удалось удалить аккаунт', 'error');
+      showToast(data.message || t('account_remove_failed'), 'error');
       return;
     }
     applyAccountStatus(data);
     showToast(dict.accounts_removed_toast, 'success');
   } catch (err) {
-    showToast('Ошибка удаления аккаунта', 'error');
+    showToast(t('account_remove_error'), 'error');
   }
 }
 
@@ -681,13 +681,13 @@ async function handleLogin(e) {
   const submitBtn = document.getElementById('login-submit-btn');
 
   if (!email || !password) {
-    showToast('Заполните Email и Пароль', 'error');
+    showToast(t('login_fill_fields'), 'error');
     return;
   }
 
   const originalHtml = submitBtn.innerHTML;
   submitBtn.disabled = true;
-  submitBtn.textContent = 'Авторизация...';
+  submitBtn.textContent = t('login_submitting');
 
   await submitLogin('/api/auth/login', email, password, '', submitBtn, originalHtml);
 }
@@ -711,21 +711,21 @@ async function submitLogin(endpoint, email, password, authCode, submitBtn, origi
       // retains its opaque attempt ID while the user enters the 2FA code.
       state.lastPendingLogin = { loginAttemptId: data.loginAttemptId, endpoint };
       open2FAModal();
-      showToast('Требуется код двухфакторной аутентификации', 'info');
+      showToast(t('login_2fa_required'), 'info');
     } else if (data.anisetteRequired) {
-      showToast('Ошибка iCloud (anisette): ' + (data.message || 'проверьте установку iCloud'), 'error');
+      showToast(t('icloud_error_toast', { message: data.message || t('icloud_error_hint') }), 'error');
       switchTab('account');
     } else if (data.success) {
       close2FAModal();
       const form = document.getElementById('login-form');
       if (form) form.reset();
       applyAccountStatus(data);
-      showToast(`Успешный вход: ${data.account.email}`, 'success');
+      showToast(t('login_success_toast', { email: data.account.email }), 'success');
     } else {
-      showToast(data.message || 'Ошибка авторизации Apple ID', 'error');
+      showToast(data.message || t('login_auth_error'), 'error');
     }
   } catch (err) {
-    showToast('Ошибка сетевого соединения с локальным сервером', 'error');
+    showToast(t('server_offline_error'), 'error');
   } finally {
     const passwordInput = document.getElementById('login-password');
     if (!isChallenge && passwordInput) passwordInput.value = '';
@@ -762,7 +762,7 @@ async function handle2FASubmit(e) {
   const submitBtn = document.getElementById('two-factor-submit-btn');
 
   if (!code || code.length < 6) {
-    showToast('Введите 6-значный код', 'error');
+    showToast(t('enter_2fa_code'), 'error');
     return;
   }
 
@@ -773,7 +773,7 @@ async function handle2FASubmit(e) {
 
   const originalHtml = submitBtn.innerHTML;
   submitBtn.disabled = true;
-  submitBtn.textContent = 'Проверка...';
+  submitBtn.textContent = t('verifying_code');
 
   // Reuse the same login flow that triggered the 2FA prompt (standard or the
   // macOS MZFinance test path), so the retry does not switch flows.
@@ -839,7 +839,7 @@ async function fetchSearchResults(term, platform, limit) {
   ]);
   const data = await searchRes.json();
   if (!data.success) {
-    return { apps: [], removedApps: [], message: data.message || 'Ошибка поиска в App Store' };
+    return { apps: [], removedApps: [], message: data.message || t('search_error') };
   }
 
   let removedData = { success: false, results: [] };
@@ -861,7 +861,7 @@ async function handleSearch(e) {
   const limit = document.getElementById('search-limit').value;
 
   if (!term) {
-    showToast('Введите поисковый запрос', 'info');
+    showToast(t('search_query_empty'), 'info');
     return;
   }
 
@@ -937,7 +937,7 @@ async function handleSearch(e) {
     resultsWrapper.style.display = 'block';
   } catch (err) {
     loadingEl.style.display = 'none';
-    showToast('Ошибка связи с сервером', 'error');
+    showToast(t('server_connection_error'), 'error');
     emptyEl.style.display = 'block';
   }
 }
@@ -955,7 +955,7 @@ function createAppCard(app, platform) {
     <div class="app-main-info">
       ${iconUrl ? `<img src="${iconUrl}" alt="${app.trackName}" class="app-icon-img" loading="lazy" onerror="this.outerHTML='<div class=\\'app-icon-fallback\\'>📱</div>'">` : `<div class="app-icon-fallback">📱</div>`}
       <div class="app-meta">
-        <h3 class="app-name" title="${app.trackName}">${app.trackName || 'Без названия'}</h3>
+        <h3 class="app-name" title="${app.trackName}">${app.trackName || t('purchases_unknown_app')}</h3>
         <p class="app-artist" title="${app.artistName || app.sellerName || ''}">${app.artistName || app.sellerName || 'Apple Developer'}</p>
         <div class="app-badges">
           <span class="badge badge-price">${priceText}</span>
@@ -968,17 +968,17 @@ function createAppCard(app, platform) {
 
     <div class="app-identifiers">
       <div class="id-row">
-        <span class="id-label">Bundle ID:</span>
+        <span class="id-label">${t('bundle_id_label')}</span>
         <span class="id-value">
           <code>${app.bundleId}</code>
-          <button type="button" class="copy-icon-btn" onclick="copyToClipboard('${app.bundleId}')" title="Скопировать">📋</button>
+          <button type="button" class="copy-icon-btn" onclick="copyToClipboard('${app.bundleId}')" title="${t('copy_tooltip')}">📋</button>
         </span>
       </div>
       <div class="id-row">
-        <span class="id-label">App ID:</span>
+        <span class="id-label">${t('app_id_label')}</span>
         <span class="id-value">
           <code>${app.trackId}</code>
-          <button type="button" class="copy-icon-btn" onclick="copyToClipboard('${app.trackId}')" title="Скопировать">📋</button>
+          <button type="button" class="copy-icon-btn" onclick="copyToClipboard('${app.trackId}')" title="${t('copy_tooltip')}">📋</button>
         </span>
       </div>
     </div>
@@ -987,10 +987,10 @@ function createAppCard(app, platform) {
       <button class="btn btn-primary" onclick="startAppDownload('${app.bundleId}', ${app.trackId}, '${platform}', '${app.trackName.replace(/'/g, "\\'")}', '${iconUrl || ''}')">
         ⬇️ ${dlBtnText}
       </button>
-      <button class="btn btn-outline" onclick="purchaseApp('${app.bundleId}', '${platform}')" title="Получить лицензию">
+      <button class="btn btn-outline" onclick="purchaseApp('${app.bundleId}', '${platform}')" title="${t('acquire_license_tooltip')}">
         🛒 ${dict.license_btn}
       </button>
-      <button class="btn btn-outline" onclick="viewAppVersions('${app.bundleId}', ${app.trackId}, '${app.trackName.replace(/'/g, "\\'")}', '${platform}')" title="История версий">
+      <button class="btn btn-outline" onclick="viewAppVersions('${app.bundleId}', ${app.trackId}, '${app.trackName.replace(/'/g, "\\'")}', '${platform}')" title="${t('batch_version_history')}">
         🕒 ${dict.versions_btn}
       </button>
     </div>
@@ -1028,10 +1028,10 @@ function createRemovedAppCard(app, platform) {
 
     <div class="app-identifiers">
       <div class="id-row">
-        <span class="id-label">App ID:</span>
+        <span class="id-label">${t('app_id_label')}</span>
         <span class="id-value">
           <code>${appId}</code>
-          <button type="button" class="copy-icon-btn" onclick="copyToClipboard('${appId}')" title="Скопировать">📋</button>
+          <button type="button" class="copy-icon-btn" onclick="copyToClipboard('${appId}')" title="${t('copy_tooltip')}">📋</button>
         </span>
       </div>
     </div>
@@ -1040,7 +1040,7 @@ function createRemovedAppCard(app, platform) {
       <button class="btn btn-primary" onclick="startAppDownload('', ${appId}, '${platform}', '${nameEsc}', '')">
         ⬇️ ${dlBtnText}
       </button>
-      <button class="btn btn-outline" onclick="viewAppVersions('', ${appId}, '${nameEsc}', '${platform}')" title="История версий">
+      <button class="btn btn-outline" onclick="viewAppVersions('', ${appId}, '${nameEsc}', '${platform}')" title="${t('batch_version_history')}">
         🕒 ${dict.versions_btn}
       </button>
     </div>
@@ -1052,12 +1052,12 @@ function createRemovedAppCard(app, platform) {
 // Purchase App License
 async function purchaseApp(bundleId, platform = 'iphone') {
   if (!state.isAuthenticated) {
-    showToast('Сначала необходимо войти в Apple ID во вкладке "Аккаунт"', 'error');
+    showToast(t('need_account_for_license'), 'error');
     switchTab('account');
     return;
   }
 
-  showToast(`Запрос лицензии для ${bundleId}...`, 'info');
+  showToast(t('license_requesting_toast', { bundleId }), 'info');
 
   try {
     const res = await fetch('/api/purchase', {
@@ -1069,15 +1069,15 @@ async function purchaseApp(bundleId, platform = 'iphone') {
 
     if (data.success) {
       if (data.alreadyOwned) {
-        showToast('Лицензия уже имеется на вашем Apple ID', 'success');
+        showToast(t('license_already_owned'), 'success');
       } else {
-        showToast('Лицензия успешно получена!', 'success');
+        showToast(t('license_success'), 'success');
       }
     } else {
-      showToast(data.message || 'Ошибка приобретения лицензии', 'error');
+      showToast(data.message || t('license_error'), 'error');
     }
   } catch (err) {
-    showToast('Ошибка запроса к серверу', 'error');
+    showToast(t('server_request_error'), 'error');
   }
 }
 
@@ -1087,7 +1087,7 @@ async function purchaseApp(bundleId, platform = 'iphone') {
 
 async function startAppDownload(bundleId, appId, platform, appName, iconUrl, versionId = '', outputPath = '') {
   if (!state.isAuthenticated) {
-    showToast('Для скачивания необходимо войти в Apple ID', 'error');
+    showToast(t('need_account_for_download'), 'error');
     switchTab('account');
     return;
   }
@@ -1120,7 +1120,7 @@ async function startAppDownload(bundleId, appId, platform, appName, iconUrl, ver
 
     if (!data.success) {
       state.isDownloading = false;
-      updateDownloadModalError(data.message || 'Ошибка запуска скачивания');
+      updateDownloadModalError(data.message || t('download_start_error'));
       return;
     }
 
@@ -1128,7 +1128,7 @@ async function startAppDownload(bundleId, appId, platform, appName, iconUrl, ver
     trackDownloadProgress(data.jobId, appName, bundleId, iconUrl, platform);
   } catch (err) {
     state.isDownloading = false;
-    updateDownloadModalError('Ошибка запуска загрузки');
+    updateDownloadModalError(t('download_start_local_error'));
   }
 }
 
@@ -1154,8 +1154,8 @@ function openDownloadModal(title, subtitle, iconUrl, platform = 'iphone') {
   const errorBox = document.getElementById('dl-error-box');
   const openBtn = document.getElementById('dl-modal-open-btn');
 
-  if (titleEl) titleEl.textContent = title || 'Скачивание приложения';
-  if (subEl) subEl.textContent = subtitle || 'Подготовка...';
+  if (titleEl) titleEl.textContent = title || t('dl_modal_default_title');
+  if (subEl) subEl.textContent = subtitle || t('dl_modal_default_subtitle');
   if (iconEl) {
     if (iconUrl) {
       iconEl.innerHTML = `<img src="${iconUrl}" style="width:64px;height:64px;border-radius:14px;">`;
@@ -1270,7 +1270,7 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl, platform = 'ip
         }
         if (stepDl) stepDl.classList.remove('active', 'completed');
         if (stepSinf) stepSinf.classList.remove('active', 'completed');
-        if (subEl) subEl.textContent = 'Получение лицензии App Store...';
+        if (subEl) subEl.textContent = t('dl_modal_status_licensing');
       } else if (job.status === 'downloading') {
         if (stepLic) {
           stepLic.classList.remove('active');
@@ -1281,7 +1281,7 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl, platform = 'ip
           stepDl.classList.add('active');
         }
         if (stepSinf) stepSinf.classList.remove('active', 'completed');
-        if (subEl) subEl.textContent = 'Скачивание зашифрованного пакета...';
+        if (subEl) subEl.textContent = t('dl_modal_status_downloading');
       } else if (job.status === 'patching') {
         if (stepLic) {
           stepLic.classList.remove('active');
@@ -1295,7 +1295,7 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl, platform = 'ip
           stepSinf.classList.remove('completed');
           stepSinf.classList.add('active');
         }
-        if (subEl) subEl.textContent = 'Применение цифровой подписи (sinf)...';
+        if (subEl) subEl.textContent = t('dl_modal_status_patching');
       } else if (job.status === 'completed') {
         clearInterval(interval);
 
@@ -1333,13 +1333,13 @@ function trackDownloadProgress(jobId, appName, bundleId, iconUrl, platform = 'ip
           updateDownloadModalWarning(job.warning);
           showToast(localizeJobWarning(job.warning), 'warning');
         } else {
-          showToast(`Файл сохранен: ${job.outputPath}`, 'success');
+          showToast(t('file_saved_toast', { path: job.outputPath }), 'success');
         }
         handling = false;
         return;
       } else if (job.status === 'error') {
         clearInterval(interval);
-        updateDownloadModalError(job.error || 'Произошла ошибка при скачивании');
+        updateDownloadModalError(job.error || t('dl_modal_download_failed'));
         state.activeDownloads.delete(jobId);
         state.isDownloading = false;
         updateDownloadsBadge();
@@ -1375,7 +1375,7 @@ async function handleDirectDownload(e) {
   const purchase = document.getElementById('direct-purchase').checked;
 
   if (!rawId) {
-    showToast('Укажите Bundle ID или App ID', 'error');
+    showToast(t('direct_specify_id'), 'error');
     return;
   }
 
@@ -1543,7 +1543,7 @@ async function handleFetchVersions(e) {
     loading.style.display = 'none';
 
     if (!data.success) {
-      showToast(data.message || 'Не удалось получить версии приложения', 'error');
+      showToast(data.message || t('versions_fetch_failed'), 'error');
       return;
     }
 
@@ -1557,7 +1557,7 @@ async function handleFetchVersions(e) {
     }
     titleEl.textContent = appName || data.bundleID || parsed;
     bundleEl.textContent = `Bundle ID: ${data.bundleID || parsed}`;
-    badgeEl.textContent = `${versions.length} версий`;
+    badgeEl.textContent = t('versions_count_label', { count: versions.length });
 
     // Show versions in reverse order (newest first), one page at a time.
     state.versionsPage = {
@@ -1577,7 +1577,7 @@ async function handleFetchVersions(e) {
   } catch (err) {
     if (requestId !== state.versionsRequestId || accountId !== state.activeAccountId) return;
     loading.style.display = 'none';
-    showToast('Ошибка связи с сервером', 'error');
+    showToast(t('server_connection_error'), 'error');
   }
 }
 
@@ -2316,12 +2316,12 @@ function renderDownloadsTab() {
       </div>
       <div class="app-actions">
         <button class="btn btn-outline btn-sm" onclick="openOutputFolder('${item.outputPath ? item.outputPath.replace(/\\/g, '\\\\') : ''}')">
-          📂 В проводнике
+          📂 ${t('in_explorer_btn')}
         </button>
         <button class="btn btn-outline btn-sm" onclick="copyToClipboard('${item.outputPath ? item.outputPath.replace(/\\/g, '\\\\') : ''}')">
-          📋 Путь
+          📋 ${t('copy_path_btn')}
         </button>
-        <button class="icon-btn-inline" onclick="removeFromHistory(${idx})" title="Удалить из списка">
+        <button class="icon-btn-inline" onclick="removeFromHistory(${idx})" title="${t('remove_from_list_title')}">
           🗑️
         </button>
       </div>
@@ -2338,7 +2338,7 @@ function removeFromHistory(idx) {
 
 function refreshDownloadsHistory() {
   renderDownloadsTab();
-  showToast('Список обновлен', 'info');
+  showToast(t('history_refreshed'), 'info');
 }
 
 async function openOutputFolder(path = '') {
@@ -2350,10 +2350,10 @@ async function openOutputFolder(path = '') {
     });
     const data = await res.json();
     if (!data.success) {
-      showToast(data.message || 'Не удалось открыть папку', 'error');
+      showToast(data.message || t('open_folder_failed'), 'error');
     }
   } catch (err) {
-    showToast('Ошибка при открытии папки', 'error');
+    showToast(t('open_folder_error'), 'error');
   }
 }
 
@@ -2518,7 +2518,7 @@ async function handleBatchCheck(e) {
     });
     const data = await res.json();
     if (!data.success) {
-      showToast(data.message || 'Ошибка запуска проверки', 'error');
+      showToast(data.message || t('batch_check_start_error'), 'error');
       return;
     }
     const batchContextId = ++batchState.contextId;
@@ -2536,7 +2536,7 @@ async function handleBatchCheck(e) {
     document.getElementById('batch-check-progress-percent').textContent = '0%';
     pollBatchCheck(data.jobId, items, batchContextId);
   } catch (err) {
-    showToast('Ошибка связи с сервером', 'error');
+    showToast(t('server_connection_error'), 'error');
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -2607,9 +2607,9 @@ function pollBatchCheck(jobId, items, contextId = batchState.contextId) {
         }
         if (labelEl) {
           labelEl.textContent = item.status === 'available' ? `v${item.version || '?'}` :
-            item.status === 'license-required' ? 'license is required' :
+            item.status === 'license-required' ? t('license_required_label') :
             item.status === 'stalled' ? batchText('batch_stalled_status') :
-            item.status === 'error' ? (item.error || 'Ошибка') : '…';
+            item.status === 'error' ? (item.error || t('status_error_label')) : '…';
         }
       });
 
@@ -2714,8 +2714,8 @@ function renderBatchResults(job) {
         <span>${batchEscapeHtml(item.name)}</span>
         <code class="batch-status-id">${item.appId}</code>
         ${item.status === 'license-required'
-          ? `<span class="badge badge-error">license is required</span>`
-          : `<span class="badge badge-error">${batchEscapeHtml(item.error || 'Ошибка')}</span>`}
+          ? `<span class="badge badge-error">${t('license_required_label')}</span>`
+          : `<span class="badge badge-error">${batchEscapeHtml(item.error || t('status_error_label'))}</span>`}
       `;
       filteredEl.appendChild(row);
     });
@@ -2981,7 +2981,7 @@ async function startBatchDownloadFor(items, btnId, requestedAccountId = '') {
     });
     const data = await res.json();
     if (!data.success) {
-      showToast(data.message || 'Ошибка запуска массовой загрузки', 'error');
+      showToast(data.message || t('batch_download_start_error'), 'error');
       return false;
     }
 
@@ -3010,7 +3010,7 @@ async function startBatchDownloadFor(items, btnId, requestedAccountId = '') {
 
     return true;
   } catch (err) {
-    showToast('Ошибка связи с сервером', 'error');
+    showToast(t('server_connection_error'), 'error');
     return false;
   } finally {
     if (btn) btn.disabled = false;
@@ -3036,7 +3036,7 @@ async function skipBatchItem(appId) {
     }
     showToast(batchText('batch_skip_toast'), 'success');
   } catch (err) {
-    showToast('Ошибка связи с сервером', 'error');
+    showToast(t('server_connection_error'), 'error');
   }
 }
 

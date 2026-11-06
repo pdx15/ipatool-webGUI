@@ -2,6 +2,10 @@
   "default": "en",
   "languages": [
     "ru",
-    "en"
+    "en",
+    "vi",
+    "de",
+    "zh",
+    "hi"
   ]
 }
