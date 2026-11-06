@@ -2,6 +2,9 @@
 [![Github All Releases](https://img.shields.io/github/downloads/pdx15/ipatool-webGUI/total.svg)](https://github.com/pdx15/ipatool-webGUI/releases)
 [![ViewCount](https://views.whatilearened.today/views/github/pdx15/ipatool-webGUI.svg)](https://github.com/pdx15/ipatool-webGUI)
 [![Donations Page](https://github.com/andry81-cache/gh-content-static-cache/raw/master/common/badges/donate/donate.svg)](https://github.com/pdx15/ipatool-webGUI#%D0%B4%D0%BE%D0%BD%D0%B0%D1%82donate)
+
+![EN](https://img.shields.io/badge/LOC:-EN-blue) ![RU](https://img.shields.io/badge/RU-blue) ![DE](https://img.shields.io/badge/DE-blue) ![VI](https://img.shields.io/badge/VI-blue) ![HI](https://img.shields.io/badge/HI-blue) ![ZH](https://img.shields.io/badge/ZH-blue)
+
 # ipatool webGUI
 Download for macOS/windows - https://github.com/pdx15/ipatool-webGUI/releases
 
@@ -38,7 +41,7 @@ upstream `ipatool` maintainers.
   browser; its at-rest protection relies on the operating system's file
   permissions. A file-backed session encrypted earlier with a different,
   manually entered passphrase may need one new Apple ID login.
-- Russian and English interface, dark and light themes.
+- Multilanguage interface, dark and light themes.
 
 ## Install
 
