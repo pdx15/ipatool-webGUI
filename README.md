@@ -38,7 +38,7 @@ upstream `ipatool` maintainers.
   browser; its at-rest protection relies on the operating system's file
   permissions. A file-backed session encrypted earlier with a different,
   manually entered passphrase may need one new Apple ID login.
-- Russian and English interface, dark and light themes.
+- Russian and English interface with automatic language detection, dark and light themes.
 
 ## Install
 
@@ -75,6 +75,44 @@ A Windows build ships as `ipatool.exe`. Double-click `ipatool-gui.bat` (or run
 `ipatool.exe gui`) and the interface opens in your default browser. See
 [WINDOWS_GUI_GUIDE.md](WINDOWS_GUI_GUIDE.md) (English) or
 [ИНСТРУКЦИЯ_GUI.md](ИНСТРУКЦИЯ_GUI.md) (Russian) for a detailed walkthrough.
+
+## Localization
+
+Every language is a single file, so translations can be worked on without
+touching the application code:
+
+```
+cmd/gui_assets/locales/
+├── index.json   # default language + every available language code
+├── en.json      # { "meta": { code, name, htmlLang, intlLocale }, "strings": { ... } }
+└── ru.json
+```
+
+The same layout is mirrored in `docs/assets/locales/` for the static demo on
+GitHub Pages, and the GUI binary embeds its `locales/` directory, serving it at
+`/assets/locales/<code>.json`.
+
+Language selection at startup:
+
+1. a language the user picked earlier (`localStorage` key `ipatool_lang`);
+2. otherwise the first supported match for `navigator.languages`
+   (e.g. `ru-RU` → `ru`, `en-GB` → `en`);
+3. otherwise the `default` from `index.json` (currently `en`).
+
+Nothing is persisted until the user switches the language with the header
+button, which cycles through `languages` in `index.json` order. `t(key)` falls
+back to English and then to the key itself, so a partially translated file is
+safe to ship — missing entries never break the page.
+
+To add a language, for example Vietnamese:
+
+1. copy `en.json` to `vi.json`, set `meta.code` to `vi` (and `meta.name`,
+   `meta.htmlLang`, `meta.intlLocale`) and translate the `strings` values;
+2. add `"vi"` to the `languages` array in `index.json` (and optionally make it
+   the `default`).
+
+No JavaScript changes are needed. `go test ./cmd/ -run Locale` checks that the
+manifest, the files and the keys used by the UI all line up.
 
 ## Requirements and limitations
 

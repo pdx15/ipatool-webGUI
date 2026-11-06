@@ -1,11 +1,11 @@
 /**
  * ipatool GUI — Interactive Web Application Logic
- * Supports Russian (default) and English localization
+ * UI strings are loaded at startup from assets/locales/*.json
  */
 
 // Application State
 const state = {
-  lang: localStorage.getItem('ipatool_lang') || 'ru',
+  lang: 'en', // active UI language; resolved by initLocalization() (saved choice → browser → manifest default)
   theme: localStorage.getItem('ipatool_theme') || 'dark',
   activeTab: 'search',
   os: null, // 'windows' | 'darwin' | 'linux' | ..., from /api/status
@@ -36,551 +36,139 @@ const state = {
   }
 };
 
-// I18N Dictionaries
-const i18n = {
-  ru: {
-    app_subtitle: 'App Store IPA Downloader для Windows',
-    auth_checking: 'Проверка аккаунта...',
-    auth_not_logged_in: 'Не авторизован',
-    auth_logged_in: 'Авторизован',
-    tab_search: 'Поиск приложений',
-    tab_direct: 'Прямая загрузка',
-    tab_versions: 'История версий',
-    tab_purchases: 'История покупок',
-    tab_downloads: 'Загрузки',
-    tab_account: 'Аккаунт Apple ID',
-    tab_guide: 'Инструкция и FAQ',
-    tab_install: 'Установка на устройство',
-    tab_donate: 'Донат',
-    donate_title: 'Поддержать проект',
-    donate_desc: 'Если вы хотите безвозмездно поддержать проект, то можно это сделать по ссылке ниже или через QR-код:',
-    donate_button: 'Поддержать проект через Cloudtips',
-    donate_qr_caption: 'QR-код для поддержки проекта',
-    install_devices_title: 'Подключенные устройства iOS',
-    install_devices_desc: 'Обнаруживаются автоматически через libimobiledevice (idevice_id / idevicedeviceinfo)',
-    install_devices_scanning: 'Поиск подключенных устройств...',
-    install_no_devices: 'Подключите iPhone/iPad по кабелю и нажмите «Обновить»',
-    install_tools_missing_title: 'Не найден ideviceinstaller',
-    install_tools_missing_desc: 'Для установки нужен ideviceinstaller из libimobiledevice. На macOS: brew install libimobiledevice. На Windows установите iDevice Suite / сборку libimobiledevice и положите ideviceinstaller.exe в PATH.',
-    install_driver_check_title: 'Драйвер Apple Mobile Device Support',
-    install_driver_ok: 'Драйвер Apple Mobile Device Support найден. USB-подключение готово к работе.',
-    install_driver_missing: 'Драйвер (служба) Apple Mobile Device Support не найден. Установите iTunes, чтобы получить его, или обновите драйвер USB для устройства.',
-    install_driver_download: 'Скачать Apple Mobile Device Support',
-    install_driver_itunes: 'Скачать iTunes',
-    install_driver_unknown: 'Проверка драйвера недоступна на этой системе.',
-    install_upload_title: 'Выберите файл .IPA',
-    install_upload_desc: 'Выберите скачанный .IPA, укажите устройство и установите его на iPhone/iPad',
-    install_device_label: 'Устройство:',
-    install_device_select_placeholder: '— выберите устройство —',
-    install_file_label: 'Файл .IPA:',
-    install_dropzone_text: 'Нажмите, чтобы выбрать .ipa файл',
-    install_button: 'Установить на устройство',
-    install_progress_title: 'Установка...',
-    install_log_title: 'Журнал ideviceinstaller',
-    install_started_toast: 'Установка началась — прогресс ниже',
-    install_file_selected: 'Выбран файл:',
-    install_needs_file: 'Выберите файл .IPA',
-    install_needs_device: 'Выберите подключенное устройство',
-    install_devices_refresh_error: 'Не удалось получить список устройств',
-    install_completed: 'Приложение успешно установлено!',
-    install_error: 'Ошибка установки',
-    install_status_queued: 'В очереди',
-    install_status_installing: 'Установка',
-    install_status_completed: 'Готово',
-    install_status_error: 'Ошибка',
-    search_title: 'Поиск приложений в App Store',
-    search_desc: 'Введите название приложения или вставьте ссылку на App Store',
-    platform_label: 'Платформа:',
-    limit_label: 'Результатов:',
-    search_button: 'Найти',
-    popular_searches: 'Популярное:',
-    searching_status: 'Поиск приложений в Apple App Store...',
-    search_prompt_title: 'Введите название для поиска',
-    search_prompt_desc: 'Найдите нужное приложение, получите для него лицензию и скачайте зашифрованный установочный пакет .IPA',
-    no_results_title: 'Ничего не найдено',
-    no_results_desc: 'Попробуйте изменить поисковый запрос или переключить платформу (iPhone / iPad).',
-    search_removed_title: 'Удалённые из App Store (доступны по ID)',
-    search_official_title: 'Результаты App Store',
-    removed_badge: 'Удалено из App Store',
-    results_found: 'Найдено приложений: {count}',
-    removed_found: 'Найдено удалённых: {count}',
-    direct_title: 'Прямая загрузка приложения',
-    direct_desc: 'Загрузите приложение по Bundle ID, App ID или прямой ссылке на App Store',
-    direct_id_label: 'Идентификатор приложения (Bundle ID, App ID или Ссылка):',
-    direct_id_hint: 'Вы можете указать Bundle Identifier (например com.example.app), цифровой Track ID (например 686449807) или ссылку на страницу в App Store.',
-    version_id_label: 'ID версии (необязательно):',
-    output_folder_label: 'Папка для сохранения:',
-    output_folder_placeholder: 'По умолчанию: папка apps в текущей папке',
-    open_folder_btn: 'Открыть',
-    auto_purchase_title: 'Автоматически получить лицензию (Purchase)',
-    auto_purchase_desc: 'Необходимо, если приложение ещё ни разу не скачивалось с этого Apple ID (только для бесплатных)',
-    start_download_btn: 'Начать скачивание .IPA',
-    versions_title: 'История версий приложения',
-    versions_desc: 'Просмотр всех предыдущих сборок и скачивание старых версий приложения',
-    fetch_versions_btn: 'Получить версии',
-    fetching_versions_status: 'Запрос списка сборок с серверов Apple...',
-    version_col_build: 'ID сборки (Version ID)',
-    version_col_display: 'Версия (Display)',
-    version_col_date: 'Дата выхода',
-    version_col_action: 'Действие',
-    version_col_select: 'Выбрать',
-    min_ios_badge_title: 'Минимальная поддерживаемая версия iOS',
-    batch_version_pick_hint: 'Отметьте версию, чтобы скачать именно её вместо последней (по кнопке «Скачать выбранные» вверху). Отметка снимает галочку с карточки.',
-    active_downloads_title: 'Активные загрузки',
-    active_downloads_desc: 'Текущие процессы скачивания и обработки пакетов',
-    open_downloads_folder: 'Открыть папку загрузок',
-    no_active_downloads: 'Нет активных загрузок',
-    download_history_title: 'История завершенных загрузок',
-    download_history_desc: 'Скачанные файлы .IPA на вашем компьютере',
-    refresh_btn: 'Обновить',
-    no_history_downloads: 'История пока пуста',
-    account_card_title: 'Аккаунты Apple ID',
-    account_card_desc: 'Сохранённые аккаунты и активная сессия',
-    accounts_saved_title: 'Сохранённые аккаунты',
-    accounts_empty: 'Добавьте Apple ID справа, чтобы переключаться между аккаунтами.',
-    accounts_active: 'Активный',
-    accounts_switch: 'Переключить',
-    accounts_not_authenticated: 'Требуется вход',
-    accounts_remove_confirm: 'Удалить этот Apple ID из программы? Сессия будет отозвана на этом компьютере.',
-    accounts_removed_toast: 'Аккаунт удалён из программы',
-    accounts_switched_toast: 'Активный Apple ID изменён',
-    badge_authenticated: 'Авторизован',
-    info_country: 'Регион App Store:',
-    info_dsid: 'DSID:',
-    info_keychain: 'Хранилище сессии:',
-    info_keychain_ok: 'Изолированное хранилище профиля',
-    logout_btn: 'Удалить аккаунт из программы',
-    login_prompt_title: 'Добавить Apple ID',
-    login_prompt_desc: 'Добавьте ещё один Apple ID. Аккаунты сохраняются отдельно и переключаются без повторного входа.',
-    login_email_label: 'Apple ID (Email):',
-    login_password_label: 'Пароль Apple ID:',
-    login_security_hint: 'Пароль передаётся Apple по защищённому соединению и хранится только в защищённом хранилище профиля для обновления сессии; в accounts.json он не записывается. При запросе 2FA пароль временно хранится в памяти сервера не более 10 минут.',
-    login_btn: 'Добавить Apple ID',
-    anisette_card_title: '⚙️ Проверка iCloud для Windows',
-    anisette_card_desc: 'Проверьте, установлена ли нужная версия iCloud на этом компьютере',
-    anisette_alert_title: 'Для Windows-версии ipatool:',
-    anisette_alert_desc: 'Проверка установленного iCloud…',
-    icloud_installed: '✅ Классическая iCloud для Windows установлена.',
-    icloud_installed_classic: 'Найдена папка Apple\\Internet Services с AOSKit.dll.',
-    icloud_not_installed: '❌ Классическая iCloud для Windows не найдена. Скачайте и установите её по ссылке ниже, затем войдите в неё своим Apple ID.',
-    icloud_download_btn: 'Скачать классическую iCloud для Windows',
-    icloud_store_url: 'https://updates.cdn-apple.com/2020/windows/001-39935-20200911-1A70AA56-F448-11EA-8CC0-99D41950005E/iCloudSetup.exe',
-    guide_title: '📱 Инструкция: Как установить .IPA на iPhone или iPad',
-    guide_desc: 'Скачанный файл .IPA является официальным пакетом App Store. Вот лучшие способы установить его на ваше устройство:',
-    faq_title: 'Часто задаваемые вопросы (FAQ)',
-    faq_q1: 'Зачем нужен вход в Apple ID?',
-    faq_a1: 'Серверы Apple App Store выдают установочные пакеты <code>.ipa</code> только авторизованным пользователям. Авторизация нужна, чтобы Apple сгенерировала персональную цифровую подпись (<code>sinf</code>) и лицензию на приложение для вашего аккаунта.',
-    faq_q2: 'Безопасно ли вводить пароль от Apple ID в ipatool?',
-    faq_a2: 'Да. Программа является полностью открытым исходным кодом (Open Source). Ваши учетные данные передаются исключительно на официальные защищенные серверы Apple (<code>auth.itunes.apple.com</code> / <code>gsa.apple.com</code>) с использованием криптографического протокола SRP-6a. Данные не передаются никаким сторонним серверам.',
-    faq_q3: 'Что делать, если при скачивании пишет "license required"?',
-    faq_a3: 'Это означает, что это приложение ещё никогда не приобреталось с вашего Apple ID. Просто нажмите кнопку <strong>"Получить лицензию"</strong> на карточке приложения или поставьте галочку <em>"Автоматически получить лицензию (Purchase)"</em> при скачивании.',
-    faq_q4: 'Можно ли скачивать платные приложения?',
-    faq_a4: 'Вы можете скачивать платные приложения, если вы ранее уже купили их со своего Apple ID. Бесплатное автоматическое приобретение лицензии через ipatool работает только для бесплатных приложений App Store.',
-    faq_q5: 'Как скачать старую версию приложения?',
-    faq_a5: 'Перейдите во вкладку <strong>"История версий"</strong> (или нажмите кнопку "Версии" на карточке приложения). Программа отобразит все когда-либо выпущенные версии приложения. Выберите нужную сборку и нажмите "Скачать".',
-    faq_q6: 'Где сохраняются скачанные файлы .IPA?',
-    faq_a6: 'По умолчанию файлы сохраняются в папку <code>apps</code> внутри рабочей папки программы. Вы можете открыть её в любой момент, нажав кнопку <strong>"📂 Открыть папку загрузок"</strong> во вкладке "Загрузки".',
-    faq_q7: 'Что делать, если при скачивании появляется ошибка "invalid response"?',
-    faq_a7: '<p>Если вы получаете ошибку <code>invalid response: Apple Media Services Terms and Conditions have changed</code>, это означает, что Apple обновила условия использования, и ваш аккаунт ещё не принял новые условия.</p><p><strong data-i18n="faq_a7_fix_title">Как исправить:</strong></p><ol><li data-i18n="faq_a7_step1">Откройте App Store на вашем iPhone, iPad или Mac</li><li data-i18n="faq_a7_step2">Войдите в тот же Apple ID, если потребуется</li><li data-i18n="faq_a7_step3">Начните скачивание любого приложения (можно попробовать то, с которым была ошибка, например Insta360) - это должно вызвать окно с новыми условиями</li><li data-i18n="faq_a7_step4">Примите новые условия и соглашения при появлении запроса</li><li data-i18n="faq_a7_step5">После принятия условий ipatool должен снова работать нормально</li></ol><p data-i18n="faq_a7_note">Это стандартная процедура Apple при обновлении их юридических условий. После принятия через официальное приложение Apple ошибка будет устранена.</p>',
-    faq_a7_fix_title: 'Как исправить:',
-    faq_a7_step1: 'Откройте App Store на вашем iPhone, iPad или Mac',
-    faq_a7_step2: 'Войдите в тот же Apple ID, если потребуется',
-    faq_a7_step3: 'Начните скачивание любого приложения (можно попробовать то, с которым была ошибка, например Insta360) - это должно вызвать окно с новыми условиями',
-    faq_a7_step4: 'Примите новые условия и соглашения при появлении запроса',
-    faq_a7_step5: 'После принятия условий ipatool должен снова работать нормально',
-    faq_a7_note: 'Это стандартная процедура Apple при обновлении их юридических условий. После принятия через официальное приложение Apple ошибка будет устранена.',
-    modal_2fa_title: 'Двухфакторная аутентификация',
-    modal_2fa_desc: 'Введите 6-значный проверочный код, отправленный на ваши устройства Apple или в SMS',
-    cancel_btn: 'Отмена',
-    verify_btn: 'Подтвердить',
-    close_btn: 'Закрыть',
-    open_in_explorer_btn: 'Показать в проводнике',
-    step_license: 'Проверка лицензии / Покупка',
-    step_download: 'Загрузка пакета .IPA из App Store',
-    step_download_pkg: 'Загрузка пакета .PKG из App Store',
-    step_sinf: 'Применение цифровой подписи (sinf)',
-    step_complete: 'Готово к установке',
-    dl_completed_ipa: 'Пакет .IPA успешно скачан!',
-    dl_completed_pkg: 'Пакет .PKG успешно скачан!',
-    free_price: 'Бесплатно',
-    download_btn: 'Скачать IPA',
-    download_btn_pkg: 'Скачать PKG',
-    license_btn: 'Лицензия',
-    versions_btn: 'Версии',
-    copied_toast: 'Скопировано в буфер обмена',
-    tab_batch: 'Массовая загрузка',
-    batch_title: 'Массовая проверка и загрузка',
-    batch_desc: 'Загрузите текстовый файл со списком приложений (название и App ID). Каждый ID будет проверен через Прямую загрузку: приложения, ранее установленные на вашем Apple ID, скачиваются, а те, которых у вас никогда не было (ошибка «license is required»), будут отфильтрованы.',
-    batch_file_label: 'Файл со списком приложений (.txt):',
-    batch_file_hint: 'Каждая строка: название и числовой App ID, например 1Password 7: 568903335. Поддерживаются также просто ID, ссылки на App Store и разделители «:», «-», «;», Tab или пробел.',
-    batch_paste_label: 'Или вставьте список текстом:',
-    batch_purchase_label: 'Автоматически получать лицензии (Purchase)',
-    batch_purchase_hint: 'Включено: приложение без лицензии будет приобретено перед проверкой/скачиванием (только бесплатные приложения). Отключено: такие приложения будут просто отфильтрованы и не скачаны.',
-    batch_parsed_count: 'Распознано приложений: {count}. Нажмите «Проверить по Apple ID», чтобы прогнать каждое через Прямую загрузку.',
-    batch_check_btn: 'Проверить по Apple ID',
-    batch_check_progress_title: 'Проверка приложений через Прямую загрузку...',
-    batch_check_progress_text: 'Проверено {done} из {total} (каждый прогон = {pct}% работы).',
-    batch_results_title: 'Результаты проверки',
-    batch_results_summary: 'Доступно для загрузки: {available} из {total}. Отфильтровано: {filtered}.',
-    batch_account_label: 'Apple ID для этого списка: {email}',
-    batch_download_account_label: 'Apple ID загрузки: {email}',
-    batch_select_all: 'Выбрать все',
-    batch_select_none: 'Снять все',
-    batch_download_selected: 'Скачать выбранные',
-    batch_save_list: 'Сохранить список (.txt)',
-    batch_save_toast: 'Список сохранён в текстовый файл',
-    batch_filtered_title: 'Отфильтрованы (нет лицензии на Apple ID):',
-    batch_filtered_error_title: 'Другие ошибки:',
-    batch_version_history: 'История версий',
-    batch_version_history_close: 'Скрыть историю',
-    batch_versions_loading: 'Получение данных о версиях...',
-    batch_no_versions: 'Список версий недоступен',
-    batch_latest_badge: 'Последняя',
-    pager_page_of: 'Стр. {page} из {pages}',
-    pager_range: '{from}–{to} из {total}',
-    pager_prev: '‹ Назад',
-    pager_next: 'Вперёд ›',
-    pager_first: '« Первая',
-    pager_last: 'Последняя »',
-    pager_per_page: 'На странице:',
-    pager_all: 'Все',
-    no_sinf_warning: 'Apple отдала пакет без DRM-подписей (sinf). Файл .ipa сохранён полностью — его можно расшифровать или изучить, но на устройство он не установится. Попробуйте скачать позже или выберите другую версию.',
-    filename_warning: 'Не удалось прочитать имя и версию из Info.plist; имя файла не изменено.',
-    no_sinf_short: 'без sinf',
-    batch_select_hint: 'Отметьте приложения и нажмите «Скачать выбранные»:',
-    batch_download_progress_title: 'Массовое скачивание выбранных приложений...',
-    batch_download_progress_done: 'Скачано {done} из {total}. Ошибок: {errors}.',
-    batch_download_status_queued: 'В очереди',
-    batch_download_status_purchasing: 'Лицензия',
-    batch_download_status_downloading: 'Скачивание',
-    batch_download_status_patching: 'Подпись (sinf)',
-    batch_download_status_completed: 'Готово',
-    batch_download_status_error: 'Ошибка',
-    batch_download_status_stalled: 'Зависло (пропущено)',
-    batch_download_status_skipped: 'Пропущено',
-    batch_download_done_title: 'Массовая загрузка завершена',
-    batch_download_started_toast: 'Загрузка началась — прогресс ниже',
-    batch_download_skipped_count: 'Пропущено: {skipped}.',
-    batch_stalled_hint: 'нет данных {sec} с',
-    batch_skip_btn: 'Пропустить',
-    batch_skip_toast: 'Приложение пропущено — пакет продолжается',
-    batch_skip_error: 'Не удалось пропустить приложение',
-    batch_retry_failed: 'Повторить неудачные',
-    batch_retry_running: 'Повтор уже выполняется',
-    batch_stall_label: 'Считать зависшим, если нет данных (сек):',
-    batch_stall_hint: 'Если приложение не отдаёт ни одного байта дольше этого времени, оно помечается «Зависло», и пакет переходит к следующему.',
-    batch_item_label: 'Лимит на одно приложение (сек):',
-    batch_item_hint: 'Жёсткий предел на все этапы одного приложения: лицензия + скачивание + подпись.',
-    batch_check_item_label: 'Лимит на одну проверку (сек):',
-    batch_stalled_status: 'нет ответа (пропущено)',
-    batch_check_running: 'Проверка уже выполняется',
-    batch_no_items: 'Не удалось распознать App ID в списке',
-    batch_need_auth: 'Сначала необходимо войти в Apple ID во вкладке «Аккаунт»',
-    batch_no_selected: 'Выберите хотя бы одно приложение',
-    batch_download_single: 'Скачать',
-    purchases_title: 'История покупок',
-    purchases_desc: 'Все приложения, приобретённые на этом Apple ID. Список загружается один раз при входе и обновляется по кнопке.',
-    purchases_refresh: 'Обновить',
-    purchases_filter_placeholder: 'Фильтр по названию, Bundle ID или App ID',
-    purchases_os_label: 'ОС:',
-    purchases_os_all: 'Все ОС',
-    purchases_only_hidden: 'Только скрытые',
-    purchases_export: 'Сохранить список (.txt)',
-    purchases_saved_toast: 'Список сохранён: {path}',
-    purchases_save_failed: 'Не удалось сохранить список в файл',
-    purchases_need_auth: 'Войдите в Apple ID во вкладке «Аккаунт», чтобы увидеть историю покупок',
-    purchases_loading: 'Загрузка истории покупок с серверов Apple...',
-    purchases_retry: 'Повторить',
-    purchases_empty: 'На этом Apple ID нет приобретённых приложений',
-    purchases_col_app: 'Приложение',
-    purchases_col_bundle: 'Bundle ID',
-    purchases_col_appid: 'App ID',
-    purchases_col_date: 'Дата покупки',
-    purchases_col_action: 'Действие',
-    purchases_updated_at: 'Обновлено: {time}',
-    purchases_from_cache: 'из кэша',
-    purchases_loaded_toast: 'История покупок: {count} прил.',
-    purchases_load_failed: 'Не удалось загрузить историю покупок',
-    purchases_no_match: 'Ничего не найдено по фильтру',
-    purchases_download: 'Скачать',
-    purchases_versions: 'Версии',
-    purchases_nothing_to_export: 'Список пуст — нечего сохранять',
-    purchases_unknown_app: 'Без названия'
-  },
-  en: {
-    app_subtitle: 'App Store IPA Downloader for Windows',
-    auth_checking: 'Checking account...',
-    auth_not_logged_in: 'Not Logged In',
-    auth_logged_in: 'Authenticated',
-    tab_search: 'Search Apps',
-    tab_direct: 'Direct Download',
-    tab_versions: 'Version History',
-    tab_purchases: 'Purchase History',
-    tab_downloads: 'Downloads',
-    tab_account: 'Apple ID Account',
-    tab_guide: 'Guide & FAQ',
-    tab_install: 'Install to device',
-    tab_donate: 'Donate',
-    donate_title: 'Support the project',
-    donate_desc: 'If you would like to support the project free of charge, you can do so via the link below or by scanning the QR code:',
-    donate_button: 'Support the project via Cloudtips',
-    donate_qr_caption: 'QR code to support the project',
-    install_devices_title: 'Connected iOS devices',
-    install_devices_desc: 'Detected automatically with libimobiledevice (idevice_id / idevicedeviceinfo)',
-    install_devices_scanning: 'Scanning for connected devices...',
-    install_no_devices: 'Connect an iPhone/iPad by cable and press "Refresh"',
-    install_tools_missing_title: 'ideviceinstaller not found',
-    install_tools_missing_desc: 'Installing requires ideviceinstaller from libimobiledevice. On macOS: brew install libimobiledevice. On Windows install iDevice Suite / a libimobiledevice build and put ideviceinstaller.exe on PATH.',
-    install_driver_check_title: 'Apple Mobile Device Support driver',
-    install_driver_ok: 'Apple Mobile Device Support driver found. USB connection is ready.',
-    install_driver_missing: 'Apple Mobile Device Support driver/service not found. Install iTunes (which bundles it) or update the Apple USB driver for the device.',
-    install_driver_download: 'Download Apple Mobile Device Support',
-    install_driver_itunes: 'Download iTunes',
-    install_driver_unknown: 'Driver check is not available on this system.',
-    install_upload_title: 'Choose an .IPA file',
-    install_upload_desc: 'Select a downloaded .IPA, choose the device and install it onto iPhone/iPad',
-    install_device_label: 'Device:',
-    install_device_select_placeholder: '— select a device —',
-    install_file_label: 'IPA file:',
-    install_dropzone_text: 'Click to select an .ipa file',
-    install_button: 'Install on device',
-    install_progress_title: 'Installing...',
-    install_log_title: 'ideviceinstaller log',
-    install_started_toast: 'Installation started — progress is below',
-    install_file_selected: 'Selected file:',
-    install_needs_file: 'Select an .ipa file',
-    install_needs_device: 'Select a connected device',
-    install_devices_refresh_error: 'Failed to get device list',
-    install_completed: 'App installed successfully!',
-    install_error: 'Installation failed',
-    install_status_queued: 'Queued',
-    install_status_installing: 'Installing',
-    install_status_completed: 'Done',
-    install_status_error: 'Error',
-    search_title: 'Search Apple App Store',
-    search_desc: 'Enter an app title or paste an App Store URL',
-    platform_label: 'Platform:',
-    limit_label: 'Results:',
-    search_button: 'Search',
-    popular_searches: 'Popular:',
-    searching_status: 'Searching apps in Apple App Store...',
-    search_prompt_title: 'Search for Apps',
-    search_prompt_desc: 'Find any iOS/iPadOS/tvOS app, acquire free licenses and download encrypted .IPA packages',
-    no_results_title: 'No Results Found',
-    no_results_desc: 'Try refining your search keyword or change platform (iPhone / iPad).',
-    search_removed_title: 'Removed from the App Store (available by ID)',
-    search_official_title: 'App Store Results',
-    removed_badge: 'Removed from App Store',
-    results_found: 'Found apps: {count}',
-    removed_found: 'Found removed apps: {count}',
-    direct_title: 'Direct App Download',
-    direct_desc: 'Download an app by Bundle ID, App ID or direct App Store URL',
-    direct_id_label: 'App Identifier (Bundle ID, App ID or URL):',
-    direct_id_hint: 'You can provide a Bundle Identifier (e.g. com.example.app), numeric Track ID (e.g. 686449807), or an App Store web link.',
-    version_id_label: 'Version ID (optional):',
-    output_folder_label: 'Output Folder:',
-    output_folder_placeholder: 'Default: apps folder in current directory',
-    open_folder_btn: 'Open',
-    auto_purchase_title: 'Auto-acquire license (Purchase)',
-    auto_purchase_desc: 'Required if this app was never downloaded with this Apple ID before (free apps only)',
-    start_download_btn: 'Start .IPA Download',
-    versions_title: 'App Version History',
-    versions_desc: 'View all historical builds and download previous app versions',
-    fetch_versions_btn: 'Fetch Versions',
-    fetching_versions_status: 'Fetching build list from Apple servers...',
-    version_col_build: 'Build ID (Version ID)',
-    version_col_display: 'Display Version',
-    version_col_date: 'Release Date',
-    version_col_action: 'Action',
-    version_col_select: 'Select',
-    min_ios_badge_title: 'Minimum supported iOS version',
-    batch_version_pick_hint: 'Tick a version to download it instead of the latest (via the "Download selected" button above). Ticking it clears the card checkbox.',
-    active_downloads_title: 'Active Downloads',
-    active_downloads_desc: 'Current download and package signing processes',
-    open_downloads_folder: 'Open Downloads Folder',
-    no_active_downloads: 'No active downloads',
-    download_history_title: 'Download History',
-    download_history_desc: 'Completed .IPA packages on your computer',
-    refresh_btn: 'Refresh',
-    no_history_downloads: 'History is empty',
-    account_card_title: 'Apple ID Accounts',
-    account_card_desc: 'Saved accounts and the active session',
-    accounts_saved_title: 'Saved accounts',
-    accounts_empty: 'Add an Apple ID on the right to switch between accounts.',
-    accounts_active: 'Active',
-    accounts_switch: 'Switch',
-    accounts_not_authenticated: 'Sign-in required',
-    accounts_remove_confirm: 'Remove this Apple ID from the app? Its session will be revoked on this computer.',
-    accounts_removed_toast: 'Account removed from the app',
-    accounts_switched_toast: 'Active Apple ID changed',
-    badge_authenticated: 'Authenticated',
-    info_country: 'App Store Storefront:',
-    info_dsid: 'DSID:',
-    info_keychain: 'Session Storage:',
-    info_keychain_ok: 'Isolated profile keychain',
-    logout_btn: 'Remove account from app',
-    login_prompt_title: 'Add an Apple ID',
-    login_prompt_desc: 'Add another Apple ID. Accounts are stored separately and can be switched without signing in again.',
-    login_email_label: 'Apple ID (Email):',
-    login_password_label: 'Apple ID Password:',
-    login_security_hint: 'Your password is sent to Apple over a secure connection and stored only in the profile keychain so ipatool can refresh the session; it is not written to accounts.json. During a 2FA challenge, the password is held temporarily in server memory for up to 10 minutes.',
-    login_btn: 'Add Apple ID',
-    anisette_card_title: '⚙️ iCloud Check for Windows',
-    anisette_card_desc: 'Verify that the required iCloud version is installed on this computer',
-    anisette_alert_title: 'For Windows users of ipatool:',
-    anisette_alert_desc: 'Checking installed iCloud…',
-    icloud_installed: '✅ Classic iCloud for Windows is installed.',
-    icloud_installed_classic: 'Found Apple\\Internet Services with AOSKit.dll.',
-    icloud_not_installed: '❌ Classic iCloud for Windows was not found. Download and install it via the link below, then sign in with your Apple ID.',
-    icloud_download_btn: 'Download classic iCloud for Windows',
-    icloud_store_url: 'https://updates.cdn-apple.com/2020/windows/001-39935-20200911-1A70AA56-F448-11EA-8CC0-99D41950005E/iCloudSetup.exe',
-    guide_title: '📱 Guide: How to install .IPA on iPhone or iPad',
-    guide_desc: 'Downloaded .IPA files are genuine App Store packages. Here are the best methods to install them:',
-    faq_title: 'Frequently Asked Questions (FAQ)',
-    faq_q1: 'Why do I need to sign in with Apple ID?',
-    faq_a1: 'Apple App Store servers only issue <code>.ipa</code> installation packages to authorized users. Authorization is required so Apple can generate a personalized digital signature (<code>sinf</code>) and license for your account.',
-    faq_q2: 'Is it safe to enter my Apple ID password in ipatool?',
-    faq_a2: 'Yes. The program is fully open source. Your credentials are sent exclusively to official Apple secure servers (<code>auth.itunes.apple.com</code> / <code>gsa.apple.com</code>) using the SRP-6a cryptographic protocol. Data is not sent to any third-party servers.',
-    faq_q3: 'What to do if download says "license required"?',
-    faq_a3: 'This means this app has never been purchased with your Apple ID. Simply click the <strong>"Get License"</strong> button on the app card or check <em>"Auto-get license (Purchase)"</em> when downloading.',
-    faq_q4: 'Can I download paid apps?',
-    faq_a4: 'You can download paid apps if you have previously purchased them with your Apple ID. Free automatic license acquisition through ipatool only works for free App Store apps.',
-    faq_q5: 'How to download an old version of an app?',
-    faq_a5: 'Go to the <strong>"Version History"</strong> tab (or click the "Versions" button on the app card). The program will display all ever released versions of the app. Select the desired build and click "Download".',
-    faq_q6: 'Where are downloaded .IPA files saved?',
-    faq_a6: 'By default, files are saved to the <code>apps</code> folder inside the program\'s working directory. You can open the folder at any time by clicking the <strong>"📂 Open downloads folder"</strong> button in the "Downloads" tab.',
-    faq_q7: 'What to do if "invalid response" error occurs during download?',
-    faq_a7: '<p>If you get the error <code>invalid response: Apple Media Services Terms and Conditions have changed</code>, it means Apple has updated their terms of use and your account has not accepted the new terms yet.</p><p><strong data-i18n="faq_a7_fix_title">How to fix:</strong></p><ol><li data-i18n="faq_a7_step1">Open the App Store on your iPhone, iPad, or Mac</li><li data-i18n="faq_a7_step2">Sign in with the same Apple ID if prompted</li><li data-i18n="faq_a7_step3">Start downloading any app (you can try the one that gave you the error, e.g., Insta360) - this should trigger the new terms popup</li><li data-i18n="faq_a7_step4">Accept the new terms and conditions when prompted</li><li data-i18n="faq_a7_step5">After accepting the terms, ipatool should work normally again</li></ol><p data-i18n="faq_a7_note">This is a standard Apple procedure when they update their legal terms. Once you accept them through an official Apple app, the error will be resolved.</p>',
-    faq_a7_fix_title: 'How to fix:',
-    faq_a7_step1: 'Open the App Store on your iPhone, iPad, or Mac',
-    faq_a7_step2: 'Sign in with the same Apple ID if prompted',
-    faq_a7_step3: 'Start downloading any app (you can try the one that gave you the error, e.g., Insta360) - this should trigger the new terms popup',
-    faq_a7_step4: 'Accept the new terms and conditions when prompted',
-    faq_a7_step5: 'After accepting the terms, ipatool should work normally again',
-    faq_a7_note: 'This is a standard Apple procedure when they update their legal terms. Once you accept them through an official Apple app, the error will be resolved.',
-    modal_2fa_title: 'Two-Factor Authentication',
-    modal_2fa_desc: 'Enter the 6-digit verification code sent to your Apple devices or SMS',
-    cancel_btn: 'Cancel',
-    verify_btn: 'Verify Code',
-    close_btn: 'Close',
-    open_in_explorer_btn: 'Show in Explorer',
-    step_license: 'License Verification / Purchase',
-    step_download: 'Downloading .IPA package from App Store',
-    step_download_pkg: 'Downloading .PKG package from App Store',
-    step_sinf: 'Applying digital signature (sinf replication)',
-    step_complete: 'Ready for installation',
-    dl_completed_ipa: 'Package .IPA downloaded successfully!',
-    dl_completed_pkg: 'Package .PKG downloaded successfully!',
-    free_price: 'Free',
-    download_btn: 'Download IPA',
-    download_btn_pkg: 'Download PKG',
-    license_btn: 'License',
-    versions_btn: 'Versions',
-    copied_toast: 'Copied to clipboard',
-    tab_batch: 'Mass Download',
-    batch_title: 'Mass Check & Download',
-    batch_desc: 'Upload a text file with a list of apps (name and App ID). Each ID is run through the Direct Download path: apps previously installed on your Apple ID work, while apps you never installed (the "license is required" error) are filtered out.',
-    batch_file_label: 'App list file (.txt):',
-    batch_file_hint: 'One entry per line: a name and a numeric App ID, e.g. 1Password 7: 568903335. Plain IDs, App Store URLs and separators ":", "-", ";", Tab or space are also supported.',
-    batch_paste_label: 'Or paste the list as text:',
-    batch_purchase_label: 'Automatically acquire licenses (Purchase)',
-    batch_purchase_hint: 'When enabled, an app without a license is purchased before checking/downloading (free apps only). When disabled, those apps are filtered out and not downloaded.',
-    batch_parsed_count: 'Recognized apps: {count}. Press "Check with Apple ID" to run each one through Direct Download.',
-    batch_check_btn: 'Check with Apple ID',
-    batch_check_progress_title: 'Checking apps through Direct Download...',
-    batch_check_progress_text: 'Checked {done} of {total} (each pass = {pct}% of the work).',
-    batch_results_title: 'Check Results',
-    batch_results_summary: 'Available for download: {available} of {total}. Filtered out: {filtered}.',
-    batch_account_label: 'Apple ID for this list: {email}',
-    batch_download_account_label: 'Download account: {email}',
-    batch_select_all: 'Select all',
-    batch_select_none: 'Select none',
-    batch_download_selected: 'Download selected',
-    batch_save_list: 'Save list (.txt)',
-    batch_save_toast: 'List saved to a text file',
-    batch_filtered_title: 'Filtered out (no license on Apple ID):',
-    batch_filtered_error_title: 'Other errors:',
-    batch_version_history: 'Version history',
-    batch_version_history_close: 'Hide history',
-    batch_versions_loading: 'Fetching version data...',
-    batch_no_versions: 'Version list unavailable',
-    batch_latest_badge: 'Latest',
-    pager_page_of: 'Page {page} of {pages}',
-    pager_range: '{from}–{to} of {total}',
-    pager_prev: '‹ Prev',
-    pager_next: 'Next ›',
-    pager_first: '« First',
-    pager_last: 'Last »',
-    pager_per_page: 'Per page:',
-    pager_all: 'All',
-    no_sinf_warning: 'Apple served the package without DRM signatures (sinf). The .ipa was saved completely — it can be decrypted or inspected, but it will not install on a device. Try again later or pick a different version.',
-    filename_warning: 'Could not read the app name and version from Info.plist; the downloaded filename was left unchanged.',
-    no_sinf_short: 'no sinf',
-    batch_select_hint: 'Check the apps and press "Download selected":',
-    batch_download_progress_title: 'Mass downloading selected apps...',
-    batch_download_progress_done: 'Downloaded {done} of {total}. Errors: {errors}.',
-    batch_download_status_queued: 'Queued',
-    batch_download_status_purchasing: 'License',
-    batch_download_status_downloading: 'Downloading',
-    batch_download_status_patching: 'Signing (sinf)',
-    batch_download_status_completed: 'Done',
-    batch_download_status_error: 'Error',
-    batch_download_status_stalled: 'Stalled (skipped)',
-    batch_download_status_skipped: 'Skipped',
-    batch_download_done_title: 'Mass download finished',
-    batch_download_started_toast: 'Download started — progress is below',
-    batch_download_skipped_count: 'Skipped: {skipped}.',
-    batch_stalled_hint: 'no data for {sec}s',
-    batch_skip_btn: 'Skip',
-    batch_skip_toast: 'App skipped — the batch moves on',
-    batch_skip_error: 'Could not skip the app',
-    batch_retry_failed: 'Retry failed',
-    batch_retry_running: 'A retry is already running',
-    batch_stall_label: 'Treat as stalled when no data arrives (sec):',
-    batch_stall_hint: 'If an app does not deliver a single byte for longer than this, it is marked "Stalled" and the batch moves on to the next one.',
-    batch_item_label: 'Per-app time limit (sec):',
-    batch_item_hint: 'Hard cap for all phases of one app: license + download + signing.',
-    batch_check_item_label: 'Per-check time limit (sec):',
-    batch_stalled_status: 'no response (skipped)',
-    batch_check_running: 'A check is already running',
-    batch_no_items: 'Could not recognize an App ID in the list',
-    batch_need_auth: 'Sign in to your Apple ID in the "Account" tab first',
-    batch_no_selected: 'Select at least one app',
-    batch_download_single: 'Download',
-    purchases_title: 'Purchase History',
-    purchases_desc: 'Every app owned by this Apple ID. The list is fetched once after sign-in and refreshed on demand.',
-    purchases_refresh: 'Refresh',
-    purchases_filter_placeholder: 'Filter by name, Bundle ID or App ID',
-    purchases_os_label: 'OS:',
-    purchases_os_all: 'All OS',
-    purchases_only_hidden: 'Hidden only',
-    purchases_export: 'Save list (.txt)',
-    purchases_saved_toast: 'List saved: {path}',
-    purchases_save_failed: 'Failed to save list to file',
-    purchases_need_auth: 'Sign in to your Apple ID on the "Account" tab to see the purchase history',
-    purchases_loading: 'Loading purchase history from Apple...',
-    purchases_retry: 'Retry',
-    purchases_empty: 'This Apple ID has not acquired any apps',
-    purchases_col_app: 'App',
-    purchases_col_bundle: 'Bundle ID',
-    purchases_col_appid: 'App ID',
-    purchases_col_date: 'Purchased',
-    purchases_col_action: 'Action',
-    purchases_updated_at: 'Updated: {time}',
-    purchases_from_cache: 'cached',
-    purchases_loaded_toast: 'Purchase history: {count} apps',
-    purchases_load_failed: 'Failed to load purchase history',
-    purchases_no_match: 'Nothing matches the filter',
-    purchases_download: 'Download',
-    purchases_versions: 'Versions',
-    purchases_nothing_to_export: 'The list is empty — nothing to save',
-    purchases_unknown_app: 'Untitled'
-  }
+// ==========================================
+// Localization
+// ==========================================
+// UI strings live next to the app, one file per language:
+//   assets/locales/index.json  — { "default": "<code>", "languages": ["<code>", ...] }
+//   assets/locales/<code>.json — { "meta": { "code", "name", "htmlLang", "intlLocale" }, "strings": { ... } }
+// To add a language, drop a new <code>.json next to the others and list the code
+// in index.json — no JavaScript changes are needed.
+
+const LOCALIZATION = {
+  dir: 'assets/locales/',
+  fallbackLang: 'en',
+  manifest: null,          // { default, languages }
+  dictionaries: new Map(), // code -> strings
+  metas: new Map()         // code -> meta
 };
+
+// Strings of the currently active language. Missing keys fall back to English
+// through t(), so a partially translated file is always safe to ship.
+function getDict() {
+  return LOCALIZATION.dictionaries.get(state.lang) || {};
+}
+
+function getLangMeta(code = state.lang) {
+  return LOCALIZATION.metas.get(code) || {};
+}
+
+function availableLanguages() {
+  const languages = LOCALIZATION.manifest && LOCALIZATION.manifest.languages;
+  return Array.isArray(languages) && languages.length ? languages.map(String) : [LOCALIZATION.fallbackLang];
+}
+
+// Translate a key, substituting {placeholders}.
+function t(key, vars) {
+  let text = getDict()[key];
+  if (text === undefined) {
+    text = (LOCALIZATION.dictionaries.get(LOCALIZATION.fallbackLang) || {})[key];
+  }
+  if (text === undefined) return key;
+  if (vars) {
+    Object.keys(vars).forEach(k => {
+      text = text.replaceAll(`{${k}}`, vars[k]);
+    });
+  }
+  return text;
+}
+
+// Best supported match for the languages requested by the browser ('' when none).
+function detectBrowserLanguage(available) {
+  const requested = (navigator.languages && navigator.languages.length)
+    ? navigator.languages
+    : [navigator.language || ''];
+  for (const tag of requested) {
+    const primary = String(tag || '').toLowerCase().split('-')[0];
+    if (primary && available.includes(primary)) return primary;
+  }
+  return '';
+}
+
+async function fetchLocaleFile(file) {
+  const res = await fetch(`${LOCALIZATION.dir}${file}`, { cache: 'no-cache' });
+  if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
+  return res.json();
+}
+
+async function loadLocale(code) {
+  if (LOCALIZATION.dictionaries.has(code)) return;
+  const data = await fetchLocaleFile(`${code}.json`);
+  LOCALIZATION.dictionaries.set(code, data.strings || {});
+  LOCALIZATION.metas.set(code, data.meta || {});
+}
+
+function setActiveLanguage(code) {
+  state.lang = code;
+  const meta = getLangMeta(code);
+  document.documentElement.setAttribute('lang', meta.htmlLang || code);
+}
+
+// Resolves the startup language: explicit user choice → browser language →
+// manifest default. Nothing is persisted here, so users who never picked a
+// language keep following their browser/system language.
+async function initLocalization() {
+  try {
+    LOCALIZATION.manifest = await fetchLocaleFile('index.json');
+  } catch (err) {
+    console.warn('Localization files are unavailable, keeping the markup defaults:', err);
+    return;
+  }
+
+  const available = availableLanguages();
+  const saved = (localStorage.getItem('ipatool_lang') || '').toLowerCase();
+  let code = available.includes(saved) ? saved : '';
+  if (!code) code = detectBrowserLanguage(available);
+  if (!code) {
+    const fallback = LOCALIZATION.manifest.default;
+    code = available.includes(fallback) ? fallback : available[0];
+  }
+
+  try {
+    await loadLocale(code);
+  } catch (err) {
+    console.warn(`Failed to load locale "${code}":`, err);
+    return;
+  }
+  setActiveLanguage(code);
+}
+
+// Cycles through the languages listed in index.json and remembers the choice.
+async function toggleLanguage() {
+  const order = availableLanguages();
+  if (order.length < 2) return;
+  const next = order[(order.indexOf(state.lang) + 1) % order.length];
+  if (!next || next === state.lang) return;
+
+  const langButton = document.getElementById('lang-toggle');
+  if (langButton) langButton.disabled = true;
+  try {
+    await loadLocale(next);
+  } catch (err) {
+    console.warn(`Failed to switch language to "${next}":`, err);
+    if (langButton) langButton.disabled = false;
+    return;
+  }
+  if (langButton) langButton.disabled = false;
+
+  localStorage.setItem('ipatool_lang', next);
+  setActiveLanguage(next);
+  applyLanguage();
+}
 
 // Apply UI Localization
 function applyLanguage() {
-  const dict = i18n[state.lang] || i18n.ru;
+  const dict = getDict();
   document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.getAttribute('data-i18n');
     if (dict[key]) {
@@ -599,6 +187,11 @@ function applyLanguage() {
     if (dict[key]) el.setAttribute('placeholder', dict[key]);
   });
 
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    const key = el.getAttribute('data-i18n-title');
+    if (dict[key]) el.setAttribute('title', dict[key]);
+  });
+
   const langLabel = document.getElementById('lang-label');
   if (langLabel) langLabel.textContent = state.lang.toUpperCase();
 
@@ -611,15 +204,10 @@ function applyLanguage() {
   renderAccountsList();
   updateBatchAccountContextLabels();
   renderBrandVersion();
+  if (typeof renderDownloadsTab === 'function') renderDownloadsTab();
 
   // Re-run iCloud presence check so its text follows the selected language.
   checkICloudStatus();
-}
-
-function toggleLanguage() {
-  state.lang = state.lang === 'ru' ? 'en' : 'ru';
-  localStorage.setItem('ipatool_lang', state.lang);
-  applyLanguage();
 }
 
 // Theme handling
@@ -701,7 +289,7 @@ function showToast(message, type = 'info') {
 // Helper: Copy to Clipboard
 function copyToClipboard(text, msg) {
   navigator.clipboard.writeText(text).then(() => {
-    showToast(msg || i18n[state.lang].copied_toast, 'success');
+    showToast(msg || getDict().copied_toast, 'success');
   }).catch(() => {
     showToast('Failed to copy', 'error');
   });
@@ -766,7 +354,7 @@ async function checkICloudStatus() {
   const iconEl = document.getElementById('icloud-status-icon');
   const linkEl = document.getElementById('icloud-download-link');
   if (!textEl) return;
-  const dict = i18n[state.lang] || i18n.ru;
+  const dict = getDict();
 
   try {
     const res = await fetch('/api/icloud/status');
@@ -929,20 +517,16 @@ function renderBrandVersion() {
 
   if (hasUpdate) {
     const latest = state.updateInfo.latestVersion;
-    const tip = state.lang === 'en'
-      ? `New version available: ${latest} (current: ${displayVer}) — click to open Releases`
-      : `Доступна новая версия: ${latest} (текущая: ${displayVer}) — нажмите, чтобы открыть страницу релизов`;
+    const tip = t('update_tip_available', { latest, current: displayVer });
     verEl.title = tip;
     if (pillEl) {
       pillEl.href = releasesUrl;
       pillEl.title = tip;
-      pillEl.textContent = state.lang === 'en' ? `⬆️ New: ${latest}` : `⬆️ Новая: ${latest}`;
+      pillEl.textContent = t('update_pill_new', { latest });
       pillEl.style.display = 'inline-flex';
     }
   } else {
-    verEl.title = state.lang === 'en'
-      ? `Current version: ${displayVer}`
-      : `Текущая версия: ${displayVer}`;
+    verEl.title = t('version_tip_current', { current: displayVer });
     if (pillEl) {
       pillEl.style.display = 'none';
     }
@@ -954,7 +538,7 @@ function updateAccountStatusPill() {
   const text = document.getElementById('account-status-text');
   if (!pill || !text) return;
 
-  const dict = i18n[state.lang] || i18n.ru;
+  const dict = getDict();
   if (state.isAuthenticated && state.account) {
     pill.className = 'account-pill logged-in';
     const email = state.account.email || '';
@@ -977,7 +561,7 @@ function renderAccountsList() {
   if (count) count.textContent = String(accounts.length);
   if (empty) empty.style.display = accounts.length ? 'none' : 'block';
 
-  const dict = i18n[state.lang] || i18n.ru;
+  const dict = getDict();
   accounts.forEach(account => {
     const row = document.createElement('div');
     row.className = `account-profile-row${account.id === state.activeAccountId ? ' is-active' : ''}`;
@@ -1061,7 +645,7 @@ async function activateAccount(accountId) {
       return;
     }
     applyAccountStatus(data);
-    showToast((i18n[state.lang] || i18n.ru).accounts_switched_toast, 'success');
+    showToast(getDict().accounts_switched_toast, 'success');
   } catch (err) {
     showToast('Ошибка переключения аккаунта', 'error');
   }
@@ -1069,7 +653,7 @@ async function activateAccount(accountId) {
 
 async function removeAccount(accountId) {
   if (!accountId) return;
-  const dict = i18n[state.lang] || i18n.ru;
+  const dict = getDict();
   if (!confirm(dict.accounts_remove_confirm)) return;
   try {
     const res = await fetch('/api/accounts/remove', {
@@ -1363,8 +947,8 @@ function createAppCard(app, platform) {
   card.className = 'app-card';
 
   const iconUrl = app.artworkUrl512 || app.artworkUrl100 || app.artworkUrl60;
-  const priceText = app.price === 0 || !app.price ? (i18n[state.lang]?.free_price || 'Бесплатно') : (app.formattedPrice || `$${app.price}`);
-  const dict = i18n[state.lang] || i18n.ru;
+  const priceText = app.price === 0 || !app.price ? (getDict().free_price || 'Free') : (app.formattedPrice || `$${app.price}`);
+  const dict = getDict();
   const dlBtnText = platformOSLabel(platform) === 'macOS' ? (dict.download_btn_pkg || dict.download_btn) : dict.download_btn;
 
   card.innerHTML = `
@@ -1423,7 +1007,7 @@ function createRemovedAppCard(app, platform) {
   const card = document.createElement('div');
   card.className = 'app-card removed-app-card';
 
-  const dict = i18n[state.lang] || i18n.ru;
+  const dict = getDict();
   const dlBtnText = platformOSLabel(platform) === 'macOS' ? (dict.download_btn_pkg || dict.download_btn) : dict.download_btn;
   const name = app.name || String(app.appId);
   const nameEsc = String(name).replace(/'/g, "\\'");
@@ -2330,7 +1914,7 @@ function parsePurchaseDate(value) {
 function formatPurchaseDate(value) {
   const d = parsePurchaseDate(value);
   if (!d) return '—';
-  return d.toLocaleString(state.lang === 'ru' ? 'ru-RU' : 'en-US', {
+  return d.toLocaleString(getLangMeta().intlLocale || 'en-US', {
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit'
   });
@@ -2402,11 +1986,7 @@ function renderPurchases() {
       const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
       const isStale = (Date.now() - p.fetchedAt.getTime()) > sevenDaysMs;
       els.updated.classList.toggle('is-stale', isStale);
-      els.updated.title = isStale
-        ? (state.lang === 'en'
-            ? 'Purchase history cache has not been updated for more than 7 days'
-            : 'Кэш истории покупок не обновлялся более 7 дней')
-        : '';
+      els.updated.title = isStale ? t('purchases_cache_stale_tip') : '';
     } else {
       els.updated.textContent = '';
       els.updated.classList.remove('is-stale');
@@ -2456,9 +2036,7 @@ function renderPurchases() {
   }
   const hiddenWrapEl = document.getElementById('purchases-hidden-toggle-wrap');
   if (hiddenWrapEl) {
-    hiddenWrapEl.title = state.lang === 'en'
-      ? 'Show only apps hidden or removed from the regional App Store storefront'
-      : 'Показать только приложения, скрытые или удалённые из региональной витрины App Store';
+    hiddenWrapEl.title = t('purchases_hidden_toggle_tip');
   }
   if (els.countBadge) {
     els.countBadge.textContent = list.length === p.apps.length
@@ -2477,11 +2055,7 @@ function renderPurchases() {
   const dlLabel = batchEscapeHtml(batchText('purchases_download'));
   const verLabel = batchEscapeHtml(batchText('purchases_versions'));
   const unknown = batchText('purchases_unknown_app');
-  const hiddenTip = batchEscapeHtml(
-    state.lang === 'en'
-      ? 'Hidden or removed from the regional App Store storefront'
-      : 'Скрыто или удалено из региональной витрины App Store'
-  );
+  const hiddenTip = batchEscapeHtml(t('purchases_hidden_app_tip'));
 
   const rows = list.map(a => {
     const name = a.name || unknown;
@@ -2601,7 +2175,7 @@ function renderActiveDownloadsTab() {
   listEl.innerHTML = '';
   active.forEach(job => {
     const pct = Math.min(100, Math.max(0, job.progress || 0));
-    const statusLabel = (i18n[state.lang] || i18n.ru)[`batch_download_status_${job.status}`] || job.status;
+    const statusLabel = getDict()[`batch_download_status_${job.status}`] || job.status;
     const el = document.createElement('div');
     el.className = 'active-download-card';
     const accountLabel = job.accountEmail
@@ -2860,14 +2434,9 @@ function parseBatchList(text) {
   return items;
 }
 
+// Alias kept for the batch/install flows, which were written against the old helper.
 function batchText(key, vars) {
-  let text = (i18n[state.lang] || i18n.ru)[key] || key;
-  if (vars) {
-    Object.keys(vars).forEach(k => {
-      text = text.replaceAll(`{${k}}`, vars[k]);
-    });
-  }
-  return text;
+  return t(key, vars);
 }
 
 function updateBatchAccountContextLabels() {
@@ -3594,7 +3163,7 @@ function pollBatchDownload(batchId, items, accountId = batchState.downloadAccoun
         }
 
         const statusKey = `batch_download_status_${item.status}`;
-        if (labelEl) labelEl.textContent = i18n[state.lang]?.[statusKey] || item.status;
+        if (labelEl) labelEl.textContent = getDict()[statusKey] || item.status;
         if (fill) fill.style.width = `${Math.min(100, item.progress || 0)}%`;
         if (detail) {
           let detailText;
@@ -3824,7 +3393,7 @@ function renderInstallDriverStatus(driver) {
   const linksEl = document.getElementById('install-driver-links');
   if (!card) return;
 
-  const dict = i18n[state.lang] || i18n.ru;
+  const dict = getDict();
   const links = [];
 
   if (!driver || driver.required === false) {
@@ -3998,7 +3567,8 @@ function pollInstallJob(jobId) {
 // Initialization
 // ==========================================
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  await initLocalization();
   applyTheme();
   applyLanguage();
   fetchStatus();

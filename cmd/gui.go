@@ -31,7 +31,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-//go:embed gui_assets/*
+// embeddedAssets holds the whole gui_assets tree: the GUI shell (index.html,
+// style.css, app.js) and one JSON file per language in gui_assets/locales.
+//
+//go:embed gui_assets
 var embeddedAssets embed.FS
 
 // DownloadJob represents an asynchronous download task tracked by the GUI.
@@ -368,6 +371,9 @@ func runGUIServer(host string, port int, noBrowser bool) error {
 
 		fileServer.ServeHTTP(w, r)
 	})
+
+	// Localization files, one JSON per language (see handleLocaleAsset)
+	mux.HandleFunc(localesRoute, handleLocaleAsset(assetsSub))
 
 	// API Handlers
 	mux.HandleFunc("/api/status", handleAPIStatus)
