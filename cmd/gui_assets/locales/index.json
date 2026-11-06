@@ -1,0 +1,11 @@
+{
+  "default": "en",
+  "languages": [
+    "ru",
+    "en",
+    "vi",
+    "de",
+    "zh",
+    "hi"
+  ]
+}
