@@ -27,7 +27,7 @@ index e81877e..2517c76 100644
  
  func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersionMetadataOutput, error) {
 diff --git a/pkg/appstore/appstore_get_version_metadata_test.go b/pkg/appstore/appstore_get_version_metadata_test.go
-index cb71e17..056bab7 100644
+index 018f816..9e8a8e6 100644
 --- a/pkg/appstore/appstore_get_version_metadata_test.go
 +++ b/pkg/appstore/appstore_get_version_metadata_test.go
 @@ -47,6 +47,7 @@ func testIPA(displayVersion string, releaseDate interface{}, modified time.Time)
