@@ -106,7 +106,19 @@ jobs:
             git diff --stat -- pkg/
             exit 1
           fi
-          GOOS=windows go build ./...
+          set +e
+          GOOS=windows go build ./... > /tmp/build.log 2>&1
+          status=$?
+          head -40 /tmp/build.log
+          if [ "$status" -ne 0 ]; then
+            i=0
+            while IFS= read -r line; do
+              [ "$i" -ge 9 ] && break
+              echo "::error title=go-build::${line//'%'/'%25'}"
+              i=$((i+1))
+            done < /tmp/build.log
+            exit 1
+          fi
 
       - name: Build Windows binary (AMD64)
         run: |
