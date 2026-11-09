@@ -64,6 +64,14 @@ func refreshAccount(profile *guiAccountProfile, account appstore.Account) (appst
 			Password: account.Password,
 		})
 		if err == nil {
+			// Signing in provisions the Store machine identity that ipatool
+			// v2.8.0 needs for download requests.
+			if profile != nil {
+				profile.storeAMDMu.Lock()
+				profile.storeAMDReady = true
+				profile.storeAMDMu.Unlock()
+			}
+
 			return output.Account, nil
 		}
 		lastErr = err
@@ -126,7 +134,14 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 		ctx = context.Background()
 	}
 
+	// ipatool v2.8.0 signs Store download requests with an Apple Media Services
+	// machine identity that sessions saved by older releases never provisioned.
+	if err := ensureStoreAMDState(ctx, input.Profile); err != nil {
+		return account, appstore.DownloadOutput{}, false, err
+	}
+
 	refreshed := false
+	reprovisioned := false
 	licenseAttempted := false
 	licenseAcquired := false
 	progress := input.Progress
@@ -143,6 +158,17 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 		})
 		if err == nil {
 			return account, output, licenseAcquired, nil
+		}
+
+		if isStoreAMDStateMissing(err) && !reprovisioned {
+			// A stored identity can be stale, so provision a fresh one once and
+			// retry before giving up on the download.
+			reprovisioned = true
+			if provisionErr := provisionStoreAMDState(ctx, input.Profile, true); provisionErr != nil {
+				return account, appstore.DownloadOutput{}, licenseAcquired, provisionErr
+			}
+
+			continue
 		}
 
 		if progress != nil && isProgressBarSetupError(err) {
@@ -195,13 +221,28 @@ func downloadWithRetry(input downloadTaskInput) (appstore.Account, appstore.Down
 // expired password token.
 func listVersionsWithRetry(profile *guiAccountProfile, account appstore.Account, app appstore.App, platform appstore.Platform) (appstore.Account, appstore.ListVersionsOutput, error) {
 	store := appStoreForProfile(profile)
+	// The license probe is the same Store download request without the package
+	// transfer, so it needs the v2.8.0 Store machine identity as well.
+	ctx := context.Background()
+	if err := ensureStoreAMDState(ctx, profile); err != nil {
+		return account, appstore.ListVersionsOutput{}, err
+	}
+	reprovisioned := false
 	for attempt := 0; attempt < 2; attempt++ {
 		output, err := store.ListVersions(appstore.ListVersionsInput{
-			Context:  context.Background(),
+			Context:  ctx,
 			Account:  account,
 			App:      app,
 			Platform: platform,
 		})
+		if isStoreAMDStateMissing(err) && !reprovisioned {
+			reprovisioned = true
+			if provisionErr := provisionStoreAMDState(ctx, profile, true); provisionErr != nil {
+				return account, appstore.ListVersionsOutput{}, provisionErr
+			}
+
+			continue
+		}
 		if !errors.Is(err, appstore.ErrPasswordTokenExpired) || attempt != 0 {
 			return account, output, err
 		}

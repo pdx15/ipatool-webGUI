@@ -1990,6 +1990,12 @@ func lookupVersionMetadataWithAccount(profile *guiAccountProfile, account *appst
 		}
 	}
 
+	// Version metadata is the same Store download request without the package
+	// transfer, so it needs the v2.8.0 Store machine identity as well.
+	if err := ensureStoreAMDState(context.Background(), profile); err != nil {
+		return nil, err
+	}
+
 	// Time the round-trip to Apple so slow responses can be told apart from
 	// slow rendering when investigating "history loads slowly" reports.
 	started := time.Now()

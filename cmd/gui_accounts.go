@@ -16,6 +16,7 @@ import (
 	"github.com/byteness/keyring"
 	"github.com/majd/ipatool/v2/pkg/appstore"
 	pkghttp "github.com/majd/ipatool/v2/pkg/http"
+	"github.com/majd/ipatool/v2/pkg/keychain"
 )
 
 const (
@@ -48,10 +49,13 @@ type guiAccountProfile struct {
 	guiAccountRecord
 	AppStore         appstore.AppStore
 	CookieJar        pkghttp.CookieJar
+	Keychain         keychain.Keychain
 	stateDir         string
 	removing         bool // protected by guiAccountManager.mu
 	activeOperations int  // protected by guiAccountManager.mu; prevents deleting an in-use profile
 	refreshMu        sync.Mutex
+	storeAMDMu       sync.Mutex
+	storeAMDReady    bool // ipatool v2.8.0 Store machine identity is available
 }
 
 type guiAccountView struct {
@@ -106,6 +110,7 @@ func newGUIAccountProfile(record guiAccountRecord, stateDir string, interactive 
 			guiAccountRecord: record,
 			AppStore:         dependencies.AppStore,
 			CookieJar:        dependencies.CookieJar,
+			Keychain:         dependencies.Keychain,
 			stateDir:         stateDir,
 		}, nil
 	}
@@ -135,6 +140,7 @@ func newGUIAccountProfile(record guiAccountRecord, stateDir string, interactive 
 		guiAccountRecord: record,
 		AppStore:         store,
 		CookieJar:        cookieJar,
+		Keychain:         accountKeychain,
 		stateDir:         profileDir,
 	}, nil
 }
@@ -579,6 +585,11 @@ func (m *guiAccountManager) commitLogin(profile *guiAccountProfile, account apps
 		return errors.New("Apple ID account was removed before login completed")
 	}
 	profile.guiAccountRecord = guiAccountRecordFromAccount(profile.ID, account, profile.Legacy)
+	// Signing in provisions the Apple Media Services machine identity that
+	// ipatool v2.8.0 needs for Store requests, so no extra work is required.
+	profile.storeAMDMu.Lock()
+	profile.storeAMDReady = true
+	profile.storeAMDMu.Unlock()
 	m.profiles[profile.ID] = profile
 	m.activeID = profile.ID
 	m.mu.Unlock()
