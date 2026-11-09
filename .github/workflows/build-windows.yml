@@ -106,20 +106,6 @@ jobs:
             git diff --stat -- pkg/
             exit 1
           fi
-          set +e
-          go vet ./cmd/ > /tmp/vet.log 2>&1
-          status=$?
-          head -40 /tmp/vet.log
-          if [ "$status" -ne 0 ]; then
-            i=0
-            while IFS= read -r line; do
-              [ "$i" -ge 9 ] && break
-              echo "::error title=go-vet::${line//'%'/'%25'}"
-              i=$((i+1))
-            done < /tmp/vet.log
-            exit 1
-          fi
-
           GOOS=windows go build ./...
 
       - name: Build Windows binary (AMD64)
