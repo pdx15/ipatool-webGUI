@@ -109,7 +109,7 @@ func TestProvisionStoreAMDStateRejectsMissingKeychain(t *testing.T) {
 	dependencies.Keychain = nil
 	t.Cleanup(func() { dependencies.Keychain = saved })
 
-	profile := &guiAccountProfile{Email: "someone@example.com"}
+	profile := &guiAccountProfile{guiAccountRecord: guiAccountRecord{Email: "someone@example.com"}}
 	err := provisionStoreAMDState(context.Background(), profile, true)
 	if err == nil {
 		t.Fatalf("expected an error when no keychain is available")
