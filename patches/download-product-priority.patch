@@ -12,7 +12,7 @@ index 1246b42..bb76ee4 100644
  const (
  	returnAddress = uint64(0x0000000100000000)
 diff --git a/internal/sap/protocol.go b/internal/sap/protocol.go
-index 8649602..cc3dd5b 100644
+index 8649602..6ff1fad 100644
 --- a/internal/sap/protocol.go
 +++ b/internal/sap/protocol.go
 @@ -7,6 +7,7 @@ import (
@@ -63,8 +63,8 @@ index 8649602..cc3dd5b 100644
 +		if ctx.Err() != nil || attempt == maxSetupAttempts {
 +			break
 +		}
-+		if p.client != nil {
-+			p.client.CloseIdleConnections()
++		if closer, ok := p.client.(interface{ CloseIdleConnections() }); ok {
++			closer.CloseIdleConnections()
 +		}
 +		time.Sleep(time.Duration(attempt) * 2 * time.Second)
  	}
@@ -108,8 +108,8 @@ index 8649602..cc3dd5b 100644
 +		if ctx.Err() != nil || attempt == maxSetupAttempts {
 +			break
 +		}
-+		if p.client != nil {
-+			p.client.CloseIdleConnections()
++		if closer, ok := p.client.(interface{ CloseIdleConnections() }); ok {
++			closer.CloseIdleConnections()
 +		}
 +		time.Sleep(time.Duration(attempt) * 2 * time.Second)
  	}

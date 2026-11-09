@@ -1,0 +1,61 @@
+name: Debug build errors
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_version:
+        description: 'Upstream version without leading v'
+        required: false
+        default: '2.8.0'
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    name: Compile check with annotations
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout WebGUI repository
+        uses: actions/checkout@v4
+        with:
+          path: webgui
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: false
+
+      - name: Clone upstream majd/ipatool
+        run: |
+          git clone --depth 1 --branch "v${{ github.event.inputs.upstream_version }}" https://github.com/majd/ipatool.git ipatool
+
+      - name: Prepare upstream tree
+        run: |
+          cd ipatool
+          for PATCH in register-gui minimum-os-version download-product-priority; do
+            git apply "../webgui/patches/$PATCH.patch"
+          done
+          cp -r ../webgui/cmd/gui* ./cmd/
+          cp -r ../webgui/cmd/gui_assets ./cmd/
+          mkdir -p ./resources
+          cp -r ../webgui/resources/* ./resources/ 2>/dev/null || true
+
+      - name: Compile and report errors as annotations
+        run: |
+          cd ipatool
+          set +e
+          GOOS=windows go build ./... > /tmp/build.log 2>&1
+          status=$?
+          echo "go build exit status: $status"
+          cat /tmp/build.log | head -40
+          if [ "$status" -ne 0 ]; then
+            i=0
+            while IFS= read -r line; do
+              [ "$i" -ge 9 ] && break
+              echo "::error title=go-build::${line//'%'/'%25'}"
+              i=$((i+1))
+            done < /tmp/build.log
+            exit 1
+          fi
