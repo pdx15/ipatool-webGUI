@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_version:
-        description: 'Version (e.g. 2.7.0, 2.7.0b, or 2.7.1). Leave blank for latest release'
+        description: 'Version (e.g. 2.8.0, 2.8.0b, or 2.8.1). Leave blank for latest release'
         required: false
         default: ''
 
@@ -31,7 +31,7 @@ jobs:
           else
             LATEST_TAG=$(curl -s https://api.github.com/repos/majd/ipatool/releases/latest | jq -r '.tag_name // empty')
             if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
-              LATEST_TAG="v2.7.0"
+              LATEST_TAG="v2.8.0"
             fi
             RAW_VER="${LATEST_TAG#v}"
             UPSTREAM_TAG="$LATEST_TAG"
@@ -59,7 +59,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.0'
+          go-version: '1.26.5'
           cache: false
 
       - name: Clone upstream majd/ipatool

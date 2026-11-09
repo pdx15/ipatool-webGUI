@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       upstream_version:
-        description: 'Version (e.g. 2.7.0, 2.7.0b for WebGUI hotfix on v2.7.0, or 2.7.1). Leave blank for latest release'
+        description: 'Version (e.g. 2.8.0, 2.8.0b for WebGUI hotfix on v2.8.0, or 2.8.1). Leave blank for latest release'
         required: false
         default: ''
   push:
@@ -41,7 +41,7 @@ jobs:
           else
             LATEST_TAG=$(curl -s https://api.github.com/repos/majd/ipatool/releases/latest | jq -r '.tag_name // empty')
             if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
-              LATEST_TAG="v2.7.0"
+              LATEST_TAG="v2.8.0"
             fi
             RAW_VER="${LATEST_TAG#v}"
             UPSTREAM_TAG="$LATEST_TAG"
@@ -72,7 +72,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.0'
+          go-version: '1.26.5'
           cache: false
 
       - name: Clone upstream majd/ipatool
@@ -92,8 +92,10 @@ jobs:
 
           # Keep the upstream integration narrow and explicit: register the GUI
           # command, expose MinimumOSVersion from the Info.plist that ipatool
-          # already range-reads to build version metadata, and prioritize the
-          # direct volumeStore download request ahead of the kbsync fallback.
+          # already range-reads to build version metadata, and keep the
+          # volumeStore-first download fallback chain that v2.8.0 does not carry
+          # upstream (the delisted-app and unpinned redownload logic it does
+          # carry natively is no longer duplicated by the patch).
           for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH"; do
             if [ ! -f "$PATCH" ]; then
               echo "::error::Required upstream patch is missing: $PATCH"
@@ -183,7 +185,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25.0'
+          go-version: '1.26.5'
           cache: false
 
       - name: Clone upstream majd/ipatool
@@ -203,8 +205,10 @@ jobs:
 
           # Keep the upstream integration narrow and explicit: register the GUI
           # command, expose MinimumOSVersion from the Info.plist that ipatool
-          # already range-reads to build version metadata, and prioritize the
-          # direct volumeStore download request ahead of the kbsync fallback.
+          # already range-reads to build version metadata, and keep the
+          # volumeStore-first download fallback chain that v2.8.0 does not carry
+          # upstream (the delisted-app and unpinned redownload logic it does
+          # carry natively is no longer duplicated by the patch).
           for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH"; do
             if [ ! -f "$PATCH" ]; then
               echo "::error::Required upstream patch is missing: $PATCH"

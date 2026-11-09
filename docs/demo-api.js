@@ -40,10 +40,10 @@
     if (url === '/api/status') return json({
       authenticated: true,
       os: 'windows',
-      version: '2.7.0d-webGUI',
+      version: '2.8.0-webGUI',
       updateInfo: {
-        currentVersion: '2.7.0d-webGUI',
-        latestVersion: '2.7.0d-webGUI',
+        currentVersion: '2.8.0-webGUI',
+        latestVersion: '2.8.0-webGUI',
         updateAvailable: false,
         releaseUrl: 'https://github.com/pdx15/ipatool-webGUI/releases'
       },
