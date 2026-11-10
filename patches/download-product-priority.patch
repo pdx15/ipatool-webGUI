@@ -945,3 +945,66 @@ index 124249b..65d425c 100644
  	if platform == PlatformVisionOS {
  		return t.lookupLatestVisionOSExternalVersionID(app.ID, countryCode)
  	}
+diff --git a/pkg/appstore/storefront.go b/pkg/appstore/storefront.go
+index 8509321..aa9f7e4 100644
+--- a/pkg/appstore/storefront.go
++++ b/pkg/appstore/storefront.go
+@@ -16,6 +16,11 @@ const (
+ 	availableStorefrontsURL = "https://itunes.apple.com/WebObjects/MZStore.woa/wa/availableStoreFronts"
+ 	storefrontGenreURL      = "https://apps.apple.com/genre/id36"
+ 	maxStorefrontIDRange    = 1000
++	// Apple answers the "Connecting to the iTunes Store" HTML page for clients
++	// that do not look like a Store client, so storefront discovery has to send a
++	// Store user agent and a store front header to receive the storefront plist.
++	storefrontRequestUserAgent  = "Configurator/2.17 (Macintosh; OS X 15.2; 24C5089c) AppleWebKit/0620.1.16.11.6"
++	storefrontRequestStoreFront = "143441-1,29"
+ )
+ 
+ type availableStorefrontsResult struct {
+@@ -39,7 +44,7 @@ type storefrontGenrePage struct {
+ }
+ 
+ func (t *appstore) countryCodeFromStoreFront(storeFront string) (string, error) {
+-	if err := t.discoverAvailableStorefronts(); err != nil {
++	if err := t.discoverAvailableStorefronts(storeFront); err != nil {
+ 		return "", err
+ 	}
+ 
+@@ -74,7 +79,7 @@ func (t *appstore) storefrontID(countryCode string) string {
+ }
+ 
+ func (t *appstore) discoverStorefrontID(countryCode string) (string, error) {
+-	if err := t.discoverAvailableStorefronts(); err != nil {
++	if err := t.discoverAvailableStorefronts(""); err != nil {
+ 		return "", err
+ 	}
+ 
+@@ -227,7 +232,7 @@ func (t *appstore) discoverStorefrontCountryCode(identifier string) (string, boo
+ 	return countryCode, true, nil
+ }
+ 
+-func (t *appstore) discoverAvailableStorefronts() error {
++func (t *appstore) discoverAvailableStorefronts(storeFront string) error {
+ 	t.storefrontsMu.Lock()
+ 	defer t.storefrontsMu.Unlock()
+ 
+@@ -239,10 +244,19 @@ func (t *appstore) discoverAvailableStorefronts() error {
+ 		return errors.New("storefront client is not configured")
+ 	}
+ 
++	headers := map[string]string{
++		"User-Agent":          storefrontRequestUserAgent,
++		"X-Apple-Store-Front": storefrontRequestStoreFront,
++	}
++	if trimmed := strings.TrimSpace(storeFront); trimmed != "" {
++		headers["X-Apple-Store-Front"] = trimmed
++	}
++
+ 	res, err := t.storefrontClient.Send(http.Request{
+ 		URL:            availableStorefrontsURL,
+ 		Method:         http.MethodGET,
+ 		ResponseFormat: http.ResponseFormatRaw,
++		Headers:        headers,
+ 	})
+ 	if err != nil {
+ 		return fmt.Errorf("available storefronts request failed: %w", err)
