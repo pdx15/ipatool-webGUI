@@ -1550,9 +1550,10 @@ func executeDownloadJob(job *DownloadJob, req downloadRequestPayload, acc appsto
 		}
 	}
 
-	// Name GUI-managed IPA files from their own Info.plist, after download.
-	// Explicit output filenames remain exactly as the user entered them.
-	if destination, metadata, nameErr := renameDownloadedIPAPackage(
+	// Name GUI-managed packages after download: IPAs from their own Info.plist,
+	// macOS packages from the Distribution script inside the .pkg. Explicit
+	// output filenames remain exactly as the user entered them.
+	if destination, metadata, nameErr := renameDownloadedPackage(
 		out.DestinationPath,
 		outputPath,
 		app.Name,

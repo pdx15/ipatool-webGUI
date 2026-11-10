@@ -134,7 +134,7 @@ jobs:
       - name: Verify the GUI builds with the minimal upstream metadata extension
         run: |
           cd ipatool
-          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/(appstore_(get_version_metadata(_test)?|partial_zip|download(_product)?|kbsync|lookup|(macos|platform)_version_lookup)|storefront)\.go$' || true)
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/(appstore_(get_version_metadata(_test)?|partial_zip|download(_product)?|kbsync|lookup|(macos|platform)_version_(lookup|metadata)|macos_preflight_metadata)|storefront)\.go$' || true)
           if [ -n "$unexpected_pkg_changes" ]; then
             echo "::error::Unexpected changes to upstream package sources:"
             echo "$unexpected_pkg_changes"
@@ -142,6 +142,7 @@ jobs:
             exit 1
           fi
           GOOS=windows go build ./...
+          go test ./cmd/ -run 'TestRenameDownloaded' -count=1
 
       - name: Build Windows binary (AMD64)
         run: |

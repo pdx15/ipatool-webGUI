@@ -212,7 +212,7 @@
     "pager_per_page": "Pro Seite:",
     "pager_all": "Alle",
     "no_sinf_warning": "Apple hat das Paket ohne DRM-Signaturen (sinf) ausgeliefert. Die .ipa wurde vollständig gespeichert – sie kann entschlüsselt oder geprüft, aber nicht auf einem Gerät installiert werden. Versuchen Sie es später erneut oder wählen Sie eine andere Version.",
-    "filename_warning": "App-Name und Version konnten nicht aus Info.plist gelesen werden; der Dateiname des Downloads blieb unverändert.",
+    "filename_warning": "App-Name, Version und minimale OS-Version konnten nicht aus den Paketdaten gelesen werden; der Dateiname des Downloads blieb unverändert.",
     "no_sinf_short": "kein sinf",
     "batch_select_hint": "Apps markieren und „Ausgewählte laden“ drücken:",
     "batch_download_progress_title": "Ausgewählte Apps werden in Massen geladen...",
