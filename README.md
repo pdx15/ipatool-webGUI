@@ -91,6 +91,18 @@ A Windows build ships as `ipatool.exe`. Double-click `ipatool-gui.bat` (or run
   the machine that has the connected iOS device.
 - You are responsible for following Apple's terms and applicable law.
 
+## Upstream pin
+
+Releases are built from one concrete upstream `majd/ipatool` commit rather than a
+floating tag. That commit is `DEFAULT_UPSTREAM_REF` in
+`.github/workflows/release.yml` and `.github/workflows/build-windows.yml`, and
+everything in `patches/` is written against it. Moving to a newer upstream commit
+means refreshing the patches and bumping `DEFAULT_UPSTREAM_REF` in the same change.
+
+Both workflows accept an `upstream_ref` input (a tag, a branch or a commit SHA) and
+print the resolved commit into the run summary. A commit that cannot be checked out
+fails the build instead of silently falling back to the upstream default branch.
+
 ## Credits and license
 
 Based on [`majd/ipatool`](https://github.com/majd/ipatool) and distributed under the [MIT License](LICENSE). The original copyright and
