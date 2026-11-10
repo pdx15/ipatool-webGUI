@@ -860,6 +860,45 @@ index cc786b5..5fbcdaa 100644
  }
  
  func (t *appstore) lookupRequest(bundleID, countryCode string, platform Platform) (http.Request, error) {
+diff --git a/pkg/appstore/appstore_macos_preflight_metadata.go b/pkg/appstore/appstore_macos_preflight_metadata.go
+index afdce23..75bcefe 100644
+--- a/pkg/appstore/appstore_macos_preflight_metadata.go
++++ b/pkg/appstore/appstore_macos_preflight_metadata.go
+@@ -25,6 +25,25 @@ type macPreflightDistributionInfo struct {
+ 			ID string `xml:"id,attr"`
+ 		} `xml:"relocate>bundle"`
+ 	} `xml:"pkg-ref"`
++	VolumeCheck struct {
++		AllowedOSVersions struct {
++			Versions []struct {
++				Min string `xml:"min,attr"`
++			} `xml:"os-version"`
++		} `xml:"allowed-os-versions"`
++	} `xml:"volume-check"`
++}
++
++// minimumOSVersion returns the minimum allowed OS version the installer
++// declares, so the version history can badge Mac builds like iOS ones.
++func (info macPreflightDistributionInfo) minimumOSVersion() string {
++	for _, version := range info.VolumeCheck.AllowedOSVersions.Versions {
++		if minimum := strings.TrimSpace(version.Min); minimum != "" {
++			return minimum
++		}
++	}
++
++	return ""
+ }
+ 
+ func macPreflightVersionMetadata(archive *xar.Reader, bundleID string) (versionMetadata, error) {
+@@ -116,7 +135,7 @@ func macPreflightVersionMetadata(archive *xar.Reader, bundleID string) (versionM
+ 	// As with the payload timestamp fallback, this is the build time, not an
+ 	// exact store release date. The API date is app-level, and the preflight
+ 	// archive's creation time can reflect a much later repackaging date.
+-	return versionMetadata{DisplayVersion: version, ReleaseDate: built}, nil
++	return versionMetadata{DisplayVersion: version, ReleaseDate: built, MinimumOSVersion: info.minimumOSVersion()}, nil
+ }
+ 
+ func legacyMacPackageBuildTime(displayVersion, packageVersion string) (time.Time, error) {
 diff --git a/pkg/appstore/appstore_macos_version_lookup.go b/pkg/appstore/appstore_macos_version_lookup.go
 index 1a678d3..a5f73b8 100644
 --- a/pkg/appstore/appstore_macos_version_lookup.go
@@ -919,6 +958,76 @@ index 1a678d3..a5f73b8 100644
  }
  
  func macOSExternalVersionID(body []byte, app App) (string, error) {
+diff --git a/pkg/appstore/appstore_macos_version_metadata.go b/pkg/appstore/appstore_macos_version_metadata.go
+index 58c2608..be202a0 100644
+--- a/pkg/appstore/appstore_macos_version_metadata.go
++++ b/pkg/appstore/appstore_macos_version_metadata.go
+@@ -113,7 +113,11 @@ func macPackageVersionMetadata(archive *xar.Reader, bundleID string) (versionMet
+ 				return versionMetadata{}, errors.New("macOS package does not contain a payload timestamp")
+ 			}
+ 
+-			result = &versionMetadata{DisplayVersion: version, ReleaseDate: time.Unix(modified, 0).UTC()}
++			result = &versionMetadata{
++				DisplayVersion:   version,
++				ReleaseDate:      time.Unix(modified, 0).UTC(),
++				MinimumOSVersion: macPackageMinimumOSVersion(archive),
++			}
+ 		}
+ 	}
+ 
+@@ -123,3 +127,52 @@ func macPackageVersionMetadata(archive *xar.Reader, bundleID string) (versionMet
+ 
+ 	return *result, nil
+ }
++
++// macPackageMinimumOSVersion reads the minimum allowed OS version from the
++// Distribution script at the root of a signed Mac package. The package's
++// PackageInfo carries the bundle version but not the OS requirement, and there
++// is no Info.plist to read, so Distribution is the only source for the badge in
++// the version history.
++func macPackageMinimumOSVersion(archive *xar.Reader) string {
++	for _, file := range archive.Files {
++		if file.Name != "Distribution" {
++			continue
++		}
++
++		source, err := file.Open()
++		if err != nil {
++			return ""
++		}
++
++		data, readErr := io.ReadAll(source)
++		closeErr := source.Close()
++
++		if err := errors.Join(readErr, closeErr); err != nil {
++			return ""
++		}
++
++		var script struct {
++			VolumeCheck struct {
++				AllowedOSVersions struct {
++					Versions []struct {
++						Min string `xml:"min,attr"`
++					} `xml:"os-version"`
++				} `xml:"allowed-os-versions"`
++			} `xml:"volume-check"`
++		}
++
++		if err := xml.Unmarshal(data, &script); err != nil {
++			return ""
++		}
++
++		for _, version := range script.VolumeCheck.AllowedOSVersions.Versions {
++			if minimum := strings.TrimSpace(version.Min); minimum != "" {
++				return minimum
++			}
++		}
++
++		return ""
++	}
++
++	return ""
++}
 diff --git a/pkg/appstore/appstore_platform_version_lookup.go b/pkg/appstore/appstore_platform_version_lookup.go
 index 124249b..65d425c 100644
 --- a/pkg/appstore/appstore_platform_version_lookup.go
