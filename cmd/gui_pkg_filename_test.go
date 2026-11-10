@@ -2,12 +2,14 @@ package cmd
 
 import (
 	"bytes"
-	"compress/gzip"
 	"compress/zlib"
+	"crypto/sha1"
 	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/majd/ipatool/v2/pkg/appstore"
@@ -43,7 +45,7 @@ const testPkgDistribution = `<?xml version="1.0" encoding="utf-8" standalone="ye
 func TestRenameDownloadedPackageUsesDistributionScript(t *testing.T) {
 	directory := t.TempDir()
 	source := filepath.Join(directory, "6753067801_3.0.pkg")
-	writeTestPackage(t, source, testPkgDistribution, true)
+	writeTestPackage(t, source, map[string]string{pkgDistributionName: testPkgDistribution})
 
 	destination, metadata, err := renameDownloadedPackage(
 		source,
@@ -70,7 +72,7 @@ func TestRenameDownloadedPackageUsesDistributionScript(t *testing.T) {
 func TestRenameDownloadedPackageKeepsNameWithoutDistribution(t *testing.T) {
 	directory := t.TempDir()
 	source := filepath.Join(directory, "6753067801_3.0.pkg")
-	writeTestPackage(t, source, "", false)
+	writeTestPackage(t, source, map[string]string{"PackageInfo": "<pkg-info/>"})
 
 	destination, _, err := renameDownloadedPackage(source, "", "App for Youtube", "spdx15@gmail.com", appstore.PlatformMacOS)
 	if err == nil {
@@ -84,7 +86,7 @@ func TestRenameDownloadedPackageKeepsNameWithoutDistribution(t *testing.T) {
 func TestRenameDownloadedPackagePreservesExplicitPackageFilename(t *testing.T) {
 	directory := t.TempDir()
 	source := filepath.Join(directory, "custom.pkg")
-	writeTestPackage(t, source, testPkgDistribution, true)
+	writeTestPackage(t, source, map[string]string{pkgDistributionName: testPkgDistribution})
 
 	destination, metadata, err := renameDownloadedPackage(source, source, "App for Youtube", "spdx15@gmail.com", appstore.PlatformMacOS)
 	if err != nil {
@@ -95,49 +97,99 @@ func TestRenameDownloadedPackagePreservesExplicitPackageFilename(t *testing.T) {
 	}
 }
 
-// writeTestPackage writes a minimal xar container: a 28 byte header, a zlib
-// compressed table of contents and, when distribution is not empty, a gzip
-// compressed Distribution member in the heap.
-func writeTestPackage(t *testing.T, path, distribution string, withDistribution bool) {
+func TestParsePkgDistributionReadsTitleVersionAndMinimumOS(t *testing.T) {
+	metadata, err := parsePkgDistribution([]byte(testPkgDistribution))
+	if err != nil {
+		t.Fatalf("failed to parse Distribution script: %v", err)
+	}
+
+	if metadata.DisplayName != "App for Youtube" || metadata.Version != "3.0" || metadata.MinimumOSVersion != "14.0" {
+		t.Fatalf("unexpected metadata: %+v", metadata)
+	}
+}
+
+// writeTestPackage writes a xar container the Store reader accepts: a 28 byte
+// header, a zlib compressed table of contents with its SHA-1 in the heap and one
+// zlib compressed member per entry.
+func writeTestPackage(t *testing.T, path string, members map[string]string) {
 	t.Helper()
 
-	var heap, tocFile string
+	names := make([]string, 0, len(members))
+	for name := range members {
+		names = append(names, name)
+	}
+	sort.Strings(names)
 
-	if withDistribution {
-		var member bytes.Buffer
-		gzipWriter := gzip.NewWriter(&member)
-		if _, err := gzipWriter.Write([]byte(distribution)); err != nil {
-			t.Fatalf("failed to compress test Distribution: %v", err)
-		}
-		if err := gzipWriter.Close(); err != nil {
-			t.Fatalf("failed to compress test Distribution: %v", err)
-		}
-
-		heap = member.String()
-		tocFile = fmt.Sprintf(`<file id="1"><data><length>%d</length><offset>0</offset><size>%d</size><encoding style="application/x-gzip"/></data><name>Distribution</name><type>file</type></file>`, len(distribution), member.Len())
+	type storedMember struct {
+		name   string
+		plain  []byte
+		stored []byte
 	}
 
-	toc := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><xar><toc><checksum style="sha1"><offset>0</offset><size>20</size></checksum>%s</toc></xar>`, tocFile)
+	items := make([]storedMember, 0, len(names))
+	for _, name := range names {
+		var buffer bytes.Buffer
+		writer := zlib.NewWriter(&buffer)
+		if _, err := writer.Write([]byte(members[name])); err != nil {
+			t.Fatalf("failed to compress test member: %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("failed to compress test member: %v", err)
+		}
+
+		items = append(items, storedMember{name: name, plain: []byte(members[name]), stored: buffer.Bytes()})
+	}
+
+	// The heap holds the table-of-contents checksum first, so member offsets
+	// start after it.
+	offset := sha1.Size
+	var files strings.Builder
+
+	for index, item := range items {
+		archived := sha1.Sum(item.stored)
+		extracted := sha1.Sum(item.plain)
+
+		fmt.Fprintf(&files,
+			`<file id="%d"><data><length>%d</length><offset>%d</offset><size>%d</size>`+
+				`<encoding style="application/x-gzip"/>`+
+				`<archived-checksum style="sha1">%x</archived-checksum>`+
+				`<extracted-checksum style="sha1">%x</extracted-checksum></data>`+
+				`<name>%s</name><type>file</type></file>`,
+			index+1, len(item.stored), offset, len(item.plain), archived, extracted, item.name)
+
+		offset += len(item.stored)
+	}
+
+	toc := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?><xar><toc>`+
+		`<checksum style="sha1"><offset>0</offset><size>%d</size></checksum>%s</toc></xar>`,
+		sha1.Size, files.String())
 
 	var compressedTOC bytes.Buffer
-	zlibWriter := zlib.NewWriter(&compressedTOC)
-	if _, err := zlibWriter.Write([]byte(toc)); err != nil {
+	tocWriter := zlib.NewWriter(&compressedTOC)
+	if _, err := tocWriter.Write([]byte(toc)); err != nil {
 		t.Fatalf("failed to compress test table of contents: %v", err)
 	}
-	if err := zlibWriter.Close(); err != nil {
+	if err := tocWriter.Close(); err != nil {
 		t.Fatalf("failed to compress test table of contents: %v", err)
 	}
 
-	header := make([]byte, xarHeaderSize)
-	copy(header, xarMagic)
-	binary.BigEndian.PutUint16(header[4:6], xarHeaderSize)
+	header := make([]byte, 28)
+	copy(header, "xar!")
+	binary.BigEndian.PutUint16(header[4:6], 28)
 	binary.BigEndian.PutUint16(header[6:8], 1)
 	binary.BigEndian.PutUint64(header[8:16], uint64(compressedTOC.Len()))
 	binary.BigEndian.PutUint64(header[16:24], uint64(len(toc)))
 	binary.BigEndian.PutUint32(header[24:28], 1)
 
-	contents := append(header, compressedTOC.Bytes()...)
-	contents = append(contents, heap...)
+	contents := append([]byte{}, header...)
+	contents = append(contents, compressedTOC.Bytes()...)
+
+	tocChecksum := sha1.Sum(compressedTOC.Bytes())
+	contents = append(contents, tocChecksum[:]...)
+
+	for _, item := range items {
+		contents = append(contents, item.stored...)
+	}
 
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatalf("failed to write test package: %v", err)
