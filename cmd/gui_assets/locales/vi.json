@@ -212,7 +212,7 @@
     "pager_per_page": "Mỗi trang:",
     "pager_all": "Tất cả",
     "no_sinf_warning": "Apple phân phối gói cài đặt không kèm chữ ký số DRM (sinf). Tệp .ipa vẫn được lưu hoàn chỉnh — có thể giải mã hoặc kiểm tra, nhưng sẽ không thể cài đặt trực tiếp lên thiết bị. Thử lại sau hoặc chọn phiên bản khác.",
-    "filename_warning": "Không thể đọc tên ứng dụng và phiên bản từ Info.plist; tên tệp tải về được giữ nguyên.",
+    "filename_warning": "Không thể đọc tên ứng dụng, phiên bản và phiên bản hệ điều hành tối thiểu từ siêu dữ liệu gói; tên tệp tải về được giữ nguyên.",
     "no_sinf_short": "không có sinf",
     "batch_select_hint": "Chọn các ứng dụng và nhấn \"Tải các mục đã chọn\":",
     "batch_download_progress_title": "Đang tải hàng loạt các ứng dụng đã chọn...",

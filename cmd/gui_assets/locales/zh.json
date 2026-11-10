@@ -212,7 +212,7 @@
     "pager_per_page": "每页：",
     "pager_all": "全部",
     "no_sinf_warning": "Apple 提供的包中没有 DRM 签名（sinf）。.ipa 已完整保存——可以解密或查看，但无法安装到设备。请稍后重试或选择其他版本。",
-    "filename_warning": "无法从 Info.plist 读取应用名称和版本；下载的文件名保持原样。",
+    "filename_warning": "无法从软件包元数据中读取应用名称、版本和最低操作系统版本；下载的文件名保持原样。",
     "no_sinf_short": "无 sinf",
     "batch_select_hint": "勾选应用后点击“下载所选”：",
     "batch_download_progress_title": "正在批量下载所选应用...",
