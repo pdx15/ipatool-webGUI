@@ -3,10 +3,19 @@ name: Build Windows WebGUI (Test)
 on:
   workflow_dispatch:
     inputs:
-      upstream_version:
-        description: 'Version (e.g. 2.8.0, 2.8.0b, or 2.8.1). Leave blank for latest release'
+      upstream_ref:
+        description: 'Upstream majd/ipatool git ref: tag (v2.8.0), branch (main) or commit SHA. Leave blank for DEFAULT_UPSTREAM_REF.'
         required: false
         default: ''
+      upstream_version:
+        description: 'WebGUI version (e.g. 2.8.0, 2.8.0b, or 2.8.1). Leave blank to derive it from the ref.'
+        required: false
+        default: ''
+
+env:
+  # The upstream commit the integration patches are written against.
+  # Bump it together with patches/ when moving to a newer upstream commit.
+  DEFAULT_UPSTREAM_REF: 'e0e2908dc866651cbd6ad86edd954119c003c46b'
 
 permissions:
   contents: read
@@ -17,33 +26,44 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       raw_version: ${{ steps.version.outputs.raw_version }}
-      upstream_tag: ${{ steps.version.outputs.upstream_tag }}
+      upstream_ref: ${{ steps.version.outputs.upstream_ref }}
       release_version: ${{ steps.version.outputs.release_version }}
     steps:
       - name: Fetch version
         id: version
         run: |
-          CUSTOM_VER="${{ github.event.inputs.upstream_version }}"
-          if [ -n "$CUSTOM_VER" ]; then
-            RAW_VER=$(echo "$CUSTOM_VER" | sed 's/^v//' | sed 's/-webGUI$//')
-            UPSTREAM_VER=$(echo "$RAW_VER" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+)[a-zA-Z].*$/\1/')
-            UPSTREAM_TAG="v${UPSTREAM_VER}"
-          else
-            LATEST_TAG=$(curl -s https://api.github.com/repos/majd/ipatool/releases/latest | jq -r '.tag_name // empty')
-            if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
-              LATEST_TAG="v2.8.0"
-            fi
-            RAW_VER="${LATEST_TAG#v}"
-            UPSTREAM_TAG="$LATEST_TAG"
+          REF="${{ github.event.inputs.upstream_ref }}"
+          if [ -z "$REF" ]; then
+            REF="$DEFAULT_UPSTREAM_REF"
           fi
 
-          RELEASE_VER="${RAW_VER}-webGUI"
+          VER="${{ github.event.inputs.upstream_version }}"
+          VER=$(echo "$VER" | sed 's/^v//' | sed 's/-webGUI$//')
 
-          echo "raw_version=${RAW_VER}" >> $GITHUB_OUTPUT
-          echo "upstream_tag=${UPSTREAM_TAG}" >> $GITHUB_OUTPUT
+          if [ -z "$VER" ]; then
+            if echo "$REF" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+              VER=$(echo "$REF" | sed 's/^v//')
+            else
+              LATEST_TAG=$(curl -s https://api.github.com/repos/majd/ipatool/releases/latest | jq -r '.tag_name // empty')
+              if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then
+                LATEST_TAG="v2.8.0"
+              fi
+              if echo "$REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+                REF_LABEL=$(echo "$REF" | cut -c1-7)
+              else
+                REF_LABEL=$(echo "$REF" | tr '/' '-' | tr -cd '[:alnum:]._-' | cut -c1-12)
+              fi
+              VER="${LATEST_TAG#v}-${REF_LABEL}"
+            fi
+          fi
+
+          RELEASE_VER="${VER}-webGUI"
+
+          echo "upstream_ref=${REF}" >> $GITHUB_OUTPUT
+          echo "raw_version=${VER}" >> $GITHUB_OUTPUT
           echo "release_version=${RELEASE_VER}" >> $GITHUB_OUTPUT
 
-          echo "Upstream Tag: $UPSTREAM_TAG"
+          echo "Upstream Ref: $REF"
           echo "Build Version: $RELEASE_VER"
 
   build_windows:
@@ -64,10 +84,25 @@ jobs:
 
       - name: Clone upstream majd/ipatool
         run: |
-          UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
-          echo "Cloning majd/ipatool @ $UPSTREAM_TAG"
-          git clone --depth 1 --branch "$UPSTREAM_TAG" https://github.com/majd/ipatool.git ipatool || \
-          git clone --depth 1 https://github.com/majd/ipatool.git ipatool
+          UPSTREAM_REF="${{ needs.get_version.outputs.upstream_ref }}"
+          echo "Cloning majd/ipatool @ $UPSTREAM_REF"
+          if echo "$UPSTREAM_REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            # A commit SHA cannot be passed to --branch, so clone the repository
+            # and check the requested commit out explicitly. The integration
+            # patches target one concrete upstream commit, so the build must
+            # never silently fall back to the default branch.
+            git clone https://github.com/majd/ipatool.git ipatool
+            git -C ipatool checkout --detach "$UPSTREAM_REF"
+          else
+            git clone --depth 1 --branch "$UPSTREAM_REF" https://github.com/majd/ipatool.git ipatool
+          fi
+
+          RESOLVED=$(git -C ipatool rev-parse HEAD)
+          echo "Resolved upstream commit: $RESOLVED"
+          if echo "$UPSTREAM_REF" | grep -Eq '^[0-9a-f]{40}$' && [ "$RESOLVED" != "$UPSTREAM_REF" ]; then
+            echo "::error::Checked out $RESOLVED but $UPSTREAM_REF was requested"
+            exit 1
+          fi
 
       - name: Add the WebGUI sources to the upstream tree
         run: |
@@ -75,7 +110,7 @@ jobs:
           GUI_PATCH="../webgui/patches/register-gui.patch"
           METADATA_PATCH="../webgui/patches/minimum-os-version.patch"
           PRIORITY_PATCH="../webgui/patches/download-product-priority.patch"
-          UPSTREAM_TAG="${{ needs.get_version.outputs.upstream_tag }}"
+          UPSTREAM_REF="${{ needs.get_version.outputs.upstream_ref }}"
 
           for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH"; do
             if [ ! -f "$PATCH" ]; then
@@ -83,7 +118,7 @@ jobs:
               exit 1
             fi
             if ! git apply --check "$PATCH"; then
-              echo "::error::$PATCH does not apply to ipatool $UPSTREAM_TAG; refresh the integration patch for that upstream tag."
+              echo "::error::$PATCH does not apply to ipatool $UPSTREAM_REF; refresh the integration patch for that upstream ref."
               exit 1
             fi
           done
