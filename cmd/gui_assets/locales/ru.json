@@ -6,7 +6,7 @@
     "intlLocale": "ru-RU"
   },
   "strings": {
-    "app_subtitle": "App Store IPA Downloader для Windows",
+    "app_subtitle": "Загрузчик и установщик IPA из App Store",
     "auth_checking": "Проверка аккаунта...",
     "auth_not_logged_in": "Не авторизован",
     "auth_logged_in": "Авторизован",
