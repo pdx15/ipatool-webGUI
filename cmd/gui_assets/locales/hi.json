@@ -6,7 +6,7 @@
     "intlLocale": "hi-IN"
   },
   "strings": {
-    "app_subtitle": "Windows के लिए App Store IPA डाउनलोडर",
+    "app_subtitle": "App Store IPA डाउनलोडर और इंस्टॉलर",
     "auth_checking": "खाता जाँचा जा रहा है...",
     "auth_not_logged_in": "लॉग इन नहीं है",
     "auth_logged_in": "प्रमाणित",

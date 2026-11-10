@@ -6,7 +6,7 @@
     "intlLocale": "en-US"
   },
   "strings": {
-    "app_subtitle": "App Store IPA Downloader for Windows",
+    "app_subtitle": "App Store IPA Downloader & Installer",
     "auth_checking": "Checking account...",
     "auth_not_logged_in": "Not Logged In",
     "auth_logged_in": "Authenticated",

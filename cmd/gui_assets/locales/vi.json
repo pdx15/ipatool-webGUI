@@ -6,7 +6,7 @@
     "intlLocale": "vi-VN"
   },
   "strings": {
-    "app_subtitle": "Trình tải và cài đặt tệp IPA App Store cho Windows",
+    "app_subtitle": "Trình tải xuống và cài đặt IPA từ App Store",
     "auth_checking": "Đang kiểm tra tài khoản...",
     "auth_not_logged_in": "Chưa đăng nhập",
     "auth_logged_in": "Đã xác thực",

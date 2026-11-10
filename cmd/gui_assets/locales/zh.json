@@ -6,7 +6,7 @@
     "intlLocale": "zh-CN"
   },
   "strings": {
-    "app_subtitle": "适用于 Windows 的 App Store IPA 下载器",
+    "app_subtitle": "App Store IPA 下载器与安装器",
     "auth_checking": "正在检查账号...",
     "auth_not_logged_in": "未登录",
     "auth_logged_in": "已授权",
