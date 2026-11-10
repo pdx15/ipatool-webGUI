@@ -142,6 +142,7 @@ jobs:
             exit 1
           fi
           GOOS=windows go build ./...
+          go test ./cmd/ -run 'TestRenameDownloaded' -count=1
 
       - name: Build Windows binary (AMD64)
         run: |

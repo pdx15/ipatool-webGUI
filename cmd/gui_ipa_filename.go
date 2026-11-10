@@ -24,21 +24,28 @@ type ipaFilenameMetadata struct {
 	PlatformName     string
 }
 
-// renameDownloadedIPAPackage applies the GUI's descriptive filename to an IPA
-// when ipatool chose the path itself (or the user chose an output directory).
-// An explicitly supplied output filename is left untouched.
-func renameDownloadedIPAPackage(path, requestedOutputPath, fallbackAppName, accountEmail string, platform appstore.Platform) (string, ipaFilenameMetadata, error) {
-	if !strings.EqualFold(filepath.Ext(path), ".ipa") {
+// renameDownloadedPackage applies the GUI's descriptive filename to a downloaded
+// package when ipatool chose the path itself (or the user chose an output
+// directory). An explicitly supplied output filename is left untouched.
+//
+// iOS packages carry the metadata in their Info.plist. A macOS .pkg has no
+// Info.plist at the archive root, so its Distribution script supplies the name,
+// the version and the minimum OS version instead.
+func renameDownloadedPackage(path, requestedOutputPath, fallbackAppName, accountEmail string, platform appstore.Platform) (string, ipaFilenameMetadata, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".ipa":
+		return renameDownloadedIPAPackage(path, requestedOutputPath, fallbackAppName, accountEmail, platform)
+	case ".pkg":
+		return renameDownloadedMacOSPackage(path, requestedOutputPath, fallbackAppName, accountEmail)
+	default:
 		return path, ipaFilenameMetadata{}, nil
 	}
+}
 
-	destinationDirectory := filepath.Dir(path)
-	if requestedOutputPath != "" {
-		info, err := os.Stat(requestedOutputPath)
-		if err != nil || !info.IsDir() {
-			return path, ipaFilenameMetadata{}, nil
-		}
-		destinationDirectory = requestedOutputPath
+func renameDownloadedIPAPackage(path, requestedOutputPath, fallbackAppName, accountEmail string, platform appstore.Platform) (string, ipaFilenameMetadata, error) {
+	destinationDirectory, ok := downloadDestinationDirectory(path, requestedOutputPath)
+	if !ok {
+		return path, ipaFilenameMetadata{}, nil
 	}
 
 	metadata, err := readIPAFilenameMetadata(path)
@@ -48,17 +55,58 @@ func renameDownloadedIPAPackage(path, requestedOutputPath, fallbackAppName, acco
 	if metadata.DisplayName == "" {
 		metadata.DisplayName = fallbackAppName
 	}
-	metadata.DisplayName = safeFilenamePart(metadata.DisplayName)
-	metadata.Version = safeFilenamePart(metadata.Version)
-	metadata.MinimumOSVersion = safeFilenamePart(metadata.MinimumOSVersion)
 
 	if metadata.PlatformName == "" {
 		metadata.PlatformName = filenamePlatformName(platform)
 	}
 
-	fileName := formatIPAFilename(metadata, accountEmail)
+	return moveDownloadedPackage(path, destinationDirectory, metadata, accountEmail, ".ipa")
+}
+
+// renameDownloadedMacOSPackage names a macOS package after the Distribution
+// script it carries, which is where a .pkg keeps its title, version and minimum
+// allowed OS version.
+func renameDownloadedMacOSPackage(path, requestedOutputPath, fallbackAppName, accountEmail string) (string, ipaFilenameMetadata, error) {
+	destinationDirectory, ok := downloadDestinationDirectory(path, requestedOutputPath)
+	if !ok {
+		return path, ipaFilenameMetadata{}, nil
+	}
+
+	metadata, err := readMacOSPackageFilenameMetadata(path)
+	if err != nil {
+		return path, ipaFilenameMetadata{}, err
+	}
+	if metadata.DisplayName == "" {
+		metadata.DisplayName = fallbackAppName
+	}
+
+	return moveDownloadedPackage(path, destinationDirectory, metadata, accountEmail, ".pkg")
+}
+
+// downloadDestinationDirectory reports where a renamed package goes. A second
+// return value of false means the caller must keep the downloaded path.
+func downloadDestinationDirectory(path, requestedOutputPath string) (string, bool) {
+	if requestedOutputPath == "" {
+		return filepath.Dir(path), true
+	}
+
+	info, err := os.Stat(requestedOutputPath)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+
+	return requestedOutputPath, true
+}
+
+// moveDownloadedPackage applies the descriptive filename and moves the file.
+func moveDownloadedPackage(path, destinationDirectory string, metadata ipaFilenameMetadata, accountEmail, extension string) (string, ipaFilenameMetadata, error) {
+	metadata.DisplayName = safeFilenamePart(metadata.DisplayName)
+	metadata.Version = safeFilenamePart(metadata.Version)
+	metadata.MinimumOSVersion = safeFilenamePart(metadata.MinimumOSVersion)
+
+	fileName := formatPackageFilename(metadata, accountEmail, extension)
 	if fileName == "" {
-		return path, metadata, errors.New("IPA Info.plist does not contain a usable app name and version")
+		return path, metadata, errors.New("downloaded package does not contain a usable app name and version")
 	}
 
 	destination := filepath.Join(destinationDirectory, fileName)
@@ -66,12 +114,12 @@ func renameDownloadedIPAPackage(path, requestedOutputPath, fallbackAppName, acco
 		return path, metadata, nil
 	}
 
-	destination, err = unusedDestinationPath(destination, path)
+	destination, err := unusedDestinationPath(destination, path)
 	if err != nil {
 		return path, metadata, fmt.Errorf("failed to select a destination filename: %w", err)
 	}
 	if err := os.Rename(path, destination); err != nil {
-		return path, metadata, fmt.Errorf("failed to rename downloaded IPA: %w", err)
+		return path, metadata, fmt.Errorf("failed to rename downloaded package: %w", err)
 	}
 
 	return destination, metadata, nil
@@ -176,6 +224,10 @@ func filenamePlatformName(platform appstore.Platform) string {
 }
 
 func formatIPAFilename(metadata ipaFilenameMetadata, accountEmail string) string {
+	return formatPackageFilename(metadata, accountEmail, ".ipa")
+}
+
+func formatPackageFilename(metadata ipaFilenameMetadata, accountEmail, extension string) string {
 	name := safeFilenamePart(metadata.DisplayName)
 	version := safeFilenamePart(metadata.Version)
 	if name == "" || version == "" {
@@ -195,7 +247,7 @@ func formatIPAFilename(metadata ipaFilenameMetadata, accountEmail string) string
 		parts = append(parts, username)
 	}
 
-	return strings.Join(parts, "_") + ".ipa"
+	return strings.Join(parts, "_") + extension
 }
 
 func accountUsername(email string) string {
