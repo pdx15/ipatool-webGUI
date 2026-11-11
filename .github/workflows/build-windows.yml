@@ -275,13 +275,6 @@ jobs:
 
           zip -qry "$GITHUB_WORKSPACE/tools-macos.zip" tools
 
-      - name: Upload probe report
-        uses: actions/upload-artifact@v4
-        with:
-          name: probe-report
-          path: probe.txt
-          if-no-files-found: error
-
       - name: Add the device tools to the matching macOS archive
         run: |
           set -euo pipefail
@@ -316,3 +309,10 @@ jobs:
             unzip -l "$ARCHIVE" | tail -n 5
           } > probe.txt
           cat probe.txt
+
+      - name: Upload probe report
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-report
+          path: probe.txt
+          if-no-files-found: error
