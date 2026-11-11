@@ -142,7 +142,7 @@ jobs:
             exit 1
           fi
           GOOS=windows go build ./...
-          go test ./cmd/ -run 'TestRenameDownloaded' -count=1
+          go test ./cmd/ -run 'TestRenameDownloaded|TestMacOSSupportsSystemTrust' -count=1
 
       - name: Build Windows binary (AMD64)
         run: |
@@ -183,41 +183,242 @@ jobs:
           path: ipatool-${{ needs.get_version.outputs.release_version }}-windows
           if-no-files-found: error
 
-  probe_go124:
-    name: TEMP probe Go 1.24 build for Catalina
-    runs-on: ubuntu-latest
+  build_macos:
+    name: Build macOS WebGUI binaries (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: [get_version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Each archive gets the device tools built natively for its own
+          # architecture, so installing apps works on Apple Silicon and on Intel
+          # Macs without anything installed from Homebrew.
+          - arch: arm64
+            goarch: arm64
+            runner: macos-latest
+          - arch: amd64
+            goarch: amd64
+            runner: macos-15-intel
     steps:
-      - name: Checkout
+      - name: Checkout WebGUI repository
         uses: actions/checkout@v4
         with:
           path: webgui
 
-      - name: Set up Go 1.24
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.8'
+          go-version: '1.26.5'
           cache: false
 
-      - name: Build the patched tree with Go 1.24 for darwin/amd64
+      - name: Clone upstream majd/ipatool
         run: |
-          set -euo pipefail
-          git clone https://github.com/majd/ipatool.git ipatool
-          git -C ipatool checkout --detach e0e2908dc866651cbd6ad86edd954119c003c46b
+          UPSTREAM_REF="${{ needs.get_version.outputs.upstream_ref }}"
+          echo "Cloning majd/ipatool @ $UPSTREAM_REF"
+          if echo "$UPSTREAM_REF" | grep -Eq '^[0-9a-f]{7,40}$'; then
+            # A commit SHA cannot be passed to --branch, so clone the repository
+            # and check the requested commit out explicitly. The integration
+            # patches target one concrete upstream commit, so the build must
+            # never silently fall back to the default branch.
+            git clone https://github.com/majd/ipatool.git
+            git -C ipatool checkout --detach "$UPSTREAM_REF"
+          else
+            git clone --depth 1 --branch "$UPSTREAM_REF" https://github.com/majd/ipatool.git ipatool
+          fi
+
+          RESOLVED=$(git -C ipatool rev-parse HEAD)
+          echo "Resolved upstream commit: $RESOLVED"
+          echo "Upstream ref \`$UPSTREAM_REF\` resolved to \`$RESOLVED\`" >> $GITHUB_STEP_SUMMARY
+          if echo "$UPSTREAM_REF" | grep -Eq '^[0-9a-f]{40}$' && [ "$RESOLVED" != "$UPSTREAM_REF" ]; then
+            echo "::error::Checked out $RESOLVED but $UPSTREAM_REF was requested"
+            exit 1
+          fi
+
+      - name: Add the WebGUI sources to the upstream tree
+        run: |
           cd ipatool
-          for PATCH in ../webgui/patches/register-gui.patch ../webgui/patches/minimum-os-version.patch ../webgui/patches/download-product-priority.patch; do
-            git apply "$PATCH"
+          GUI_PATCH="../webgui/patches/register-gui.patch"
+          METADATA_PATCH="../webgui/patches/minimum-os-version.patch"
+          PRIORITY_PATCH="../webgui/patches/download-product-priority.patch"
+          UPSTREAM_REF="${{ needs.get_version.outputs.upstream_ref }}"
+
+          # Keep the upstream integration narrow and explicit: register the GUI
+          # command, expose MinimumOSVersion from the Info.plist that ipatool
+          # already range-reads to build version metadata, and carry the
+          # volumeStore-first download fallback chain. The patch also keeps an app
+          # whose storefront catalog has no offer reachable: after the unpinned
+          # redownload the kbsync ent/download path is tried before Apple's
+          # opaque "403 empty body" is surfaced.
+          for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH"; do
+            if [ ! -f "$PATCH" ]; then
+              echo "::error::Required upstream patch is missing: $PATCH"
+              exit 1
+            fi
+            if ! git apply --check "$PATCH"; then
+              echo "::error::$PATCH does not apply to ipatool $UPSTREAM_REF; refresh the integration patch for that upstream ref."
+              exit 1
+            fi
           done
+
+          git apply "$GUI_PATCH"
+          git apply "$METADATA_PATCH"
+          git apply "$PRIORITY_PATCH"
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
-          go mod edit -go=1.24.8
-          echo "== go version =="
-          go version
-          echo "== build =="
-          set +e
-          output=$(GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/ipatool-legacy . 2>&1)
-          status=$?
-          set -e
-          echo "$output" | grep -v '^go: downloading' | head -30
-          trimmed=$(echo "$output" | grep -v '^go: downloading' | tail -8 | tr '\n' '~')
-          echo "::error::status=${status} output=${trimmed}"
-          test -f /tmp/ipatool-legacy && echo "::notice::go1.24 darwin/amd64 build OK"
+          mkdir -p ./resources
+          cp -r ../webgui/resources/* ./resources/ 2>/dev/null || true
+
+      - name: Verify the GUI builds with the minimal upstream metadata extension
+        run: |
+          cd ipatool
+          # The only permitted package changes are the metadata implementation,
+          # its test, exposing MinimumOSVersion from the IPA Info.plist, the
+          # volumeStore priority patch, and the storefront discovery headers.
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/(appstore_(get_version_metadata(_test)?|partial_zip|download(_product)?|kbsync|lookup|(macos|platform)_version_(lookup|metadata)|macos_preflight_metadata)|storefront)\.go$' || true)
+          if [ -n "$unexpected_pkg_changes" ]; then
+            echo "::error::Unexpected changes to upstream package sources:"
+            echo "$unexpected_pkg_changes"
+            git diff --stat -- pkg/
+            exit 1
+          fi
+          go build ./...
+
+      - name: Build macOS binary (${{ matrix.arch }})
+        run: |
+          cd ipatool
+          VERSION="${{ needs.get_version.outputs.release_version }}"
+          BIN_NAME="ipatool-${VERSION}-${{ matrix.arch }}-macOS"
+          CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.goarch }} \
+            CGO_CFLAGS="-mmacosx-version-min=12.0" \
+            CGO_LDFLAGS="-mmacosx-version-min=12.0" \
+            go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
+            -o "../${BIN_NAME}" .
+          cd ..
+          chmod +x "${BIN_NAME}"
+          zip "${BIN_NAME}.zip" "${BIN_NAME}"
+
+      - name: Bundle libimobiledevice device tools
+        run: |
+          set -euo pipefail
+
+          # Build the device tools locally instead of copying a third-party
+          # binary drop: the prebuilt sets either ship only a subset of the
+          # libraries they link against, or are Intel-only builds that need
+          # Rosetta. Homebrew builds for the runner's own architecture and
+          # resolves every dependency of the tools.
+          brew install libimobiledevice ideviceinstaller
+
+          PREFIX="$(brew --prefix)"
+          TOOLS="$GITHUB_WORKSPACE/tools"
+          mkdir -p "$TOOLS"
+
+          for tool in idevice_id ideviceinfo ideviceinstaller; do
+            if [ ! -x "$PREFIX/bin/$tool" ]; then
+              echo "::error::$PREFIX/bin/$tool is missing; the macOS bundle needs it."
+              exit 1
+            fi
+            cp -f "$PREFIX/bin/$tool" "$TOOLS/"
+          done
+
+          # Collect every Homebrew library the tools link against, then rewrite
+          # the load commands to @executable_path so the tools run from the
+          # bundle: the GUI starts tools/<tool>, so @executable_path is tools/.
+          pending=()
+          for file in "$TOOLS"/*; do
+            pending+=("$file")
+          done
+
+          while [ ${#pending[@]} -gt 0 ]; do
+            file="${pending[0]}"
+            pending=("${pending[@]:1}")
+            chmod u+w "$file"
+
+            while read -r dep; do
+              case "$dep" in
+                "$PREFIX"/*) source_path="$dep" ;;
+                @rpath/*) source_path="$PREFIX/lib/${dep#@rpath/}" ;;
+                *) continue ;;
+              esac
+              if [ ! -f "$source_path" ]; then
+                continue
+              fi
+
+              library="$(basename "$source_path")"
+              if [ ! -f "$TOOLS/$library" ]; then
+                cp -f "$source_path" "$TOOLS/$library"
+                chmod u+w "$TOOLS/$library"
+                pending+=("$TOOLS/$library")
+              fi
+
+              install_name_tool -change "$dep" "@executable_path/$library" "$file"
+            done < <(otool -L "$file" | tail -n +2 | awk '{print $1}')
+          done
+
+          # Point each library at itself by its portable name.
+          for library in "$TOOLS"/*.dylib; do
+            chmod u+w "$library"
+            install_name_tool -id "@executable_path/$(basename "$library")" "$library"
+          done
+
+          chmod +x "$TOOLS"/idevice_id "$TOOLS"/ideviceinfo "$TOOLS"/ideviceinstaller
+
+          # install_name_tool invalidates the signature, and arm64 refuses to
+          # run unsigned binaries, so re-sign the bundle ad-hoc.
+          codesign --force --sign - "$TOOLS"/*
+
+          case "$(uname -m)" in
+            arm64) runner_arch=arm64 ;;
+            x86_64) runner_arch=amd64 ;;
+            *) echo "::error::Unsupported macOS architecture $(uname -m)"; exit 1 ;;
+          esac
+          if [ "$runner_arch" != "${{ matrix.arch }}" ]; then
+            echo "::error::Runner architecture ${runner_arch} does not match the ${{ matrix.arch }} matrix entry"
+            exit 1
+          fi
+
+          # Prove that dyld resolves the whole chain without Homebrew present.
+          env -i "$TOOLS/ideviceinstaller" --help > /dev/null
+
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          zip -qry "$GITHUB_WORKSPACE/dist/tools-macos.zip" tools
+
+          echo "Bundled $(ls "$TOOLS" | wc -l | tr -d ' ') files for ${runner_arch}:" >> $GITHUB_STEP_SUMMARY
+          ls "$TOOLS" >> $GITHUB_STEP_SUMMARY
+
+      - name: Add the device tools to the macOS archive
+        run: |
+          set -uo pipefail
+
+          ARCHIVE="ipatool-${{ needs.get_version.outputs.release_version }}-${{ matrix.arch }}-macOS.zip"
+
+          rm -rf unpacked
+          mkdir unpacked
+
+          if ! unzip -q "$ARCHIVE" -d unpacked; then
+            echo "::error::could not extract ${ARCHIVE}; workspace holds: $(ls -1 | tr '\n' ' ')"
+            exit 1
+          fi
+          if ! unzip -q dist/tools-macos.zip -d unpacked; then
+            echo "::error::could not extract dist/tools-macos.zip; workspace holds: $(ls -1 | tr '\n' ' ')"
+            exit 1
+          fi
+
+          for tool in idevice_id ideviceinfo ideviceinstaller; do
+            if [ ! -x "unpacked/tools/$tool" ]; then
+              echo "::error::unpacked/tools/$tool is missing; the tools archive holds: $(unzip -Z1 dist/tools-macos.zip | tr '\n' ' ')"
+              exit 1
+            fi
+          done
+
+          rm -f "$ARCHIVE"
+          (cd unpacked && zip -qry "../$ARCHIVE" .)
+
+          echo "Archive contents: $(unzip -Z1 "$ARCHIVE" | tr '\n' ' ')" >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload macOS ${{ matrix.arch }} archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-${{ matrix.arch }}-macOS.zip
+          path: ipatool-*-${{ matrix.arch }}-macOS.zip
+          if-no-files-found: error

@@ -180,8 +180,8 @@ jobs:
           VERSION="${{ needs.get_version.outputs.release_version }}"
           BIN_NAME="ipatool-${VERSION}-${{ matrix.arch }}-macOS"
           CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.goarch }} \
-            CGO_CFLAGS="-mmacosx-version-min=10.15" \
-            CGO_LDFLAGS="-mmacosx-version-min=10.15" \
+            CGO_CFLAGS="-mmacosx-version-min=12.0" \
+            CGO_LDFLAGS="-mmacosx-version-min=12.0" \
             go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
             -o "../${BIN_NAME}" .
           cd ..
