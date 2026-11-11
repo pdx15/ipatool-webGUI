@@ -76,7 +76,7 @@ jobs:
           echo "Build Version: $RELEASE_VER"
 
   build_macos_arm64:
-    name: Build macOS archive (arm64, Apple Silicon)
+    name: Build macOS package (arm64, Apple Silicon)
     runs-on: macos-latest
     needs: [get_version]
     # Each architecture is its own job, so a single one can be tested in
@@ -170,15 +170,18 @@ jobs:
         run: |
           cd ipatool
           VERSION="${{ needs.get_version.outputs.release_version }}"
-          BIN_NAME="ipatool-${VERSION}-arm64-macOS"
+          # Build straight into the package directory: the artifact then carries
+          # the finished layout (ipatool + tools/) instead of an archive inside
+          # the artifact archive.
+          PACKAGE="ipatool-${VERSION}-arm64-macOS"
+          mkdir -p "../${PACKAGE}"
           CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
             CGO_CFLAGS="-mmacosx-version-min=12.0" \
             CGO_LDFLAGS="-mmacosx-version-min=12.0" \
             go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
-            -o "../${BIN_NAME}" .
+            -o "../${PACKAGE}/ipatool" .
           cd ..
-          chmod +x "${BIN_NAME}"
-          zip "${BIN_NAME}.zip" "${BIN_NAME}"
+          chmod +x "${PACKAGE}/ipatool"
 
       - name: Bundle libimobiledevice device tools
         run: |
@@ -262,52 +265,43 @@ jobs:
           # Prove that dyld resolves the whole chain without Homebrew present.
           env -i "$TOOLS/ideviceinstaller" --help > /dev/null
 
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          zip -qry "$GITHUB_WORKSPACE/dist/tools-macos.zip" tools
-
           echo "Bundled $(ls "$TOOLS" | wc -l | tr -d ' ') files for ${runner_arch}:" >> $GITHUB_STEP_SUMMARY
           ls "$TOOLS" >> $GITHUB_STEP_SUMMARY
 
-      - name: Add the device tools to the macOS archive
+      - name: Add the device tools to the package
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
-          ARCHIVE="ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS.zip"
+          PACKAGE="ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS"
 
-          rm -rf unpacked
-          mkdir unpacked
-
-          if ! unzip -q "$ARCHIVE" -d unpacked; then
-            echo "::error::could not extract ${ARCHIVE}; workspace holds: $(ls -1 | tr '\n' ' ')"
+          if [ ! -x "$PACKAGE/ipatool" ]; then
+            echo "::error::$PACKAGE/ipatool is missing; workspace holds: $(ls -1 | tr '\n' ' ')"
             exit 1
           fi
-          if ! unzip -q dist/tools-macos.zip -d unpacked; then
-            echo "::error::could not extract dist/tools-macos.zip; workspace holds: $(ls -1 | tr '\n' ' ')"
-            exit 1
-          fi
+
+          rm -rf "$PACKAGE/tools"
+          cp -R tools "$PACKAGE/tools"
 
           for tool in idevice_id ideviceinfo ideviceinstaller; do
-            if [ ! -x "unpacked/tools/$tool" ]; then
-              echo "::error::unpacked/tools/$tool is missing; the tools archive holds: $(unzip -Z1 dist/tools-macos.zip | tr '\n' ' ')"
+            if [ ! -x "$PACKAGE/tools/$tool" ]; then
+              echo "::error::$PACKAGE/tools/$tool is missing after copying the tools"
               exit 1
             fi
           done
 
-          rm -f "$ARCHIVE"
-          (cd unpacked && zip -qry "../$ARCHIVE" .)
+          find "$PACKAGE" -maxdepth 2 -print >> $GITHUB_STEP_SUMMARY
+          echo "Artifact upload drops the executable bit: after unpacking run chmod +x ipatool tools/*" >> $GITHUB_STEP_SUMMARY
 
-          echo "Archive contents: $(unzip -Z1 "$ARCHIVE" | tr '\n' ' ')" >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload macOS arm64 archive
+      - name: Upload macOS arm64 package
         uses: actions/upload-artifact@v4
         with:
-          name: ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS.zip
-          path: ipatool-*-arm64-macOS.zip
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS
+          path: ipatool-*-arm64-macOS
           if-no-files-found: error
 
 
   build_macos_amd64:
-    name: Build macOS archive (amd64, Intel)
+    name: Build macOS package (amd64, Intel)
     runs-on: macos-15-intel
     needs: [get_version]
     # Each architecture is its own job, so a single one can be tested in
@@ -401,15 +395,18 @@ jobs:
         run: |
           cd ipatool
           VERSION="${{ needs.get_version.outputs.release_version }}"
-          BIN_NAME="ipatool-${VERSION}-amd64-macOS"
+          # Build straight into the package directory: the artifact then carries
+          # the finished layout (ipatool + tools/) instead of an archive inside
+          # the artifact archive.
+          PACKAGE="ipatool-${VERSION}-amd64-macOS"
+          mkdir -p "../${PACKAGE}"
           CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
             CGO_CFLAGS="-mmacosx-version-min=12.0" \
             CGO_LDFLAGS="-mmacosx-version-min=12.0" \
             go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
-            -o "../${BIN_NAME}" .
+            -o "../${PACKAGE}/ipatool" .
           cd ..
-          chmod +x "${BIN_NAME}"
-          zip "${BIN_NAME}.zip" "${BIN_NAME}"
+          chmod +x "${PACKAGE}/ipatool"
 
       - name: Bundle libimobiledevice device tools
         run: |
@@ -493,46 +490,37 @@ jobs:
           # Prove that dyld resolves the whole chain without Homebrew present.
           env -i "$TOOLS/ideviceinstaller" --help > /dev/null
 
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          zip -qry "$GITHUB_WORKSPACE/dist/tools-macos.zip" tools
-
           echo "Bundled $(ls "$TOOLS" | wc -l | tr -d ' ') files for ${runner_arch}:" >> $GITHUB_STEP_SUMMARY
           ls "$TOOLS" >> $GITHUB_STEP_SUMMARY
 
-      - name: Add the device tools to the macOS archive
+      - name: Add the device tools to the package
         run: |
-          set -uo pipefail
+          set -euo pipefail
 
-          ARCHIVE="ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS.zip"
+          PACKAGE="ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS"
 
-          rm -rf unpacked
-          mkdir unpacked
-
-          if ! unzip -q "$ARCHIVE" -d unpacked; then
-            echo "::error::could not extract ${ARCHIVE}; workspace holds: $(ls -1 | tr '\n' ' ')"
+          if [ ! -x "$PACKAGE/ipatool" ]; then
+            echo "::error::$PACKAGE/ipatool is missing; workspace holds: $(ls -1 | tr '\n' ' ')"
             exit 1
           fi
-          if ! unzip -q dist/tools-macos.zip -d unpacked; then
-            echo "::error::could not extract dist/tools-macos.zip; workspace holds: $(ls -1 | tr '\n' ' ')"
-            exit 1
-          fi
+
+          rm -rf "$PACKAGE/tools"
+          cp -R tools "$PACKAGE/tools"
 
           for tool in idevice_id ideviceinfo ideviceinstaller; do
-            if [ ! -x "unpacked/tools/$tool" ]; then
-              echo "::error::unpacked/tools/$tool is missing; the tools archive holds: $(unzip -Z1 dist/tools-macos.zip | tr '\n' ' ')"
+            if [ ! -x "$PACKAGE/tools/$tool" ]; then
+              echo "::error::$PACKAGE/tools/$tool is missing after copying the tools"
               exit 1
             fi
           done
 
-          rm -f "$ARCHIVE"
-          (cd unpacked && zip -qry "../$ARCHIVE" .)
+          find "$PACKAGE" -maxdepth 2 -print >> $GITHUB_STEP_SUMMARY
+          echo "Artifact upload drops the executable bit: after unpacking run chmod +x ipatool tools/*" >> $GITHUB_STEP_SUMMARY
 
-          echo "Archive contents: $(unzip -Z1 "$ARCHIVE" | tr '\n' ' ')" >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload macOS amd64 archive
+      - name: Upload macOS amd64 package
         uses: actions/upload-artifact@v4
         with:
-          name: ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS.zip
-          path: ipatool-*-amd64-macOS.zip
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS
+          path: ipatool-*-amd64-macOS
           if-no-files-found: error
 
