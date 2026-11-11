@@ -217,7 +217,7 @@ jobs:
           output=$(GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/ipatool-legacy . 2>&1)
           status=$?
           set -e
-          echo "$output" | head -30
-          trimmed=$(echo "$output" | head -12 | tr '\n' '~')
+          echo "$output" | grep -v '^go: downloading' | head -30
+          trimmed=$(echo "$output" | grep -v '^go: downloading' | tail -8 | tr '\n' '~')
           echo "::error::status=${status} output=${trimmed}"
           test -f /tmp/ipatool-legacy && echo "::notice::go1.24 darwin/amd64 build OK"
