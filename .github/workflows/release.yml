@@ -278,19 +278,33 @@ jobs:
 
       - name: Add the device tools to the macOS archive
         run: |
-          set -euo pipefail
+          set -uo pipefail
 
           ARCHIVE="ipatool-${{ needs.get_version.outputs.release_version }}-${{ matrix.arch }}-macOS.zip"
 
           rm -rf unpacked
           mkdir unpacked
-          unzip -q "$ARCHIVE" -d unpacked
-          unzip -q dist/tools-macos.zip -d unpacked
+
+          if ! unzip -q "$ARCHIVE" -d unpacked; then
+            echo "::error::could not extract ${ARCHIVE}; workspace holds: $(ls -1 | tr '\n' ' ')"
+            exit 1
+          fi
+          if ! unzip -q dist/tools-macos.zip -d unpacked; then
+            echo "::error::could not extract dist/tools-macos.zip; workspace holds: $(ls -1 | tr '\n' ' ')"
+            exit 1
+          fi
+
+          for tool in idevice_id ideviceinfo ideviceinstaller; do
+            if [ ! -x "unpacked/tools/$tool" ]; then
+              echo "::error::unpacked/tools/$tool is missing; the tools archive holds: $(unzip -Z1 dist/tools-macos.zip | tr '\n' ' ')"
+              exit 1
+            fi
+          done
+
           rm -f "$ARCHIVE"
           (cd unpacked && zip -qry "../$ARCHIVE" .)
 
-          unzip -l "$ARCHIVE" | grep -E 'tools/(ideviceinstaller|idevice_id|ideviceinfo)$'
-          echo "Added the ${matrix.arch} device tools to $ARCHIVE" >> $GITHUB_STEP_SUMMARY
+          echo "Archive contents: $(unzip -Z1 "$ARCHIVE" | tr '\n' ' ')" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload macOS ${{ matrix.arch }} archive
         uses: actions/upload-artifact@v4
