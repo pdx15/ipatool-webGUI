@@ -182,3 +182,37 @@ jobs:
           name: ipatool-${{ needs.get_version.outputs.release_version }}-windows
           path: ipatool-${{ needs.get_version.outputs.release_version }}-windows
           if-no-files-found: error
+
+  probe_go124:
+    name: TEMP probe Go 1.24 build for Catalina
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: webgui
+
+      - name: Set up Go 1.24
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.8'
+          cache: false
+
+      - name: Build the patched tree with Go 1.24 for darwin/amd64
+        run: |
+          set -euo pipefail
+          git clone https://github.com/majd/ipatool.git ipatool
+          git -C ipatool checkout --detach e0e2908dc866651cbd6ad86edd954119c003c46b
+          cd ipatool
+          for PATCH in ../webgui/patches/register-gui.patch ../webgui/patches/minimum-os-version.patch ../webgui/patches/download-product-priority.patch; do
+            git apply "$PATCH"
+          done
+          cp -r ../webgui/cmd/gui* ./cmd/
+          cp -r ../webgui/cmd/gui_assets ./cmd/
+          go mod edit -go=1.24.8
+          echo "== go version =="
+          go version
+          echo "== build =="
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build ./... 2>&1 | head -40 || true
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 go build -o /tmp/ipatool-legacy . 2>&1 | head -40 || echo "::error::go1.24 build failed (see log)"
+          test -f /tmp/ipatool-legacy && echo "::notice::go1.24 darwin/amd64 build OK"
