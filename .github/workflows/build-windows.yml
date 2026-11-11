@@ -182,3 +182,70 @@ jobs:
           name: ipatool-${{ needs.get_version.outputs.release_version }}-windows
           path: ipatool-${{ needs.get_version.outputs.release_version }}-windows
           if-no-files-found: error
+
+  probe_intel:
+    name: TEMP probe Intel tools bundle
+    runs-on: macos-15-intel
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Report the runner
+        run: |
+          uname -m
+          sw_vers -productVersion
+          which brew
+          brew --prefix
+          brew config | head -n 12
+
+      - name: Install the tools from source
+        run: |
+          set -euo pipefail
+          time brew install libimobiledevice ideviceinstaller
+          ls -la "$(brew --prefix)/bin" | grep idevice
+
+      - name: Bundle and smoke test
+        run: |
+          set -euo pipefail
+          PREFIX="$(brew --prefix)"
+          TOOLS="$GITHUB_WORKSPACE/tools"
+          mkdir -p "$TOOLS"
+          for tool in idevice_id ideviceinfo ideviceinstaller; do
+            test -x "$PREFIX/bin/$tool"
+            cp -f "$PREFIX/bin/$tool" "$TOOLS/"
+          done
+
+          pending=()
+          for file in "$TOOLS"/*; do pending+=("$file"); done
+          while [ ${#pending[@]} -gt 0 ]; do
+            file="${pending[0]}"; pending=("${pending[@]:1}")
+            chmod u+w "$file"
+            while read -r dep; do
+              case "$dep" in
+                "$PREFIX"/*) source_path="$dep" ;;
+                @rpath/*) source_path="$PREFIX/lib/${dep#@rpath/}" ;;
+                *) continue ;;
+              esac
+              [ -f "$source_path" ] || continue
+              library="$(basename "$source_path")"
+              if [ ! -f "$TOOLS/$library" ]; then
+                cp -f "$source_path" "$TOOLS/$library"
+                chmod u+w "$TOOLS/$library"
+                pending+=("$TOOLS/$library")
+              fi
+              install_name_tool -change "$dep" "@executable_path/$library" "$file"
+            done < <(otool -L "$file" | tail -n +2 | awk '{print $1}')
+          done
+
+          for library in "$TOOLS"/*.dylib; do
+            chmod u+w "$library"
+            install_name_tool -id "@executable_path/$(basename "$library")" "$library"
+          done
+          codesign --force --sign - "$TOOLS"/*
+
+          file "$TOOLS/ideviceinstaller"
+          otool -L "$TOOLS/ideviceinstaller"
+          env -i "$TOOLS/ideviceinstaller" --help > /dev/null
+          env -i "$TOOLS/idevice_id" -h > /dev/null 2>&1 || true
+          env -i "$TOOLS/ideviceinfo" -h > /dev/null 2>&1 || true
+          du -sh "$TOOLS"
