@@ -74,9 +74,22 @@ jobs:
           echo "Release Tag: $RELEASE_TAG"
 
   build_macos:
-    name: Build macOS WebGUI binaries (ARM64 & AMD64)
-    runs-on: macos-latest
+    name: Build macOS WebGUI binaries (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
     needs: [get_version]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Each archive gets the device tools built natively for its own
+          # architecture, so installing apps works on Apple Silicon and on Intel
+          # Macs without anything installed from Homebrew.
+          - arch: arm64
+            goarch: arm64
+            runner: macos-latest
+          - arch: amd64
+            goarch: amd64
+            runner: macos-15-intel
     steps:
       - name: Checkout WebGUI repository
         uses: actions/checkout@v4
@@ -161,26 +174,12 @@ jobs:
           fi
           go build ./...
 
-      - name: Build macOS Apple Silicon (ARM64)
+      - name: Build macOS binary (${{ matrix.arch }})
         run: |
           cd ipatool
           VERSION="${{ needs.get_version.outputs.release_version }}"
-          BIN_NAME="ipatool-${VERSION}-arm64-macOS"
-          CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
-            CGO_CFLAGS="-mmacosx-version-min=10.15" \
-            CGO_LDFLAGS="-mmacosx-version-min=10.15" \
-            go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
-            -o "../${BIN_NAME}" .
-          cd ..
-          chmod +x "${BIN_NAME}"
-          zip "${BIN_NAME}.zip" "${BIN_NAME}"
-
-      - name: Build macOS Intel (AMD64)
-        run: |
-          cd ipatool
-          VERSION="${{ needs.get_version.outputs.release_version }}"
-          BIN_NAME="ipatool-${VERSION}-amd64-macOS"
-          CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
+          BIN_NAME="ipatool-${VERSION}-${{ matrix.arch }}-macOS"
+          CGO_ENABLED=1 GOOS=darwin GOARCH=${{ matrix.goarch }} \
             CGO_CFLAGS="-mmacosx-version-min=10.15" \
             CGO_LDFLAGS="-mmacosx-version-min=10.15" \
             go build -trimpath -ldflags="-s -w -X github.com/majd/ipatool/v2/cmd.version=$VERSION" \
@@ -190,15 +189,14 @@ jobs:
           zip "${BIN_NAME}.zip" "${BIN_NAME}"
 
       - name: Bundle libimobiledevice device tools
-        id: tools
         run: |
           set -euo pipefail
 
           # Build the device tools locally instead of copying a third-party
           # binary drop: the prebuilt sets either ship only a subset of the
           # libraries they link against, or are Intel-only builds that need
-          # Rosetta. Homebrew bottles are signed for the runner's architecture
-          # and carry every dependency.
+          # Rosetta. Homebrew builds for the runner's own architecture and
+          # resolves every dependency of the tools.
           brew install libimobiledevice ideviceinstaller
 
           PREFIX="$(brew --prefix)"
@@ -259,53 +257,46 @@ jobs:
           # run unsigned binaries, so re-sign the bundle ad-hoc.
           codesign --force --sign - "$TOOLS"/*
 
+          case "$(uname -m)" in
+            arm64) runner_arch=arm64 ;;
+            x86_64) runner_arch=amd64 ;;
+            *) echo "::error::Unsupported macOS architecture $(uname -m)"; exit 1 ;;
+          esac
+          if [ "$runner_arch" != "${{ matrix.arch }}" ]; then
+            echo "::error::Runner architecture ${runner_arch} does not match the ${{ matrix.arch }} matrix entry"
+            exit 1
+          fi
+
           # Prove that dyld resolves the whole chain without Homebrew present.
           env -i "$TOOLS/ideviceinstaller" --help > /dev/null
 
-          case "$(uname -m)" in
-            arm64) suffix=arm64 ;;
-            x86_64) suffix=amd64 ;;
-            *) echo "::error::Unsupported macOS architecture $(uname -m)"; exit 1 ;;
-          esac
-          echo "suffix=${suffix}" >> "$GITHUB_OUTPUT"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          zip -qry "$GITHUB_WORKSPACE/dist/tools-macos.zip" tools
 
-          zip -qry "$GITHUB_WORKSPACE/tools-macos.zip" tools
-
-          echo "Bundled $(ls "$TOOLS" | wc -l | tr -d ' ') files for ${suffix}:" >> $GITHUB_STEP_SUMMARY
+          echo "Bundled $(ls "$TOOLS" | wc -l | tr -d ' ') files for ${runner_arch}:" >> $GITHUB_STEP_SUMMARY
           ls "$TOOLS" >> $GITHUB_STEP_SUMMARY
 
-      - name: Add the device tools to the matching macOS archive
+      - name: Add the device tools to the macOS archive
         run: |
           set -euo pipefail
 
-          SUFFIX="${{ steps.tools.outputs.suffix }}"
-          ARCHIVE="ipatool-${{ needs.get_version.outputs.release_version }}-${SUFFIX}-macOS.zip"
+          ARCHIVE="ipatool-${{ needs.get_version.outputs.release_version }}-${{ matrix.arch }}-macOS.zip"
 
-          # The tools are native to the runner's architecture, so only that
-          # archive gets them; the other one keeps relying on a local
-          # libimobiledevice install.
           rm -rf unpacked
           mkdir unpacked
           unzip -q "$ARCHIVE" -d unpacked
-          unzip -q tools-macos.zip -d unpacked
+          unzip -q dist/tools-macos.zip -d unpacked
           rm -f "$ARCHIVE"
           (cd unpacked && zip -qry "../$ARCHIVE" .)
 
           unzip -l "$ARCHIVE" | grep -E 'tools/(ideviceinstaller|idevice_id|ideviceinfo)$'
-          echo "The ${SUFFIX} archive now carries the device tools; other archives fall back to a local libimobiledevice install." >> $GITHUB_STEP_SUMMARY
+          echo "Added the ${matrix.arch} device tools to $ARCHIVE" >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload macOS ARM64 binary
+      - name: Upload macOS ${{ matrix.arch }} archive
         uses: actions/upload-artifact@v4
         with:
-          name: ipatool-${{ needs.get_version.outputs.release_version }}-arm64-macOS.zip
-          path: ipatool-*-arm64-macOS.zip
-          if-no-files-found: error
-
-      - name: Upload macOS AMD64 binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: ipatool-${{ needs.get_version.outputs.release_version }}-amd64-macOS.zip
-          path: ipatool-*-amd64-macOS.zip
+          name: ipatool-${{ needs.get_version.outputs.release_version }}-${{ matrix.arch }}-macOS.zip
+          path: ipatool-*-${{ matrix.arch }}-macOS.zip
           if-no-files-found: error
 
   build_windows:
