@@ -319,6 +319,10 @@ func guiCmd() *cobra.Command {
 }
 
 func runGUIServer(host string, port int, noBrowser bool) error {
+	if err := ensureSupportedMacOS(); err != nil {
+		return err
+	}
+
 	if dir := appWorkingDir(); dir != "" && dir != "." {
 		_ = os.Chdir(dir)
 	}
