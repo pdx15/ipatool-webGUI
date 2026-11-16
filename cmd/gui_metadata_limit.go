@@ -9,12 +9,12 @@ import (
 	"time"
 )
 
-// Version metadata lookups are full signed Store commerce requests, and each of
-// them starts its own emulator proof. Apple starts rejecting bursts with HTTP
-// 403 at roughly five concurrent requests, while parallel lookups gain almost
-// nothing (13-17 s per lookup whether one or six run at once). Serialise them
-// behind a small slot pool instead of firing the whole page at Apple.
-const defaultMetadataConcurrency = 2
+// Version metadata lookups are signed Store commerce requests, and each of them
+// starts its own emulator proof. Apple starts rejecting bursts with HTTP 403 at
+// roughly five concurrent requests, so the pool stays just below that: package
+// range reads no longer touch the emulator, which makes the slots cheap and
+// parallel lookups worth keeping.
+const defaultMetadataConcurrency = 4
 
 var metadataSlots = make(chan struct{}, metadataConcurrency())
 

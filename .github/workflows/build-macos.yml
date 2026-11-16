@@ -123,6 +123,7 @@ jobs:
           GUI_PATCH="../webgui/patches/register-gui.patch"
           METADATA_PATCH="../webgui/patches/minimum-os-version.patch"
           PRIORITY_PATCH="../webgui/patches/download-product-priority.patch"
+          DIRECT_PATCH="../webgui/patches/direct-package-range-reads.patch"
           UPSTREAM_REF="${{ needs.get_version.outputs.upstream_ref }}"
 
           # Keep the upstream integration narrow and explicit: register the GUI
@@ -132,7 +133,7 @@ jobs:
           # whose storefront catalog has no offer reachable: after the unpinned
           # redownload the kbsync ent/download path is tried before Apple's
           # opaque "403 empty body" is surfaced.
-          for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH"; do
+          for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH" "$DIRECT_PATCH"; do
             if [ ! -f "$PATCH" ]; then
               echo "::error::Required upstream patch is missing: $PATCH"
               exit 1
@@ -146,6 +147,7 @@ jobs:
           git apply "$GUI_PATCH"
           git apply "$METADATA_PATCH"
           git apply "$PRIORITY_PATCH"
+          git apply "$DIRECT_PATCH"
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
           mkdir -p ./resources
@@ -157,7 +159,7 @@ jobs:
           # The only permitted package changes are the metadata implementation,
           # its test, exposing MinimumOSVersion from the IPA Info.plist, the
           # volumeStore priority patch, and the storefront discovery headers.
-          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/(appstore_(get_version_metadata(_test)?|partial_zip|download(_product)?|kbsync|lookup|(macos|platform)_version_(lookup|metadata)|macos_preflight_metadata)|storefront)\.go$' || true)
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/(appstore_(get_version_metadata(_test)?|partial_zip|partial_zip_direct_test|download(_product)?|kbsync|lookup|(macos|platform)_version_(lookup|metadata)|macos_preflight_metadata)|storefront)\.go$' || true)
           if [ -n "$unexpected_pkg_changes" ]; then
             echo "::error::Unexpected changes to upstream package sources:"
             echo "$unexpected_pkg_changes"
@@ -348,6 +350,7 @@ jobs:
           GUI_PATCH="../webgui/patches/register-gui.patch"
           METADATA_PATCH="../webgui/patches/minimum-os-version.patch"
           PRIORITY_PATCH="../webgui/patches/download-product-priority.patch"
+          DIRECT_PATCH="../webgui/patches/direct-package-range-reads.patch"
           UPSTREAM_REF="${{ needs.get_version.outputs.upstream_ref }}"
 
           # Keep the upstream integration narrow and explicit: register the GUI
@@ -357,7 +360,7 @@ jobs:
           # whose storefront catalog has no offer reachable: after the unpinned
           # redownload the kbsync ent/download path is tried before Apple's
           # opaque "403 empty body" is surfaced.
-          for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH"; do
+          for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH" "$DIRECT_PATCH"; do
             if [ ! -f "$PATCH" ]; then
               echo "::error::Required upstream patch is missing: $PATCH"
               exit 1
@@ -371,6 +374,7 @@ jobs:
           git apply "$GUI_PATCH"
           git apply "$METADATA_PATCH"
           git apply "$PRIORITY_PATCH"
+          git apply "$DIRECT_PATCH"
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
           mkdir -p ./resources
@@ -382,7 +386,7 @@ jobs:
           # The only permitted package changes are the metadata implementation,
           # its test, exposing MinimumOSVersion from the IPA Info.plist, the
           # volumeStore priority patch, and the storefront discovery headers.
-          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/(appstore_(get_version_metadata(_test)?|partial_zip|download(_product)?|kbsync|lookup|(macos|platform)_version_(lookup|metadata)|macos_preflight_metadata)|storefront)\.go$' || true)
+          unexpected_pkg_changes=$(git diff --name-only -- pkg/ | grep -Ev '^pkg/appstore/(appstore_(get_version_metadata(_test)?|partial_zip|partial_zip_direct_test|download(_product)?|kbsync|lookup|(macos|platform)_version_(lookup|metadata)|macos_preflight_metadata)|storefront)\.go$' || true)
           if [ -n "$unexpected_pkg_changes" ]; then
             echo "::error::Unexpected changes to upstream package sources:"
             echo "$unexpected_pkg_changes"
