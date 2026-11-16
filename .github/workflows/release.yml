@@ -141,21 +141,18 @@ jobs:
           # whose storefront catalog has no offer reachable: after the unpinned
           # redownload the kbsync ent/download path is tried before Apple's
           # opaque "403 empty body" is surfaced.
+          # The patches build on each other, so apply them in order: a later
+          # patch expects the lines an earlier one adds.
           for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH" "$DIRECT_PATCH"; do
             if [ ! -f "$PATCH" ]; then
               echo "::error::Required upstream patch is missing: $PATCH"
               exit 1
             fi
-            if ! git apply --check "$PATCH"; then
+            if ! git apply "$PATCH"; then
               echo "::error::$PATCH does not apply to ipatool $UPSTREAM_REF; refresh the integration patch for that upstream ref."
               exit 1
             fi
           done
-
-          git apply "$GUI_PATCH"
-          git apply "$METADATA_PATCH"
-          git apply "$PRIORITY_PATCH"
-          git apply "$DIRECT_PATCH"
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
           mkdir -p ./resources
@@ -361,21 +358,18 @@ jobs:
           # volumeStore-first download fallback chain that v2.8.0 does not carry
           # upstream (the delisted-app and unpinned redownload logic it does
           # carry natively is no longer duplicated by the patch).
+          # The patches build on each other, so apply them in order: a later
+          # patch expects the lines an earlier one adds.
           for PATCH in "$GUI_PATCH" "$METADATA_PATCH" "$PRIORITY_PATCH" "$DIRECT_PATCH"; do
             if [ ! -f "$PATCH" ]; then
               echo "::error::Required upstream patch is missing: $PATCH"
               exit 1
             fi
-            if ! git apply --check "$PATCH"; then
+            if ! git apply "$PATCH"; then
               echo "::error::$PATCH does not apply to ipatool $UPSTREAM_REF; refresh the integration patch for that upstream ref."
               exit 1
             fi
           done
-
-          git apply "$GUI_PATCH"
-          git apply "$METADATA_PATCH"
-          git apply "$PRIORITY_PATCH"
-          git apply "$DIRECT_PATCH"
           cp -r ../webgui/cmd/gui* ./cmd/
           cp -r ../webgui/cmd/gui_assets ./cmd/
           mkdir -p ./resources

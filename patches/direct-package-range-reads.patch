@@ -1,52 +1,218 @@
-diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
-index 77ed888..f5588f7 100644
---- a/pkg/appstore/appstore_partial_zip.go
-+++ b/pkg/appstore/appstore_partial_zip.go
-@@ -233,8 +233,50 @@ func (r *httpRangeReaderAt) fetch(start, stop int64) ([]byte, error) {
- 	return data, nil
+diff --git a/cmd/get_version_metadata.go b/cmd/get_version_metadata.go
+index e268ee6..f05e121 100644
+--- a/cmd/get_version_metadata.go
++++ b/cmd/get_version_metadata.go
+@@ -80,6 +80,8 @@ func getVersionMetadataCmd() *cobra.Command {
+ 					Str("displayVersion", out.DisplayVersion).
+ 					Time("releaseDate", out.ReleaseDate).
+ 					Str("minimumOSVersion", out.MinimumOSVersion).
++					Str("packageReadSource", out.PackageReadSource).
++					Str("packageReadError", out.PackageReadError).
+ 					Bool("success", true).
+ 					Send()
+ 
+diff --git a/internal/store/backend.go b/internal/store/backend.go
+index 0fc9277..72b56e7 100644
+--- a/internal/store/backend.go
++++ b/internal/store/backend.go
+@@ -102,6 +102,12 @@ func (e *executor) Do(request *http.Request) (*http.Response, error) {
+ 		return e.backend.requestTransport(emulator.Request{Operation: "authenticate"})(request)
+ 	}
+ 
++	// Signed package ranges need neither emulated headers nor a guest VM, and
++	// opening one for every range request cost seconds per request.
++	if e.operation == "transfer-direct" {
++		return e.backend.directTransport(request)
++	}
++
+ 	var body []byte
+ 
+ 	var err error
+@@ -281,6 +287,28 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+ 	return response, nil
  }
  
-+// directPackageReadTransport is shared by direct package reads so the many range
-+// requests one build needs reuse a single connection pool.
-+var directPackageReadTransport = http.DefaultTransport.(*http.Transport).Clone()
-+
-+// directReadExecutor runs package range requests with a plain HTTP client. The
-+// Store signs the package URL, so the CDN needs neither emulated headers nor a
-+// guest VM, and opening one for every range request cost seconds per request.
-+type directReadExecutor struct {
-+	client *http.Client
-+}
-+
-+func (e directReadExecutor) Send(apphttp.Request, []byte) (*http.Response, error) {
-+	return nil, errors.New("package range reads only support direct requests")
-+}
-+
-+func (e directReadExecutor) Do(request *http.Request) (*http.Response, error) {
++// directTransport serves signed package ranges on the shared pool, without the
++// Store emulator. It keeps the session cookies and follows the CDN redirects
++// that the emulated path handles inside the guest.
++func (b *Backend) directTransport(request *http.Request) (*http.Response, error) {
 +	if request.Header.Get("User-Agent") == "" {
 +		request.Header.Set("User-Agent", apphttp.DefaultUserAgent)
 +	}
 +
-+	return e.client.Do(request)
++	if b.jar != nil && request.Header.Get("Cookie") == "" {
++		for _, cookie := range b.jar.Cookies(request.URL) {
++			request.AddCookie(cookie)
++		}
++	}
++
++	response, err := (&http.Client{Transport: b.transport}).Do(request)
++	if err != nil {
++		return nil, fmt.Errorf("store HTTP transport: %w", err)
++	}
++
++	return response, nil
 +}
 +
-+// directPackageReadClient reads packages without the Store emulator.
-+func directPackageReadClient() apphttp.Client[interface{}] {
-+	return apphttp.NewClient[interface{}](apphttp.Args{
-+		Executor: directReadExecutor{client: &http.Client{Transport: directPackageReadTransport}},
-+	})
+ // CloseIdleConnections releases pooled sockets without interrupting active streams.
+ func (b *Backend) CloseIdleConnections() {
+ 	b.transport.CloseIdleConnections()
+diff --git a/internal/store/backend_direct_test.go b/internal/store/backend_direct_test.go
+new file mode 100644
+index 0000000..624618b
+--- /dev/null
++++ b/internal/store/backend_direct_test.go
+@@ -0,0 +1,54 @@
++package store
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++)
++
++// TestTransferDirectSkipsTheStoreEmulator pins the fast path for signed package
++// ranges. The backend has no machine identity here, so any request routed
++// through the emulator fails in hardware(); a 206 answer proves the direct
++// transport served it without a guest VM.
++func TestTransferDirectSkipsTheStoreEmulator(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if got := r.Header.Get("Range"); got != "bytes=0-0" {
++			t.Errorf("range header = %q, want bytes=0-0", got)
++		}
++
++		if got := r.Header.Get("User-Agent"); got == "" {
++			t.Error("user agent is empty")
++		}
++
++		w.Header().Set("Content-Range", "bytes 0-0/1024")
++		w.WriteHeader(http.StatusPartialContent)
++		_, _ = w.Write([]byte("x"))
++	}))
++	defer server.Close()
++
++	executor := New(nil, nil).Client("transfer-direct")
++
++	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
++	if err != nil {
++		t.Fatalf("create request: %v", err)
++	}
++
++	request.Header.Set("Range", "bytes=0-0")
++	request.Header.Set("Accept-Encoding", "identity")
++
++	response, err := executor.Do(request)
++	if err != nil {
++		t.Fatalf("direct transfer: %v", err)
++	}
++
++	defer func() { _ = response.Body.Close() }()
++
++	if response.StatusCode != http.StatusPartialContent {
++		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusPartialContent)
++	}
++
++	if got := response.Header.Get("Content-Range"); got != "bytes 0-0/1024" {
++		t.Errorf("content range = %q, want bytes 0-0/1024", got)
++	}
++}
+diff --git a/pkg/appstore/appstore_get_version_metadata.go b/pkg/appstore/appstore_get_version_metadata.go
+index 2517c76..b0b92de 100644
+--- a/pkg/appstore/appstore_get_version_metadata.go
++++ b/pkg/appstore/appstore_get_version_metadata.go
+@@ -20,6 +20,11 @@ type GetVersionMetadataOutput struct {
+ 	DisplayVersion   string
+ 	ReleaseDate      time.Time
+ 	MinimumOSVersion string
++	// PackageReadSource is "direct" when the package ranges were read without
++	// the Store emulator and "emulated" when the fallback served them.
++	PackageReadSource string
++	// PackageReadError keeps the direct read failure behind a fallback.
++	PackageReadError string
+ }
+ 
+ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersionMetadataOutput, error) {
+diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
+index 77ed888..5132263 100644
+--- a/pkg/appstore/appstore_partial_zip.go
++++ b/pkg/appstore/appstore_partial_zip.go
+@@ -37,6 +37,12 @@ type versionMetadata struct {
+ 	DisplayVersion   string
+ 	ReleaseDate      time.Time
+ 	MinimumOSVersion string
++	// PackageReadSource reports which client served the package ranges:
++	// "direct" for the emulator-free read, "emulated" for the fallback.
++	PackageReadSource string
++	// PackageReadError keeps the direct read failure when the fallback ran, so
++	// a slow history can be told apart from a rejected CDN.
++	PackageReadError string
+ }
+ 
+ // rangeReaderReadAhead is the minimum size of a remote read. archive/zip parses the central
+@@ -44,6 +50,12 @@ type versionMetadata struct {
+ // runs in the emulator, so each miss reads ahead and later reads are served from memory.
+ const rangeReaderReadAhead int64 = 1 << 20
+ 
++// packageReadSourceDirect marks a package read that skipped the Store emulator.
++const (
++	packageReadSourceDirect   = "direct"
++	packageReadSourceEmulated = "emulated"
++)
++
+ type httpRangeReaderAt struct {
+ 	client apphttp.Client[interface{}]
+ 	url    string
+@@ -233,8 +245,55 @@ func (r *httpRangeReaderAt) fetch(start, stop int64) ([]byte, error) {
+ 	return data, nil
+ }
+ 
++// directPackageReadClientFactory builds the emulator-free range client. The
++// Store signs the package URL, so the CDN needs neither emulated headers nor a
++// guest VM, and opening one for every range request cost seconds per request.
++// The backend keeps the session cookies and the shared connection pool. Tests
++// replace the factory to exercise the emulated fallback.
++var directPackageReadClientFactory = func(t *appstore) apphttp.Client[interface{}] {
++	if t.authBackend == nil {
++		return t.httpClient
++	}
++
++	return apphttp.NewClient[interface{}](apphttp.Args{Executor: t.authBackend.Client("transfer-direct")})
 +}
 +
  func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, error) {
 -	reader, size, err := newHTTPRangeReaderAt(t.httpClient, url)
-+	metadata, err := readVersionMetadataFromPackageURL(directPackageReadClient(), url)
-+	if err == nil || !isPackageReadTransportError(err) {
++	direct := directPackageReadClientFactory(t)
++	if direct == nil {
++		return versionMetadata{}, errors.New("package read client is not configured")
++	}
++
++	metadata, err := readVersionMetadataFromPackageURL(direct, url)
++	if err == nil {
++		metadata.PackageReadSource = packageReadSourceDirect
++
++		return metadata, nil
++	}
++
++	if !isPackageReadTransportError(err) {
++		metadata.PackageReadSource = packageReadSourceDirect
++		metadata.PackageReadError = err.Error()
++
 +		return metadata, err
 +	}
 +
 +	// Keep the emulated transfer client as a fallback: it is slow, but it is the
 +	// path every earlier release used, so a CDN that rejects direct reads must
 +	// not break version history.
-+	return readVersionMetadataFromPackageURL(t.httpClient, url)
++	fallback, fallbackErr := readVersionMetadataFromPackageURL(t.httpClient, url)
++	fallback.PackageReadSource = packageReadSourceEmulated
++	fallback.PackageReadError = fmt.Sprintf("direct read failed: %v", err)
++
++	if fallbackErr != nil {
++		fallback.PackageReadError = fmt.Sprintf("%s; emulated read failed: %v", fallback.PackageReadError, fallbackErr)
++	}
++
++	return fallback, fallbackErr
 +}
 +
 +func readVersionMetadataFromPackageURL(client apphttp.Client[interface{}], url string) (versionMetadata, error) {
@@ -54,7 +220,7 @@ index 77ed888..f5588f7 100644
  	if err != nil {
  		return versionMetadata{}, err
  	}
-@@ -260,6 +302,22 @@ func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, erro
+@@ -260,6 +319,22 @@ func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, erro
  	return versionMetadata{}, errors.New("could not find Info.plist")
  }
  
@@ -79,15 +245,16 @@ index 77ed888..f5588f7 100644
  
 diff --git a/pkg/appstore/appstore_partial_zip_direct_test.go b/pkg/appstore/appstore_partial_zip_direct_test.go
 new file mode 100644
-index 0000000..081ea67
+index 0000000..86ae4fb
 --- /dev/null
 +++ b/pkg/appstore/appstore_partial_zip_direct_test.go
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,242 @@
 +package appstore
 +
 +import (
 +	"archive/zip"
 +	"bytes"
++	"errors"
 +	"fmt"
 +	"net/http"
 +	"net/http/httptest"
@@ -95,6 +262,8 @@ index 0000000..081ea67
 +	"strings"
 +	"sync"
 +	"testing"
++
++	apphttp "github.com/majd/ipatool/v2/pkg/http"
 +)
 +
 +const directPackageReadInfoPlist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -188,9 +357,19 @@ index 0000000..081ea67
 +	server := httptest.NewServer(servePackageRanges(directPackageReadArchive(t)))
 +	defer server.Close()
 +
-+	metadata, err := readVersionMetadataFromPackageURL(directPackageReadClient(), server.URL)
++	subject := &appstore{httpClient: newDownloadTestClient()}
++
++	metadata, err := subject.readVersionMetadataFromIPA(server.URL)
 +	if err != nil {
 +		t.Fatalf("read version metadata: %v", err)
++	}
++
++	if metadata.PackageReadSource != packageReadSourceDirect {
++		t.Errorf("package read source = %q, want %q", metadata.PackageReadSource, packageReadSourceDirect)
++	}
++
++	if metadata.PackageReadError != "" {
++		t.Errorf("package read error = %q, want no error", metadata.PackageReadError)
 +	}
 +
 +	if metadata.DisplayVersion != "3.2.1" {
@@ -225,7 +404,7 @@ index 0000000..081ea67
 +	}))
 +	defer server.Close()
 +
-+	if _, err := readVersionMetadataFromPackageURL(directPackageReadClient(), server.URL); err != nil {
++	if _, err := readVersionMetadataFromPackageURL(newDownloadTestClient(), server.URL); err != nil {
 +		t.Fatalf("read version metadata: %v", err)
 +	}
 +
@@ -251,4 +430,64 @@ index 0000000..081ea67
 +			}
 +		}
 +	}
++}
++
++// TestPackageRangeReadFallsBackToTheStoreClient covers the CDN rejecting the
++// direct read: the emulated transfer client serves the build and the response
++// reports both the source and the direct failure.
++func TestPackageRangeReadFallsBackToTheStoreClient(t *testing.T) {
++	server := httptest.NewServer(servePackageRanges(directPackageReadArchive(t)))
++	defer server.Close()
++
++	dead := httptest.NewServer(servePackageRanges(directPackageReadArchive(t)))
++	dead.Close()
++
++	original := directPackageReadClientFactory
++	t.Cleanup(func() { directPackageReadClientFactory = original })
++
++	directPackageReadClientFactory = func(*appstore) apphttp.Client[interface{}] {
++		return newClientAt(dead.URL)
++	}
++
++	subject := &appstore{httpClient: newDownloadTestClient()}
++
++	metadata, err := subject.readVersionMetadataFromIPA(server.URL)
++	if err != nil {
++		t.Fatalf("read version metadata: %v", err)
++	}
++
++	if metadata.DisplayVersion != "3.2.1" {
++		t.Errorf("display version = %q, want 3.2.1", metadata.DisplayVersion)
++	}
++
++	if metadata.PackageReadSource != packageReadSourceEmulated {
++		t.Errorf("package read source = %q, want %q", metadata.PackageReadSource, packageReadSourceEmulated)
++	}
++
++	if !strings.Contains(metadata.PackageReadError, "direct read failed") {
++		t.Errorf("package read error = %q, want the direct failure", metadata.PackageReadError)
++	}
++}
++
++// newClientAt builds a direct read client bound to a fixed base URL, so a test
++// can point the direct attempt at a server that is known to be unreachable.
++func newClientAt(baseURL string) apphttp.Client[interface{}] {
++	return apphttp.NewClient[interface{}](apphttp.Args{Executor: baseURLExecutor{baseURL: baseURL}})
++}
++
++type baseURLExecutor struct {
++	baseURL string
++}
++
++func (e baseURLExecutor) Send(apphttp.Request, []byte) (*http.Response, error) {
++	return nil, errors.New("package range reads only support direct requests")
++}
++
++func (e baseURLExecutor) Do(request *http.Request) (*http.Response, error) {
++	// The caller builds a request from the live server URL; rewrite it to the
++	// closed one so the direct attempt fails at the transport level.
++	request.URL.Scheme = "http"
++	request.URL.Host = strings.TrimPrefix(e.baseURL, "http://")
++
++	return http.DefaultClient.Do(request)
 +}

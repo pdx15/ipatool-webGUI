@@ -2091,13 +2091,25 @@ func lookupVersionMetadataWithAccount(ctx context.Context, profile *guiAccountPr
 		MinimumOSVersion: out.MinimumOSVersion,
 	})
 
-	return map[string]interface{}{
+	// Report which client served the package ranges: "direct" skips the Store
+	// emulator, "emulated" means the fallback ran and carries its reason.
+	result := map[string]interface{}{
 		"success":          true,
 		"displayVersion":   out.DisplayVersion,
 		"releaseDate":      releaseDate,
 		"minimumOSVersion": out.MinimumOSVersion,
 		"appleMs":          elapsedMs,
-	}, nil
+	}
+
+	if out.PackageReadSource != "" {
+		result["packageReadSource"] = out.PackageReadSource
+	}
+
+	if out.PackageReadError != "" {
+		result["packageReadError"] = out.PackageReadError
+	}
+
+	return result, nil
 }
 
 // appIDKey converts an app ID to its cache-map key.
