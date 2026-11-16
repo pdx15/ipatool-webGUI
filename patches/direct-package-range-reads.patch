@@ -133,8 +133,362 @@ index 2517c76..b0b92de 100644
  }
  
  func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersionMetadataOutput, error) {
+diff --git a/pkg/appstore/appstore_macos_version_metadata.go b/pkg/appstore/appstore_macos_version_metadata.go
+index be202a0..7786be2 100644
+--- a/pkg/appstore/appstore_macos_version_metadata.go
++++ b/pkg/appstore/appstore_macos_version_metadata.go
+@@ -13,9 +13,34 @@ import (
+ 	"time"
+ 
+ 	"github.com/blacktop/go-macho/pkg/xar"
++	apphttp "github.com/majd/ipatool/v2/pkg/http"
+ )
+ 
+ func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item downloadItemResult, hardwareID []byte, bundleID string) (versionMetadata, error) {
++	// Older device-based downloads omit dpInfo but include a small, readable
++	// preflight archive containing the selected build's installer metadata.
++	preflight := !hasMacDPInfo(item.Sinfs) && item.PreflightPackageURL != ""
++
++	if bundleID == "" {
++		bundleID = downloadMetadataString(item.Metadata, "softwareVersionBundleId")
++	}
++
++	// A Mac installer is hundreds of megabytes and has to be decrypted with the
++	// Store agent afterwards, but the XAR table of contents and the installer
++	// metadata entry are all that this reader needs. Try those first and fall
++	// back to the download when the package bytes cannot be ranged.
++	releaseURL := item.URL
++	if preflight {
++		releaseURL = item.PreflightPackageURL
++	}
++
++	var rangeErr error
++	if metadata, err := t.readMacPackageMetadataFromRanges(releaseURL, preflight, bundleID); err == nil {
++		return metadata, nil
++	} else {
++		rangeErr = err
++	}
++
+ 	directory, err := os.MkdirTemp("", "ipatool-version-metadata-*")
+ 	if err != nil {
+ 		return versionMetadata{}, fmt.Errorf("failed to create metadata staging: %w", err)
+@@ -24,9 +49,6 @@ func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item d
+ 	defer os.RemoveAll(directory)
+ 
+ 	destination := filepath.Join(directory, "app.pkg")
+-	// Older device-based downloads omit dpInfo but include a small, readable
+-	// preflight archive containing the selected build's installer metadata.
+-	preflight := !hasMacDPInfo(item.Sinfs) && item.PreflightPackageURL != ""
+ 	if preflight {
+ 		if err := t.downloadFile(ctx, item.PreflightPackageURL, destination, nil); err != nil {
+ 			return versionMetadata{}, fmt.Errorf("failed to download Mac preflight package: %w", err)
+@@ -35,10 +57,6 @@ func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item d
+ 		return versionMetadata{}, err
+ 	}
+ 
+-	if bundleID == "" {
+-		bundleID = downloadMetadataString(item.Metadata, "softwareVersionBundleId")
+-	}
+-
+ 	archive, err := xar.Open(destination)
+ 	if err != nil {
+ 		return versionMetadata{}, fmt.Errorf("failed to open Mac package: %w", err)
+@@ -46,11 +64,95 @@ func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item d
+ 
+ 	defer archive.Close()
+ 
++	var metadata versionMetadata
++
++	if preflight {
++		metadata, err = macPreflightVersionMetadata(&archive.Reader, bundleID)
++	} else {
++		metadata, err = macPackageVersionMetadata(&archive.Reader, bundleID)
++	}
++
++	if err != nil {
++		return versionMetadata{}, fmt.Errorf("%w (ranged read failed: %v)", err, rangeErr)
++	}
++
++	metadata.PackageReadSource = packageReadSourceFullDownload
++	metadata.PackageReadError = rangeErr.Error()
++
++	return metadata, nil
++}
++
++// macPackageRangeReadAttempt pairs a Store client with the source name that is
++// reported for a successful read through it.
++type macPackageRangeReadAttempt struct {
++	client apphttp.Client[interface{}]
++	source string
++}
++
++// readMacPackageMetadataFromRanges parses the installer metadata out of a Mac
++// package without downloading it. The XAR header, its table of contents and the
++// PackageInfo/Distribution entries stay readable on an encrypted installer, so
++// a few kilobytes replace the full download and Store-agent decryption.
++func (t *appstore) readMacPackageMetadataFromRanges(url string, preflight bool, bundleID string) (versionMetadata, error) {
++	if url == "" {
++		return versionMetadata{}, errors.New("package URL is empty")
++	}
++
++	attempts := t.macPackageRangeReadClients()
++	if len(attempts) == 0 {
++		return versionMetadata{}, errors.New("package read client is not configured")
++	}
++
++	var failures []string
++
++	for _, attempt := range attempts {
++		metadata, err := readMacPackageMetadataOverRanges(attempt.client, url, preflight, bundleID)
++		if err == nil {
++			metadata.PackageReadSource = attempt.source
++
++			return metadata, nil
++		}
++
++		failures = append(failures, fmt.Sprintf("%s read failed: %v", attempt.source, err))
++	}
++
++	return versionMetadata{}, errors.New(strings.Join(failures, "; "))
++}
++
++// macPackageRangeReadClients lists the clients the ranged read may use: the
++// emulator-free Store transport first, then the regular Store client.
++func (t *appstore) macPackageRangeReadClients() []macPackageRangeReadAttempt {
++	attempts := make([]macPackageRangeReadAttempt, 0, 2)
++
++	if direct := directPackageReadClientFactory(t); direct != nil {
++		attempts = append(attempts, macPackageRangeReadAttempt{client: direct, source: packageReadSourceDirect})
++	}
++
++	// Without an auth backend the direct client already is the regular one, so
++	// a second attempt would repeat the same requests.
++	if t.authBackend != nil && t.httpClient != nil {
++		attempts = append(attempts, macPackageRangeReadAttempt{client: t.httpClient, source: packageReadSourceEmulated})
++	}
++
++	return attempts
++}
++
++func readMacPackageMetadataOverRanges(client apphttp.Client[interface{}], url string, preflight bool, bundleID string) (versionMetadata, error) {
++	reader, size, err := newHTTPRangeReaderAt(client, url)
++	if err != nil {
++		return versionMetadata{}, err
++	}
++
++	archive, err := xar.NewReader(reader, size)
++	if err != nil {
++		return versionMetadata{}, fmt.Errorf("failed to parse XAR archive: %w", err)
++	}
++
+ 	if preflight {
+-		return macPreflightVersionMetadata(&archive.Reader, bundleID)
++		return macPreflightVersionMetadata(archive, bundleID)
+ 	}
+ 
+-	return macPackageVersionMetadata(&archive.Reader, bundleID)
++	return macPackageVersionMetadata(archive, bundleID)
+ }
+ 
+ func macPackageVersionMetadata(archive *xar.Reader, bundleID string) (versionMetadata, error) {
+diff --git a/pkg/appstore/appstore_macos_version_metadata_test.go b/pkg/appstore/appstore_macos_version_metadata_test.go
+index b57f884..bf22868 100644
+--- a/pkg/appstore/appstore_macos_version_metadata_test.go
++++ b/pkg/appstore/appstore_macos_version_metadata_test.go
+@@ -2,13 +2,17 @@ package appstore
+ 
+ import (
+ 	"bytes"
++	"compress/zlib"
+ 	"context"
+ 	"crypto/sha1" // #nosec G505 -- XAR uses SHA-1 for archive checksums.
++	"encoding/binary"
+ 	"fmt"
+ 	"io"
+ 	gohttp "net/http"
+ 	"net/http/httptest"
+ 	"os"
++	"strings"
++	"testing"
+ 	"time"
+ 
+ 	"github.com/blacktop/go-macho/pkg/xar"
+@@ -115,3 +119,173 @@ var _ = Describe("Mac version metadata", func() {
+ 		Expect(entries).To(BeEmpty())
+ 	})
+ })
++
++const macRangeReadInfo = `<pkg-info><bundle id="com.example.mac" CFBundleShortVersionString="1.2.1"/></pkg-info>`
++
++const macRangeReadModified = "2025-07-24T08:38:42Z"
++
++// macRangeReadXAR builds a minimal installer package with a PackageInfo and a
++// payload. The gomega fixtures register a fail handler, so a plain test needs
++// its own builder.
++func macRangeReadXAR(info string) []byte {
++	payload := []byte("app payload")
++
++	var entries string
++
++	offset := sha1.Size
++
++	for index, entry := range []struct {
++		name string
++		data []byte
++	}{{"PackageInfo", []byte(info)}, {"Payload", payload}} {
++		checksum := sha1.Sum(entry.data) // #nosec G401 -- XAR uses SHA-1 for archive checksums.
++		entries += fmt.Sprintf(`<file id="%d"><type>file</type><name>%s</name><mtime>%s</mtime><data><length>%d</length><offset>%d</offset><size>%d</size><encoding style="application/octet-stream"/><archived-checksum style="sha1">%x</archived-checksum><extracted-checksum style="sha1">%x</extracted-checksum></data></file>`,
++			index+1, entry.name, macRangeReadModified, len(entry.data), offset, len(entry.data), checksum, checksum)
++		offset += len(entry.data)
++	}
++
++	toc := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
++<xar><toc><checksum style="sha1"><offset>0</offset><size>%d</size></checksum>%s</toc></xar>`, sha1.Size, entries)
++
++	var compressed bytes.Buffer
++
++	writer := zlib.NewWriter(&compressed)
++	_, _ = writer.Write([]byte(toc))
++	_ = writer.Close()
++
++	compressedTOC := compressed.Bytes()
++	tocChecksum := sha1.Sum(compressedTOC) // #nosec G401 -- XAR uses SHA-1 for archive checksums.
++	heap := append([]byte(info), payload...)
++
++	archive := make([]byte, 28+len(compressedTOC)+sha1.Size+len(heap))
++	binary.BigEndian.PutUint32(archive[0:4], 0x78617221)
++	binary.BigEndian.PutUint16(archive[4:6], 28)
++	binary.BigEndian.PutUint16(archive[6:8], 1)
++	binary.BigEndian.PutUint64(archive[8:16], uint64(len(compressedTOC)))
++	binary.BigEndian.PutUint64(archive[16:24], uint64(len(toc)))
++	binary.BigEndian.PutUint32(archive[24:28], 1)
++	copy(archive[28:], compressedTOC)
++	copy(archive[28+len(compressedTOC):], tocChecksum[:])
++	copy(archive[28+len(compressedTOC)+sha1.Size:], heap)
++
++	return archive
++}
++
++// TestMacPackageRangeReadReadsMetadataWithoutTheStoreAgent pins the fast path:
++// the XAR table of contents and PackageInfo come out of ranged requests, so no
++// installer is downloaded and the Store agent never decrypts one.
++func TestMacPackageRangeReadReadsMetadataWithoutTheStoreAgent(t *testing.T) {
++	data := macRangeReadXAR(macRangeReadInfo)
++
++	requests := 0
++
++	server := httptest.NewServer(gohttp.HandlerFunc(func(w gohttp.ResponseWriter, r *gohttp.Request) {
++		requests++
++
++		if r.Header.Get("Range") == "" {
++			t.Errorf("request %d has no range header", requests)
++		}
++
++		gohttp.ServeContent(w, r, "app.pkg", time.Time{}, bytes.NewReader(data))
++	}))
++	defer server.Close()
++
++	store := &appstore{httpClient: newDownloadTestClient()}
++
++	metadata, err := store.readMacPackageMetadataFromRanges(server.URL, false, "com.example.mac")
++	if err != nil {
++		t.Fatalf("ranged read: %v", err)
++	}
++
++	if metadata.DisplayVersion != "1.2.1" {
++		t.Errorf("display version = %q, want 1.2.1", metadata.DisplayVersion)
++	}
++
++	want := time.Date(2025, 7, 24, 8, 38, 42, 0, time.UTC)
++	if !metadata.ReleaseDate.Equal(want) {
++		t.Errorf("release date = %s, want %s", metadata.ReleaseDate, want)
++	}
++
++	if metadata.PackageReadSource != packageReadSourceDirect {
++		t.Errorf("package read source = %q, want %q", metadata.PackageReadSource, packageReadSourceDirect)
++	}
++
++	if metadata.PackageReadError != "" {
++		t.Errorf("package read error = %q, want none", metadata.PackageReadError)
++	}
++
++	if requests == 0 {
++		t.Fatal("the ranged read made no requests")
++	}
++}
++
++// TestMacPackageRangeReadReportsACDNThatIgnoresRanges keeps the reason for the
++// fallback, so a slow history can be told apart from a package that has to be
++// downloaded.
++func TestMacPackageRangeReadReportsACDNThatIgnoresRanges(t *testing.T) {
++	data := macRangeReadXAR(macRangeReadInfo)
++
++	server := httptest.NewServer(gohttp.HandlerFunc(func(w gohttp.ResponseWriter, _ *gohttp.Request) {
++		_, _ = w.Write(data)
++	}))
++	defer server.Close()
++
++	store := &appstore{httpClient: newDownloadTestClient()}
++
++	_, err := store.readMacPackageMetadataFromRanges(server.URL, false, "com.example.mac")
++	if err == nil {
++		t.Fatal("expected the ranged read to fail")
++	}
++
++	if !strings.Contains(err.Error(), "expected partial content response") {
++		t.Errorf("error = %v, want a range rejection", err)
++	}
++}
++
++// TestMacPackageMetadataReportsTheFullDownloadFallback covers the last resort:
++// the installer is downloaded and decrypted, and the response says so together
++// with the reason the ranged read did not work.
++func TestMacPackageMetadataReportsTheFullDownloadFallback(t *testing.T) {
++	tempRoot := t.TempDir()
++	t.Setenv("TMPDIR", tempRoot)
++	t.Setenv("TMP", tempRoot)
++	t.Setenv("TEMP", tempRoot)
++
++	data := macRangeReadXAR(macRangeReadInfo)
++
++	server := httptest.NewServer(gohttp.HandlerFunc(func(w gohttp.ResponseWriter, _ *gohttp.Request) {
++		_, _ = w.Write([]byte("encrypted"))
++	}))
++	defer server.Close()
++
++	store := &appstore{
++		httpClient: newDownloadTestClient(),
++		os:         operatingsystem.New(),
++		macDecrypterFactory: func(context.Context, []byte, []byte) (macPackageDecrypter, error) {
++			return &fakeMacPackageDecrypter{output: data}, nil
++		},
++	}
++
++	item := downloadItemResult{
++		URL:      server.URL,
++		Sinfs:    []Sinf{{DPInfo: []byte("dpInfo")}},
++		Metadata: map[string]interface{}{"softwareVersionBundleId": "com.example.mac"},
++	}
++
++	metadata, err := store.readVersionMetadataFromMacPackage(context.Background(), item, []byte{0, 17, 34, 51, 68, 85}, "com.example.mac")
++	if err != nil {
++		t.Fatalf("macOS version metadata: %v", err)
++	}
++
++	if metadata.DisplayVersion != "1.2.1" {
++		t.Errorf("display version = %q, want 1.2.1", metadata.DisplayVersion)
++	}
++
++	if metadata.PackageReadSource != packageReadSourceFullDownload {
++		t.Errorf("package read source = %q, want %q", metadata.PackageReadSource, packageReadSourceFullDownload)
++	}
++
++	if !strings.Contains(metadata.PackageReadError, "expected partial content response") {
++		t.Errorf("package read error = %q, want the range rejection", metadata.PackageReadError)
++	}
++}
 diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
-index 77ed888..5132263 100644
+index 77ed888..4ce78a7 100644
 --- a/pkg/appstore/appstore_partial_zip.go
 +++ b/pkg/appstore/appstore_partial_zip.go
 @@ -37,6 +37,12 @@ type versionMetadata struct {
@@ -150,7 +504,7 @@ index 77ed888..5132263 100644
  }
  
  // rangeReaderReadAhead is the minimum size of a remote read. archive/zip parses the central
-@@ -44,6 +50,12 @@ type versionMetadata struct {
+@@ -44,6 +50,15 @@ type versionMetadata struct {
  // runs in the emulator, so each miss reads ahead and later reads are served from memory.
  const rangeReaderReadAhead int64 = 1 << 20
  
@@ -158,12 +512,43 @@ index 77ed888..5132263 100644
 +const (
 +	packageReadSourceDirect   = "direct"
 +	packageReadSourceEmulated = "emulated"
++	// packageReadSourceFullDownload marks a macOS read that had to download and
++	// decrypt the whole installer because its bytes could not be ranged.
++	packageReadSourceFullDownload = "package"
 +)
 +
  type httpRangeReaderAt struct {
  	client apphttp.Client[interface{}]
  	url    string
-@@ -233,8 +245,55 @@ func (r *httpRangeReaderAt) fetch(start, stop int64) ([]byte, error) {
+@@ -86,10 +101,9 @@ func remoteFileSize(client apphttp.Client[interface{}], url string) (int64, erro
+ 	}
+ 
+ 	if res != nil && res.Body != nil {
+-		defer func() {
+-			_, _ = io.Copy(io.Discard, res.Body)
+-			_ = res.Body.Close()
+-		}()
++		// A CDN that ignores the range answers with the whole package; reading
++		// it here would download it twice, once to throw away.
++		defer func() { _ = res.Body.Close() }()
+ 	}
+ 
+ 	if res.StatusCode != http.StatusPartialContent {
+@@ -204,10 +218,9 @@ func (r *httpRangeReaderAt) fetch(start, stop int64) ([]byte, error) {
+ 	}
+ 
+ 	if res != nil && res.Body != nil {
+-		defer func() {
+-			_, _ = io.Copy(io.Discard, res.Body)
+-			_ = res.Body.Close()
+-		}()
++		// A CDN that ignores the range answers with the whole package; reading
++		// it here would download it twice, once to throw away.
++		defer func() { _ = res.Body.Close() }()
+ 	}
+ 
+ 	if res.StatusCode != http.StatusPartialContent {
+@@ -233,8 +246,55 @@ func (r *httpRangeReaderAt) fetch(start, stop int64) ([]byte, error) {
  	return data, nil
  }
  
@@ -220,7 +605,7 @@ index 77ed888..5132263 100644
  	if err != nil {
  		return versionMetadata{}, err
  	}
-@@ -260,6 +319,22 @@ func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, erro
+@@ -260,6 +320,22 @@ func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, erro
  	return versionMetadata{}, errors.New("could not find Info.plist")
  }
  
