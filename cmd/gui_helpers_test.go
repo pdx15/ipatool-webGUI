@@ -379,6 +379,9 @@ func TestLookupVersionMetadataReturnsAndCachesMinimumOSVersion(t *testing.T) {
 	versionID := "test-version-minimum-os"
 	appKey := versionMetaCacheKey(testAppID, appstore.PlatformIPhone)
 
+	// Keep the shared on-disk cache out of the developer's state directory.
+	t.Setenv("IPATOOL_GUI_METADATA_CACHE", filepath.Join(t.TempDir(), versionMetadataCacheFileName))
+
 	versionMetaCache.Lock()
 	previous, hadPrevious := versionMetaCache.m[appKey]
 	delete(versionMetaCache.m, appKey)

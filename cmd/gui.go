@@ -1743,7 +1743,7 @@ func handleAPIVersionMetadata(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, http.StatusUnauthorized, "Apple ID account was not found")
 		return
 	}
-	result, err := lookupVersionMetadataWithAccount(profile, nil, bundleID, appID, versionID, platform)
+	result, err := lookupVersionMetadataWithRetry(r.Context(), profile, nil, bundleID, appID, versionID, platform)
 	if err != nil {
 		if errors.Is(err, errNotAuthenticated) {
 			jsonError(w, http.StatusUnauthorized, "not authenticated")
@@ -1838,6 +1838,8 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 	results := make(map[string]interface{}, len(req.VersionIDs))
 	uncached := make([]string, 0, len(req.VersionIDs))
 
+	loadVersionMetadataDiskCache()
+
 	if appID != 0 {
 		cacheKey := versionMetaCacheKey(appID, platform)
 		versionMetaCache.RLock()
@@ -1885,17 +1887,16 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 		wg sync.WaitGroup
 	)
 
+	// The emulator keeps running lookups that the browser no longer waits for,
+	// so stop scheduling them once the page is closed.
+	ctx := r.Context()
+
 	started := time.Now()
 	for _, versionID := range uncached {
 		wg.Add(1)
 		go func(versionID string) {
 			defer wg.Done()
-			result, err := lookupVersionMetadataWithAccount(profile, account, req.BundleID, appID, versionID, platform)
-			if err != nil && isTransientAppleError(err) {
-				// One retry for gateway-style failures (502/503/504) that
-				// Apple emits under load; a second attempt usually succeeds.
-				result, err = lookupVersionMetadataWithAccount(profile, account, req.BundleID, appID, versionID, platform)
-			}
+			result, err := lookupVersionMetadataWithRetry(ctx, profile, account, req.BundleID, appID, versionID, platform)
 			if err != nil {
 				result = map[string]interface{}{"success": false, "message": err.Error()}
 			}
@@ -1904,27 +1905,76 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 			mu.Unlock()
 		}(versionID)
 	}
-	wg.Wait()
+
+	finished := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(finished)
+	}()
+
+	// Return the builds that are ready when the caller goes away instead of
+	// holding the request (and its goroutines) open until every lookup ends.
+	partial := false
+	select {
+	case <-finished:
+	case <-ctx.Done():
+		partial = true
+	}
+
+	mu.Lock()
+	snapshot := make(map[string]interface{}, len(results))
+	for versionID, result := range results {
+		snapshot[versionID] = result
+	}
+	mu.Unlock()
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"success": true,
-		"results": results,
+		"results": snapshot,
 		"totalMs": time.Since(started).Milliseconds(),
+		"partial": partial,
 	})
 }
 
 var errNotAuthenticated = errors.New("not authenticated")
 
-// isTransientAppleError reports whether err looks like a gateway failure
-// (HTTP 502/503/504) from Apple rather than a real rejection.
+// isTransientAppleError reports whether err looks like a burst or gateway
+// failure (HTTP 403/502/503/504) from Apple rather than a real rejection. Apple
+// rejects concurrent Store requests with 403 while single requests keep
+// succeeding, so one spaced retry usually clears it.
 func isTransientAppleError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "(HTTP 502)") ||
+	return strings.Contains(msg, "(HTTP 403)") ||
+		strings.Contains(msg, "(HTTP 502)") ||
 		strings.Contains(msg, "(HTTP 503)") ||
 		strings.Contains(msg, "(HTTP 504)")
+}
+
+// lookupVersionMetadataWithRetry performs one spaced retry for transient Apple
+// failures before reporting the error.
+func lookupVersionMetadataWithRetry(ctx context.Context, profile *guiAccountProfile, account *appstore.Account, bundleID string, appID int64, versionID string, platform appstore.Platform) (map[string]interface{}, error) {
+	result, err := lookupVersionMetadataWithAccount(ctx, profile, account, bundleID, appID, versionID, platform)
+	if err == nil || !isTransientAppleError(err) {
+		return result, err
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	timer := time.NewTimer(metadataRetryDelay())
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	return lookupVersionMetadataWithAccount(ctx, profile, account, bundleID, appID, versionID, platform)
 }
 
 // lookupVersionMetadata returns the JSON payload for one build, served from
@@ -1934,10 +1984,18 @@ func lookupVersionMetadata(bundleID string, appID int64, versionID string) (map[
 	if guiAccounts != nil {
 		profile, _ = guiAccounts.activeProfile()
 	}
-	return lookupVersionMetadataWithAccount(profile, nil, bundleID, appID, versionID, "")
+	return lookupVersionMetadataWithAccount(context.Background(), profile, nil, bundleID, appID, versionID, "")
 }
 
-func lookupVersionMetadataWithAccount(profile *guiAccountProfile, account *appstore.Account, bundleID string, appID int64, versionID string, platform appstore.Platform) (map[string]interface{}, error) {
+func lookupVersionMetadataWithAccount(ctx context.Context, profile *guiAccountProfile, account *appstore.Account, bundleID string, appID int64, versionID string, platform appstore.Platform) (map[string]interface{}, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// The shared on-disk cache is account independent: build metadata does not
+	// change per Apple ID or per run.
+	loadVersionMetadataDiskCache()
+
 	// Serve from cache when available (keyed by platform+appID:versionID).
 	if appID != 0 {
 		cacheKey := versionMetaCacheKey(appID, platform)
@@ -1997,14 +2055,24 @@ func lookupVersionMetadataWithAccount(profile *guiAccountProfile, account *appst
 
 	// Version metadata is the same Store download request without the package
 	// transfer, so it needs the v2.8.0 Store machine identity as well.
-	if err := ensureStoreAMDState(context.Background(), profile); err != nil {
+	if err := ensureStoreAMDState(ctx, profile); err != nil {
 		return nil, err
 	}
+
+	// Hold a Store lookup slot for the round-trip only: account and bundle
+	// resolution above is local. The cap keeps bursts of Version History
+	// lookups from pushing Apple into HTTP 403 rejections.
+	release, err := acquireMetadataSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 
 	// Time the round-trip to Apple so slow responses can be told apart from
 	// slow rendering when investigating "history loads slowly" reports.
 	started := time.Now()
 	out, err := store.GetVersionMetadata(appstore.GetVersionMetadataInput{
+		Context:   ctx,
 		Account:   acc,
 		App:       app,
 		VersionID: versionID,
@@ -2017,19 +2085,11 @@ func lookupVersionMetadataWithAccount(profile *guiAccountProfile, account *appst
 
 	releaseDate := out.ReleaseDate.Format("2006-01-02")
 
-	if appID != 0 {
-		cacheKey := versionMetaCacheKey(appID, platform)
-		versionMetaCache.Lock()
-		if versionMetaCache.m[cacheKey] == nil {
-			versionMetaCache.m[cacheKey] = map[string]versionMetaEntry{}
-		}
-		versionMetaCache.m[cacheKey][versionID] = versionMetaEntry{
-			DisplayVersion:   out.DisplayVersion,
-			ReleaseDate:      releaseDate,
-			MinimumOSVersion: out.MinimumOSVersion,
-		}
-		versionMetaCache.Unlock()
-	}
+	rememberVersionMetadata(appID, platform, versionID, versionMetaEntry{
+		DisplayVersion:   out.DisplayVersion,
+		ReleaseDate:      releaseDate,
+		MinimumOSVersion: out.MinimumOSVersion,
+	})
 
 	return map[string]interface{}{
 		"success":          true,
