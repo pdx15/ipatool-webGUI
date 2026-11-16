@@ -292,7 +292,7 @@ index be202a0..7786be2 100644
  
  func macPackageVersionMetadata(archive *xar.Reader, bundleID string) (versionMetadata, error) {
 diff --git a/pkg/appstore/appstore_macos_version_metadata_test.go b/pkg/appstore/appstore_macos_version_metadata_test.go
-index b57f884..a2dcce4 100644
+index b57f884..bf22868 100644
 --- a/pkg/appstore/appstore_macos_version_metadata_test.go
 +++ b/pkg/appstore/appstore_macos_version_metadata_test.go
 @@ -2,13 +2,17 @@ package appstore
@@ -313,7 +313,7 @@ index b57f884..a2dcce4 100644
  	"time"
  
  	"github.com/blacktop/go-macho/pkg/xar"
-@@ -115,3 +119,172 @@ var _ = Describe("Mac version metadata", func() {
+@@ -115,3 +119,173 @@ var _ = Describe("Mac version metadata", func() {
  		Expect(entries).To(BeEmpty())
  	})
  })
@@ -353,8 +353,9 @@ index b57f884..a2dcce4 100644
 +
 +	compressedTOC := compressed.Bytes()
 +	tocChecksum := sha1.Sum(compressedTOC) // #nosec G401 -- XAR uses SHA-1 for archive checksums.
++	heap := append([]byte(info), payload...)
 +
-+	archive := make([]byte, 28+len(compressedTOC)+sha1.Size+len(payload))
++	archive := make([]byte, 28+len(compressedTOC)+sha1.Size+len(heap))
 +	binary.BigEndian.PutUint32(archive[0:4], 0x78617221)
 +	binary.BigEndian.PutUint16(archive[4:6], 28)
 +	binary.BigEndian.PutUint16(archive[6:8], 1)
@@ -363,7 +364,7 @@ index b57f884..a2dcce4 100644
 +	binary.BigEndian.PutUint32(archive[24:28], 1)
 +	copy(archive[28:], compressedTOC)
 +	copy(archive[28+len(compressedTOC):], tocChecksum[:])
-+	copy(archive[28+len(compressedTOC)+sha1.Size:], append([]byte(info), payload...))
++	copy(archive[28+len(compressedTOC)+sha1.Size:], heap)
 +
 +	return archive
 +}
