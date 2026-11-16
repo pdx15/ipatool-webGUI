@@ -24,7 +24,7 @@ on:
 env:
   # The upstream commit the integration patches are written against.
   # Bump it together with patches/ when moving to a newer upstream commit.
-  DEFAULT_UPSTREAM_REF: 'e0e2908dc866651cbd6ad86edd954119c003c46b'
+  DEFAULT_UPSTREAM_REF: 'b352566155a667d8aaeabaa7ecec4966080f92ab'
 
 permissions:
   contents: read
