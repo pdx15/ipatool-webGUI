@@ -145,6 +145,12 @@ jobs:
           fi
           GOOS=windows go build ./...
           go test ./cmd/ -run 'TestRenameDownloaded|TestMacOSSupportsSystemTrust|TestMetadata|TestIsTransientAppleError|TestVersionMetadataCache|TestPersistVersionMetadataCache|TestRememberVersionMetadata' -count=1
+
+      - name: Verify package range reads stay off the Store emulator
+        run: |
+          cd ipatool
+          # Version metadata tests need the generated gomock doubles.
+          go generate ./pkg/...
           go test ./pkg/appstore/ -run 'TestDirectPackageRangeRead' -count=1
 
       - name: Build Windows binary (AMD64)
