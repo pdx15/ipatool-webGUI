@@ -148,8 +148,18 @@ jobs:
           cd ipatool
           # Version metadata tests need the generated gomock doubles.
           go generate ./pkg/...
-          go test ./pkg/appstore/ -run 'TestDirectPackageRangeRead|TestPackageRangeReadFallsBack|TestMacPackage' -count=1
-          go test ./internal/store/ -run 'TestTransferDirectSkipsTheStoreEmulator' -count=1
+          # The run log is not always reachable, so surface compiler and test
+          # failures as annotations instead.
+          status=0
+          go test ./pkg/appstore/ -run 'TestDirectPackageRangeRead|TestPackageRangeReadFallsBack|TestMacPackage' -count=1 > appstore-test.log 2>&1 || status=$?
+          go test ./internal/store/ -run 'TestTransferDirectSkipsTheStoreEmulator' -count=1 >> appstore-test.log 2>&1 || status=$?
+          cat appstore-test.log
+          if [ "$status" -ne 0 ]; then
+            head -c 6000 appstore-test.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit "$status"
+          fi
 
       - name: Build Windows binary (AMD64)
         run: |
