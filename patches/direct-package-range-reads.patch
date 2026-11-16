@@ -383,7 +383,7 @@ index be202a0..e679b47 100644
  
  func macPackageVersionMetadata(archive *xar.Reader, bundleID string) (versionMetadata, error) {
 diff --git a/pkg/appstore/appstore_macos_version_metadata_test.go b/pkg/appstore/appstore_macos_version_metadata_test.go
-index b57f884..d961f86 100644
+index b57f884..181b3d2 100644
 --- a/pkg/appstore/appstore_macos_version_metadata_test.go
 +++ b/pkg/appstore/appstore_macos_version_metadata_test.go
 @@ -2,13 +2,18 @@ package appstore
@@ -405,7 +405,7 @@ index b57f884..d961f86 100644
  	"time"
  
  	"github.com/blacktop/go-macho/pkg/xar"
-@@ -115,3 +120,306 @@ var _ = Describe("Mac version metadata", func() {
+@@ -115,3 +120,308 @@ var _ = Describe("Mac version metadata", func() {
  		Expect(entries).To(BeEmpty())
  	})
  })
@@ -651,8 +651,10 @@ index b57f884..d961f86 100644
 +	}))
 +	defer preflight.Close()
 +
++	// The installer is still probed for a XAR header, but any attempt to
++	// download it would reach the decrypter below and fail the whole read.
 +	installer := httptest.NewServer(gohttp.HandlerFunc(func(w gohttp.ResponseWriter, _ *gohttp.Request) {
-+		t.Error("the installer package must not be downloaded when the preflight archive answers")
++		_, _ = w.Write([]byte("container"))
 +	}))
 +	defer installer.Close()
 +
@@ -660,7 +662,7 @@ index b57f884..d961f86 100644
 +		httpClient: newDownloadTestClient(),
 +		os:         operatingsystem.New(),
 +		macDecrypterFactory: func(context.Context, []byte, []byte) (macPackageDecrypter, error) {
-+			return &fakeMacPackageDecrypter{err: errors.New("the preflight archive needs no decryption")}, nil
++			return &fakeMacPackageDecrypter{err: errors.New("the preflight archive must not be decrypted")}, nil
 +		},
 +	}
 +
