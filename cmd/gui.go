@@ -1838,6 +1838,8 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 	results := make(map[string]interface{}, len(req.VersionIDs))
 	uncached := make([]string, 0, len(req.VersionIDs))
 
+	loadVersionMetadataDiskCache()
+
 	if appID != 0 {
 		cacheKey := versionMetaCacheKey(appID, platform)
 		versionMetaCache.RLock()
@@ -1990,6 +1992,10 @@ func lookupVersionMetadataWithAccount(ctx context.Context, profile *guiAccountPr
 		ctx = context.Background()
 	}
 
+	// The shared on-disk cache is account independent: build metadata does not
+	// change per Apple ID or per run.
+	loadVersionMetadataDiskCache()
+
 	// Serve from cache when available (keyed by platform+appID:versionID).
 	if appID != 0 {
 		cacheKey := versionMetaCacheKey(appID, platform)
@@ -2079,19 +2085,11 @@ func lookupVersionMetadataWithAccount(ctx context.Context, profile *guiAccountPr
 
 	releaseDate := out.ReleaseDate.Format("2006-01-02")
 
-	if appID != 0 {
-		cacheKey := versionMetaCacheKey(appID, platform)
-		versionMetaCache.Lock()
-		if versionMetaCache.m[cacheKey] == nil {
-			versionMetaCache.m[cacheKey] = map[string]versionMetaEntry{}
-		}
-		versionMetaCache.m[cacheKey][versionID] = versionMetaEntry{
-			DisplayVersion:   out.DisplayVersion,
-			ReleaseDate:      releaseDate,
-			MinimumOSVersion: out.MinimumOSVersion,
-		}
-		versionMetaCache.Unlock()
-	}
+	rememberVersionMetadata(appID, platform, versionID, versionMetaEntry{
+		DisplayVersion:   out.DisplayVersion,
+		ReleaseDate:      releaseDate,
+		MinimumOSVersion: out.MinimumOSVersion,
+	})
 
 	return map[string]interface{}{
 		"success":          true,
