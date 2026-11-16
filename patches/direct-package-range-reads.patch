@@ -1,0 +1,254 @@
+diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
+index 77ed888..f5588f7 100644
+--- a/pkg/appstore/appstore_partial_zip.go
++++ b/pkg/appstore/appstore_partial_zip.go
+@@ -233,8 +233,50 @@ func (r *httpRangeReaderAt) fetch(start, stop int64) ([]byte, error) {
+ 	return data, nil
+ }
+ 
++// directPackageReadTransport is shared by direct package reads so the many range
++// requests one build needs reuse a single connection pool.
++var directPackageReadTransport = http.DefaultTransport.(*http.Transport).Clone()
++
++// directReadExecutor runs package range requests with a plain HTTP client. The
++// Store signs the package URL, so the CDN needs neither emulated headers nor a
++// guest VM, and opening one for every range request cost seconds per request.
++type directReadExecutor struct {
++	client *http.Client
++}
++
++func (e directReadExecutor) Send(apphttp.Request, []byte) (*http.Response, error) {
++	return nil, errors.New("package range reads only support direct requests")
++}
++
++func (e directReadExecutor) Do(request *http.Request) (*http.Response, error) {
++	if request.Header.Get("User-Agent") == "" {
++		request.Header.Set("User-Agent", apphttp.DefaultUserAgent)
++	}
++
++	return e.client.Do(request)
++}
++
++// directPackageReadClient reads packages without the Store emulator.
++func directPackageReadClient() apphttp.Client[interface{}] {
++	return apphttp.NewClient[interface{}](apphttp.Args{
++		Executor: directReadExecutor{client: &http.Client{Transport: directPackageReadTransport}},
++	})
++}
++
+ func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, error) {
+-	reader, size, err := newHTTPRangeReaderAt(t.httpClient, url)
++	metadata, err := readVersionMetadataFromPackageURL(directPackageReadClient(), url)
++	if err == nil || !isPackageReadTransportError(err) {
++		return metadata, err
++	}
++
++	// Keep the emulated transfer client as a fallback: it is slow, but it is the
++	// path every earlier release used, so a CDN that rejects direct reads must
++	// not break version history.
++	return readVersionMetadataFromPackageURL(t.httpClient, url)
++}
++
++func readVersionMetadataFromPackageURL(client apphttp.Client[interface{}], url string) (versionMetadata, error) {
++	reader, size, err := newHTTPRangeReaderAt(client, url)
+ 	if err != nil {
+ 		return versionMetadata{}, err
+ 	}
+@@ -260,6 +302,22 @@ func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, erro
+ 	return versionMetadata{}, errors.New("could not find Info.plist")
+ }
+ 
++// isPackageReadTransportError reports whether the direct read failed before the
++// zip was parsed. Only then can the emulated transfer client help.
++func isPackageReadTransportError(err error) bool {
++	if err == nil {
++		return false
++	}
++
++	message := err.Error()
++
++	return strings.Contains(message, "failed to read remote file size") ||
++		strings.Contains(message, "expected partial content response") ||
++		strings.Contains(message, "request failed") ||
++		strings.Contains(message, "failed to read response body") ||
++		strings.Contains(message, "unexpected content range")
++}
++
+ func isMainAppInfoPlist(name string) bool {
+ 	parts := strings.Split(name, "/")
+ 
+diff --git a/pkg/appstore/appstore_partial_zip_direct_test.go b/pkg/appstore/appstore_partial_zip_direct_test.go
+new file mode 100644
+index 0000000..081ea67
+--- /dev/null
++++ b/pkg/appstore/appstore_partial_zip_direct_test.go
+@@ -0,0 +1,169 @@
++package appstore
++
++import (
++	"archive/zip"
++	"bytes"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++)
++
++const directPackageReadInfoPlist = `<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<plist version="1.0">
++<dict>
++	<key>CFBundleShortVersionString</key>
++	<string>3.2.1</string>
++	<key>MinimumOSVersion</key>
++	<string>12.0</string>
++	<key>releaseDate</key>
++	<string>2026-10-09</string>
++</dict>
++</plist>
++`
++
++// directPackageReadArchive builds a minimal IPA so the range reader has a real
++// central directory and a real Payload/*.app/Info.plist to walk.
++func directPackageReadArchive(t *testing.T) []byte {
++	t.Helper()
++
++	buffer := new(bytes.Buffer)
++	writer := zip.NewWriter(buffer)
++	file, err := writer.Create("Payload/Demo.app/Info.plist")
++	if err != nil {
++		t.Fatalf("create Info.plist entry: %v", err)
++	}
++
++	if _, err = file.Write([]byte(directPackageReadInfoPlist)); err != nil {
++		t.Fatalf("write Info.plist entry: %v", err)
++	}
++
++	if err = writer.Close(); err != nil {
++		t.Fatalf("close IPA archive: %v", err)
++	}
++
++	return buffer.Bytes()
++}
++
++// servePackageRanges answers byte ranges the way the Store CDN does.
++func servePackageRanges(data []byte) http.HandlerFunc {
++	return func(w http.ResponseWriter, r *http.Request) {
++		spec, ranged := strings.CutPrefix(r.Header.Get("Range"), "bytes=")
++		if !ranged {
++			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
++			_, _ = w.Write(data)
++
++			return
++		}
++
++		startText, endText, ok := strings.Cut(spec, "-")
++		if !ok {
++			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
++
++			return
++		}
++
++		start, err := strconv.ParseInt(startText, 10, 64)
++		if err != nil || start < 0 || start >= int64(len(data)) {
++			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
++
++			return
++		}
++
++		end := int64(len(data)) - 1
++		if endText != "" {
++			end, err = strconv.ParseInt(endText, 10, 64)
++			if err != nil || end < start {
++				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
++
++				return
++			}
++		}
++
++		if end >= int64(len(data)) {
++			end = int64(len(data)) - 1
++		}
++
++		body := data[start : end+1]
++		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, len(data)))
++		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
++		w.WriteHeader(http.StatusPartialContent)
++		_, _ = w.Write(body)
++	}
++}
++
++// TestDirectPackageRangeReadReadsVersionMetadata pins the fast path for version
++// history: package ranges are read with a plain HTTP client, so no account, no
++// machine identity and no Unicorn guest are involved.
++func TestDirectPackageRangeReadReadsVersionMetadata(t *testing.T) {
++	server := httptest.NewServer(servePackageRanges(directPackageReadArchive(t)))
++	defer server.Close()
++
++	metadata, err := readVersionMetadataFromPackageURL(directPackageReadClient(), server.URL)
++	if err != nil {
++		t.Fatalf("read version metadata: %v", err)
++	}
++
++	if metadata.DisplayVersion != "3.2.1" {
++		t.Errorf("display version = %q, want 3.2.1", metadata.DisplayVersion)
++	}
++
++	if metadata.MinimumOSVersion != "12.0" {
++		t.Errorf("minimum OS version = %q, want 12.0", metadata.MinimumOSVersion)
++	}
++
++	if releaseDate := metadata.ReleaseDate.Format("2006-01-02"); releaseDate != "2026-10-09" {
++		t.Errorf("release date = %q, want 2026-10-09", releaseDate)
++	}
++}
++
++// TestDirectPackageRangeReadSendsPlainHeaders guards the property that matters
++// for speed: direct reads carry only ordinary CDN headers. Store AMD headers in
++// this path would mean the emulator is back in the request path.
++func TestDirectPackageRangeReadSendsPlainHeaders(t *testing.T) {
++	var (
++		mu   sync.Mutex
++		seen []http.Header
++	)
++
++	handler := servePackageRanges(directPackageReadArchive(t))
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		mu.Lock()
++		seen = append(seen, r.Header.Clone())
++		mu.Unlock()
++
++		handler(w, r)
++	}))
++	defer server.Close()
++
++	if _, err := readVersionMetadataFromPackageURL(directPackageReadClient(), server.URL); err != nil {
++		t.Fatalf("read version metadata: %v", err)
++	}
++
++	mu.Lock()
++	defer mu.Unlock()
++
++	if len(seen) == 0 {
++		t.Fatal("no range requests reached the server")
++	}
++
++	for _, header := range seen {
++		if rangeHeader := header.Get("Range"); !strings.HasPrefix(rangeHeader, "bytes=") {
++			t.Errorf("range header = %q, want a byte range", rangeHeader)
++		}
++
++		if userAgent := header.Get("User-Agent"); userAgent == "" {
++			t.Error("user agent is empty")
++		}
++
++		for key := range header {
++			if strings.HasPrefix(key, "X-Apple-") {
++				t.Errorf("direct read sent Store header %q", key)
++			}
++		}
++	}
++}
