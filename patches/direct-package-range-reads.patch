@@ -1,8 +1,8 @@
 diff --git a/cmd/get_version_metadata.go b/cmd/get_version_metadata.go
-index e268ee6..298a5e8 100644
+index e268ee6..bb29689 100644
 --- a/cmd/get_version_metadata.go
 +++ b/cmd/get_version_metadata.go
-@@ -80,6 +80,11 @@ func getVersionMetadataCmd() *cobra.Command {
+@@ -80,6 +80,12 @@ func getVersionMetadataCmd() *cobra.Command {
  					Str("displayVersion", out.DisplayVersion).
  					Time("releaseDate", out.ReleaseDate).
  					Str("minimumOSVersion", out.MinimumOSVersion).
@@ -11,11 +11,12 @@ index e268ee6..298a5e8 100644
 +					Int64("emulatorOpens", out.EmulatorOpens).
 +					Int64("emulatorOpenMs", out.EmulatorOpenMs).
 +					Interface("emulatorRequests", out.EmulatorRequests).
++					Interface("emulatorTrace", out.EmulatorTrace).
  					Bool("success", true).
  					Send()
  
 diff --git a/internal/store/backend.go b/internal/store/backend.go
-index 0fc9277..4f8f3bc 100644
+index 0fc9277..3a28df3 100644
 --- a/internal/store/backend.go
 +++ b/internal/store/backend.go
 @@ -11,8 +11,10 @@ import (
@@ -29,7 +30,7 @@ index 0fc9277..4f8f3bc 100644
  	"time"
  
  	"github.com/majd/ipatool/v2/internal/sap/assets"
-@@ -29,6 +31,71 @@ type Backend struct {
+@@ -29,6 +31,167 @@ type Backend struct {
  	bag           map[string]any
  	transport     *http.Transport
  	authTransport *http.Transport
@@ -39,6 +40,9 @@ index 0fc9277..4f8f3bc 100644
 +
 +	requestsMu sync.Mutex
 +	requests   map[string]int64
++
++	trace    []StoreRequest
++	traceSeq atomic.Int64
 +}
 +
 +// EmulatorStats counts the Store framework launches and the time they took.
@@ -83,6 +87,99 @@ index 0fc9277..4f8f3bc 100644
 +	b.requests[key]++
 +}
 +
++// StoreRequest is one entry of the ordered emulator trace. A histogram says how
++// many requests a lookup sent; the order says why, which is what separates a
++// retried request from a second pass through the whole fallback chain.
++type StoreRequest struct {
++	Seq       int64  `json:"seq"`
++	Label     string `json:"label,omitempty"`
++	Operation string `json:"operation,omitempty"`
++	Method    string `json:"method,omitempty"`
++	Endpoint  string `json:"endpoint,omitempty"`
++	Pinned    string `json:"pinned,omitempty"`
++	Status    int    `json:"status,omitempty"`
++	Ms        int64  `json:"ms,omitempty"`
++	Error     string `json:"error,omitempty"`
++}
++
++// storeTraceLimit bounds the trace: it exists to explain one lookup, not to
++// grow with the session.
++const storeTraceLimit = 128
++
++// StoreTrace returns the recent requests in the order they were made.
++func (b *Backend) StoreTrace() []StoreRequest {
++	b.requestsMu.Lock()
++	defer b.requestsMu.Unlock()
++
++	trace := make([]StoreRequest, len(b.trace))
++	copy(trace, b.trace)
++
++	return trace
++}
++
++// Mark writes a label into the trace, so a reader can see where one lookup
++// starts and the next ends.
++func (b *Backend) Mark(label string) {
++	b.appendTrace(StoreRequest{Label: label})
++}
++
++func (b *Backend) appendTrace(entry StoreRequest) {
++	entry.Seq = b.traceSeq.Add(1)
++
++	b.requestsMu.Lock()
++	defer b.requestsMu.Unlock()
++
++	b.trace = append(b.trace, entry)
++	if len(b.trace) > storeTraceLimit {
++		b.trace = append([]StoreRequest(nil), b.trace[len(b.trace)-storeTraceLimit:]...)
++	}
++}
++
++// recordStoreTrace keeps the order, timing and outcome of one request.
++func (b *Backend) recordStoreTrace(input emulator.Request, response *http.Response, err error, elapsed time.Duration) {
++	entry := StoreRequest{
++		Operation: input.Operation,
++		Method:    input.Method,
++		Endpoint:  requestEndpoint(input.URL),
++		Pinned:    requestPinnedVersion(input.Parameters),
++		Ms:        elapsed.Milliseconds(),
++	}
++
++	if response != nil {
++		entry.Status = response.StatusCode
++	}
++
++	if err != nil {
++		entry.Error = truncateTraceValue(err.Error(), 120)
++	}
++
++	b.appendTrace(entry)
++}
++
++// requestPinnedVersion reports the build a request asked for, which separates a
++// pinned request from an unpinned one without keeping the whole payload.
++func requestPinnedVersion(parameters map[string]any) string {
++	for key, value := range parameters {
++		if !strings.Contains(strings.ToLower(key), "vrsid") && !strings.Contains(strings.ToLower(key), "versionid") {
++			continue
++		}
++
++		if pinned, ok := value.(string); ok {
++			return pinned
++		}
++	}
++
++	return ""
++}
++
++func truncateTraceValue(value string, limit int) string {
++	if len(value) <= limit {
++		return value
++	}
++
++	return value[:limit] + "..."
++}
++
 +// requestEndpoint keeps the host and path so query strings and signatures do not
 +// split one endpoint into dozens of counters.
 +func requestEndpoint(rawURL string) string {
@@ -101,7 +198,7 @@ index 0fc9277..4f8f3bc 100644
  }
  
  type executor struct {
-@@ -102,6 +169,12 @@ func (e *executor) Do(request *http.Request) (*http.Response, error) {
+@@ -102,6 +265,12 @@ func (e *executor) Do(request *http.Request) (*http.Response, error) {
  		return e.backend.requestTransport(emulator.Request{Operation: "authenticate"})(request)
  	}
  
@@ -114,16 +211,25 @@ index 0fc9277..4f8f3bc 100644
  	var body []byte
  
  	var err error
-@@ -174,6 +247,8 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+@@ -174,6 +343,17 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
  		return nil, fmt.Errorf("store request: %w", err)
  	}
  
 +	b.recordStoreRequest(input.Operation, input.Method, input.URL)
 +
++	started := time.Now()
++	response, err := b.executeRequest(ctx, input)
++
++	b.recordStoreTrace(input, response, err, time.Since(started))
++
++	return response, err
++}
++
++func (b *Backend) executeRequest(ctx context.Context, input emulator.Request) (*http.Response, error) {
  	hardware, err := b.hardware(input.Parameters)
  	if err != nil {
  		return nil, fmt.Errorf("store request: %w", err)
-@@ -216,7 +291,11 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+@@ -216,7 +396,11 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
  		return nil, fmt.Errorf("prepare Store framework: %w", err)
  	}
  
@@ -135,7 +241,7 @@ index 0fc9277..4f8f3bc 100644
  	if err != nil {
  		return nil, fmt.Errorf("open Store framework: %w", err)
  	}
-@@ -281,6 +360,28 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+@@ -281,6 +465,28 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
  	return response, nil
  }
  
@@ -166,17 +272,23 @@ index 0fc9277..4f8f3bc 100644
  	b.transport.CloseIdleConnections()
 diff --git a/internal/store/backend_direct_test.go b/internal/store/backend_direct_test.go
 new file mode 100644
-index 0000000..5123f1c
+index 0000000..5033acf
 --- /dev/null
 +++ b/internal/store/backend_direct_test.go
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,166 @@
 +package store
 +
 +import (
 +	"context"
++	"errors"
++	"fmt"
 +	"net/http"
 +	"net/http/httptest"
++	"strings"
 +	"testing"
++	"time"
++
++	"github.com/majd/ipatool/v2/internal/store/emulator"
 +)
 +
 +// TestTransferDirectSkipsTheStoreEmulator pins the fast path for signed package
@@ -249,8 +361,125 @@ index 0000000..5123f1c
 +		t.Errorf("endpoints = %v, want two", counted)
 +	}
 +}
++
++// TestStoreTraceKeepsRequestsInOrder pins the trace that explains a slow
++// lookup: the order, the pinned build, the status and the time of each request,
++// plus the label that marks where a lookup starts.
++func TestStoreTraceKeepsRequestsInOrder(t *testing.T) {
++	backend := New(nil, nil)
++
++	backend.Mark("lookup 892759993")
++	backend.recordStoreTrace(
++		emulator.Request{
++			Operation:  "request",
++			Method:     http.MethodPost,
++			URL:        "https://p19-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct?guid=ABCDEF",
++			Parameters: map[string]any{"appExtVrsId": "892759993"},
++		},
++		&http.Response{StatusCode: 200}, nil, 1400*time.Millisecond)
++	backend.recordStoreTrace(
++		emulator.Request{Operation: "request", Method: http.MethodPost, URL: "https://downloaddispatch.itunes.apple.com/r/redownload"},
++		nil, errors.New("download rejected"), 1500*time.Millisecond)
++
++	trace := backend.StoreTrace()
++	if len(trace) != 3 {
++		t.Fatalf("trace entries = %d, want 3", len(trace))
++	}
++
++	if trace[0].Label != "lookup 892759993" {
++		t.Errorf("label = %q, want the lookup mark", trace[0].Label)
++	}
++
++	if got := trace[1].Endpoint; got != "p19-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct" {
++		t.Errorf("endpoint = %q, want the query string stripped", got)
++	}
++
++	if trace[1].Pinned != "892759993" {
++		t.Errorf("pinned build = %q, want 892759993", trace[1].Pinned)
++	}
++
++	if trace[1].Status != 200 || trace[1].Ms != 1400 {
++		t.Errorf("status = %d, ms = %d, want 200 and 1400", trace[1].Status, trace[1].Ms)
++	}
++
++	if trace[2].Status != 0 || !strings.Contains(trace[2].Error, "download rejected") {
++		t.Errorf("failed request = %+v, want the error recorded", trace[2])
++	}
++
++	if !(trace[0].Seq < trace[1].Seq && trace[1].Seq < trace[2].Seq) {
++		t.Errorf("sequence numbers are not increasing: %d, %d, %d", trace[0].Seq, trace[1].Seq, trace[2].Seq)
++	}
++}
++
++// TestStoreTraceIsBounded keeps the trace from growing with the session.
++func TestStoreTraceIsBounded(t *testing.T) {
++	backend := New(nil, nil)
++
++	for index := 0; index < storeTraceLimit+5; index++ {
++		backend.Mark(fmt.Sprintf("lookup %d", index))
++	}
++
++	trace := backend.StoreTrace()
++	if len(trace) != storeTraceLimit {
++		t.Fatalf("trace entries = %d, want %d", len(trace), storeTraceLimit)
++	}
++
++	if want := fmt.Sprintf("lookup %d", storeTraceLimit+4); trace[len(trace)-1].Label != want {
++		t.Errorf("last label = %q, want %q", trace[len(trace)-1].Label, want)
++	}
++}
++
++func TestRequestPinnedVersion(t *testing.T) {
++	if got := requestPinnedVersion(map[string]any{"appExtVrsId": "123"}); got != "123" {
++		t.Errorf("pinned build = %q, want 123", got)
++	}
++
++	if got := requestPinnedVersion(map[string]any{"externalVersionId": "456"}); got != "456" {
++		t.Errorf("pinned build = %q, want 456", got)
++	}
++
++	if got := requestPinnedVersion(map[string]any{"salableAdamId": int64(42)}); got != "" {
++		t.Errorf("pinned build = %q, want none", got)
++	}
++}
+diff --git a/pkg/appstore/appstore_emulator_trace_test.go b/pkg/appstore/appstore_emulator_trace_test.go
+new file mode 100644
+index 0000000..52515ce
+--- /dev/null
++++ b/pkg/appstore/appstore_emulator_trace_test.go
+@@ -0,0 +1,30 @@
++package appstore
++
++import (
++	"testing"
++
++	"github.com/majd/ipatool/v2/internal/store"
++)
++
++// TestStoreTraceSinceKeepsOnlyNewEntries pins the per-lookup window of the
++// shared trace: entries another lookup added must not leak into this response.
++func TestStoreTraceSinceKeepsOnlyNewEntries(t *testing.T) {
++	trace := []store.StoreRequest{{Seq: 1}, {Seq: 2}, {Seq: 4}}
++
++	added := storeTraceSince(trace, 1)
++	if len(added) != 2 || added[0].Seq != 2 || added[1].Seq != 4 {
++		t.Errorf("added entries = %+v, want sequences 2 and 4", added)
++	}
++
++	if added := storeTraceSince(trace, 4); added != nil {
++		t.Errorf("added entries = %+v, want none", added)
++	}
++
++	if got := traceSequence(trace); got != 4 {
++		t.Errorf("last sequence = %d, want 4", got)
++	}
++
++	if got := traceSequence(nil); got != 0 {
++		t.Errorf("empty last sequence = %d, want 0", got)
++	}
++}
 diff --git a/pkg/appstore/appstore_get_version_metadata.go b/pkg/appstore/appstore_get_version_metadata.go
-index 2517c76..46bd54a 100644
+index 2517c76..1af94fc 100644
 --- a/pkg/appstore/appstore_get_version_metadata.go
 +++ b/pkg/appstore/appstore_get_version_metadata.go
 @@ -6,6 +6,8 @@ import (
@@ -262,7 +491,7 @@ index 2517c76..46bd54a 100644
  )
  
  type GetVersionMetadataInput struct {
-@@ -20,6 +22,22 @@ type GetVersionMetadataOutput struct {
+@@ -20,6 +22,26 @@ type GetVersionMetadataOutput struct {
  	DisplayVersion   string
  	ReleaseDate      time.Time
  	MinimumOSVersion string
@@ -278,6 +507,10 @@ index 2517c76..46bd54a 100644
 +	EmulatorOpenMs int64
 +	// EmulatorRequests counts those launches per operation and endpoint.
 +	EmulatorRequests map[string]int64
++	// EmulatorTrace keeps those launches in order, with the status and the time
++	// each one took: a count cannot tell a retried request from a second pass
++	// through the whole fallback chain, the order can.
++	EmulatorTrace []store.StoreRequest
 +	// ReleaseDateFromAPI is the date the download API reported for this build.
 +	// It is reported next to ReleaseDate, not used instead of it: the API can
 +	// return stale values, so the package stays the source of truth.
@@ -285,7 +518,7 @@ index 2517c76..46bd54a 100644
  }
  
  func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersionMetadataOutput, error) {
-@@ -34,6 +52,8 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -34,6 +56,8 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  		return GetVersionMetadataOutput{}, fmt.Errorf("invalid platform %q", platform)
  	}
  
@@ -294,7 +527,18 @@ index 2517c76..46bd54a 100644
  	macAddr, err := t.machine.MacAddress()
  	if err != nil {
  		return GetVersionMetadataOutput{}, fmt.Errorf("failed to get mac address: %w", err)
-@@ -94,7 +114,10 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -41,6 +65,10 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+ 
+ 	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
+ 
++	// The trace is shared by the whole backend, so one label marks where this
++	// lookup starts and the next response says what belongs to it.
++	t.markStoreTrace("lookup " + input.VersionID)
++
+ 	res, _, err := t.sendDownloadProduct(input.Context, input.Account, input.App, guid, input.VersionID, platform)
+ 	if err != nil {
+ 		return GetVersionMetadataOutput{}, err
+@@ -94,7 +122,10 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  				return GetVersionMetadataOutput{}, fmt.Errorf("failed to read macOS version metadata: %w", err)
  			}
  
@@ -306,7 +550,7 @@ index 2517c76..46bd54a 100644
  		}
  	}
  
-@@ -106,5 +129,80 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -106,5 +137,123 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  		return GetVersionMetadataOutput{}, fmt.Errorf("failed to read version metadata: %w", err)
  	}
  
@@ -337,12 +581,14 @@ index 2517c76..46bd54a 100644
 +	return emulatorSnapshot{
 +		stats:    t.authBackend.EmulatorStats(),
 +		requests: t.authBackend.StoreRequests(),
++		trace:    t.authBackend.StoreTrace(),
 +	}
 +}
 +
 +type emulatorSnapshot struct {
 +	stats    store.EmulatorStats
 +	requests map[string]int64
++	trace    []store.StoreRequest
 +}
 +
 +// withEmulatorStats narrows the backend counters to this lookup.
@@ -352,8 +598,49 @@ index 2517c76..46bd54a 100644
 +	output.EmulatorOpens = after.stats.Opens - before.stats.Opens
 +	output.EmulatorOpenMs = after.stats.OpenMs - before.stats.OpenMs
 +	output.EmulatorRequests = requestCountDelta(before.requests, after.requests)
++	output.EmulatorTrace = storeTraceSince(after.trace, traceSequence(before.trace))
 +
 +	return output
++}
++
++// traceSequence reports the last sequence number in a snapshot.
++func traceSequence(trace []store.StoreRequest) int64 {
++	if len(trace) == 0 {
++		return 0
++	}
++
++	return trace[len(trace)-1].Seq
++}
++
++// storeTraceSince keeps the entries this lookup added.
++func storeTraceSince(trace []store.StoreRequest, after int64) []store.StoreRequest {
++	if len(trace) == 0 {
++		return nil
++	}
++
++	added := make([]store.StoreRequest, 0, len(trace))
++
++	for _, entry := range trace {
++		if entry.Seq > after {
++			added = append(added, entry)
++		}
++	}
++
++	if len(added) == 0 {
++		return nil
++	}
++
++	return added
++}
++
++// markStoreTrace labels a point in the emulator trace. Without a backend there
++// is nothing to trace.
++func (t *appstore) markStoreTrace(label string) {
++	if t.authBackend == nil {
++		return
++	}
++
++	t.authBackend.Mark(label)
 +}
 +
 +// requestCountDelta reports what this lookup added to the backend counters.
