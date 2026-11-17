@@ -1928,12 +1928,40 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	mu.Unlock()
 
+	emulatorOpens, emulatorOpenMs := versionMetadataEmulatorTotals(snapshot)
+
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"success": true,
-		"results": snapshot,
-		"totalMs": time.Since(started).Milliseconds(),
-		"partial": partial,
+		"success":        true,
+		"results":        snapshot,
+		"totalMs":        time.Since(started).Milliseconds(),
+		"partial":        partial,
+		"emulatorOpens":  emulatorOpens,
+		"emulatorOpenMs": emulatorOpenMs,
 	})
+}
+
+// versionMetadataEmulatorTotals adds up the emulator launches reported by the
+// version lookups in a batch. Cached entries carry no counters, so the totals
+// describe only the lookups that actually ran.
+func versionMetadataEmulatorTotals(results map[string]interface{}) (int64, int64) {
+	var opens, openMs int64
+
+	for _, result := range results {
+		entry, ok := result.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		if value, ok := entry["emulatorOpens"].(int64); ok {
+			opens += value
+		}
+
+		if value, ok := entry["emulatorOpenMs"].(int64); ok {
+			openMs += value
+		}
+	}
+
+	return opens, openMs
 }
 
 var errNotAuthenticated = errors.New("not authenticated")
@@ -2108,6 +2136,11 @@ func lookupVersionMetadataWithAccount(ctx context.Context, profile *guiAccountPr
 	if out.PackageReadError != "" {
 		result["packageReadError"] = out.PackageReadError
 	}
+
+	// Every emulated request launches a guest VM, and that launch is what makes
+	// a version history slow, so report the count next to the timing.
+	result["emulatorOpens"] = out.EmulatorOpens
+	result["emulatorOpenMs"] = out.EmulatorOpenMs
 
 	return result, nil
 }

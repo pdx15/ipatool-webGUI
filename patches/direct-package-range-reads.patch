@@ -1,21 +1,62 @@
 diff --git a/cmd/get_version_metadata.go b/cmd/get_version_metadata.go
-index e268ee6..f05e121 100644
+index e268ee6..0d8b084 100644
 --- a/cmd/get_version_metadata.go
 +++ b/cmd/get_version_metadata.go
-@@ -80,6 +80,8 @@ func getVersionMetadataCmd() *cobra.Command {
+@@ -80,6 +80,10 @@ func getVersionMetadataCmd() *cobra.Command {
  					Str("displayVersion", out.DisplayVersion).
  					Time("releaseDate", out.ReleaseDate).
  					Str("minimumOSVersion", out.MinimumOSVersion).
 +					Str("packageReadSource", out.PackageReadSource).
 +					Str("packageReadError", out.PackageReadError).
++					Int64("emulatorOpens", out.EmulatorOpens).
++					Int64("emulatorOpenMs", out.EmulatorOpenMs).
  					Bool("success", true).
  					Send()
  
 diff --git a/internal/store/backend.go b/internal/store/backend.go
-index 0fc9277..72b56e7 100644
+index 0fc9277..ec79a35 100644
 --- a/internal/store/backend.go
 +++ b/internal/store/backend.go
-@@ -102,6 +102,12 @@ func (e *executor) Do(request *http.Request) (*http.Response, error) {
+@@ -13,6 +13,7 @@ import (
+ 	"net/http"
+ 	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 
+ 	"github.com/majd/ipatool/v2/internal/sap/assets"
+@@ -29,6 +30,30 @@ type Backend struct {
+ 	bag           map[string]any
+ 	transport     *http.Transport
+ 	authTransport *http.Transport
++
++	emulatorOpens  atomic.Int64
++	emulatorOpenMs atomic.Int64
++}
++
++// EmulatorStats counts the Store framework launches and the time they took.
++// Every emulated request opens a guest VM, and that launch is the dominant cost
++// of a version history scan, so the counters explain where the time went.
++type EmulatorStats struct {
++	Opens  int64 `json:"opens"`
++	OpenMs int64 `json:"openMs"`
++}
++
++func (b *Backend) EmulatorStats() EmulatorStats {
++	return EmulatorStats{
++		Opens:  b.emulatorOpens.Load(),
++		OpenMs: b.emulatorOpenMs.Load(),
++	}
++}
++
++// recordEmulatorOpen accounts for one framework launch, successful or not.
++func (b *Backend) recordEmulatorOpen(elapsed time.Duration) {
++	b.emulatorOpens.Add(1)
++	b.emulatorOpenMs.Add(elapsed.Milliseconds())
+ }
+ 
+ type executor struct {
+@@ -102,6 +127,12 @@ func (e *executor) Do(request *http.Request) (*http.Response, error) {
  		return e.backend.requestTransport(emulator.Request{Operation: "authenticate"})(request)
  	}
  
@@ -28,7 +69,19 @@ index 0fc9277..72b56e7 100644
  	var body []byte
  
  	var err error
-@@ -281,6 +287,28 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+@@ -216,7 +247,11 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+ 		return nil, fmt.Errorf("prepare Store framework: %w", err)
+ 	}
+ 
++	opening := time.Now()
+ 	guest, err := emulator.Open(ctx, image, prepared)
++
++	b.recordEmulatorOpen(time.Since(opening))
++
+ 	if err != nil {
+ 		return nil, fmt.Errorf("open Store framework: %w", err)
+ 	}
+@@ -281,6 +316,28 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
  	return response, nil
  }
  
@@ -118,10 +171,19 @@ index 0000000..624618b
 +	}
 +}
 diff --git a/pkg/appstore/appstore_get_version_metadata.go b/pkg/appstore/appstore_get_version_metadata.go
-index 2517c76..b0b92de 100644
+index 2517c76..e11508c 100644
 --- a/pkg/appstore/appstore_get_version_metadata.go
 +++ b/pkg/appstore/appstore_get_version_metadata.go
-@@ -20,6 +20,11 @@ type GetVersionMetadataOutput struct {
+@@ -6,6 +6,8 @@ import (
+ 	"fmt"
+ 	"strings"
+ 	"time"
++
++	"github.com/majd/ipatool/v2/internal/store"
+ )
+ 
+ type GetVersionMetadataInput struct {
+@@ -20,6 +22,16 @@ type GetVersionMetadataOutput struct {
  	DisplayVersion   string
  	ReleaseDate      time.Time
  	MinimumOSVersion string
@@ -130,14 +192,218 @@ index 2517c76..b0b92de 100644
 +	PackageReadSource string
 +	// PackageReadError keeps the direct read failure behind a fallback.
 +	PackageReadError string
++	// EmulatorOpens counts the Store framework launches this lookup needed. The
++	// launch of the guest VM, not the request, dominates a history scan.
++	EmulatorOpens int64
++	// EmulatorOpenMs is the time those launches took.
++	EmulatorOpenMs int64
  }
  
  func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersionMetadataOutput, error) {
+@@ -34,6 +46,8 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+ 		return GetVersionMetadataOutput{}, fmt.Errorf("invalid platform %q", platform)
+ 	}
+ 
++	before := t.emulatorStats()
++
+ 	macAddr, err := t.machine.MacAddress()
+ 	if err != nil {
+ 		return GetVersionMetadataOutput{}, fmt.Errorf("failed to get mac address: %w", err)
+@@ -94,7 +108,7 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+ 				return GetVersionMetadataOutput{}, fmt.Errorf("failed to read macOS version metadata: %w", err)
+ 			}
+ 
+-			return GetVersionMetadataOutput(metadata), nil
++			return t.withEmulatorStats(GetVersionMetadataOutput(metadata), before), nil
+ 		}
+ 	}
+ 
+@@ -106,5 +120,26 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+ 		return GetVersionMetadataOutput{}, fmt.Errorf("failed to read version metadata: %w", err)
+ 	}
+ 
+-	return GetVersionMetadataOutput(metadata), nil
++	return t.withEmulatorStats(GetVersionMetadataOutput(metadata), before), nil
++}
++
++// emulatorStats reports the Store framework launches the backend has made so
++// far. Without a backend every request uses the regular client, so the counters
++// stay at zero.
++func (t *appstore) emulatorStats() store.EmulatorStats {
++	if t.authBackend == nil {
++		return store.EmulatorStats{}
++	}
++
++	return t.authBackend.EmulatorStats()
++}
++
++// withEmulatorStats narrows the backend counters to this lookup.
++func (t *appstore) withEmulatorStats(output GetVersionMetadataOutput, before store.EmulatorStats) GetVersionMetadataOutput {
++	after := t.emulatorStats()
++
++	output.EmulatorOpens = after.Opens - before.Opens
++	output.EmulatorOpenMs = after.OpenMs - before.OpenMs
++
++	return output
+ }
+diff --git a/pkg/appstore/appstore_macos_preflight_metadata.go b/pkg/appstore/appstore_macos_preflight_metadata.go
+index 75bcefe..69ff7f0 100644
+--- a/pkg/appstore/appstore_macos_preflight_metadata.go
++++ b/pkg/appstore/appstore_macos_preflight_metadata.go
+@@ -5,6 +5,8 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"io"
++	"path"
++	"sort"
+ 	"strconv"
+ 	"strings"
+ 	"time"
+@@ -116,9 +118,12 @@ func macPreflightVersionMetadata(archive *xar.Reader, bundleID string) (versionM
+ 			continue
+ 		}
+ 
++		// Only legacy installers encode the build time in the package version.
++		// Anything else is not an error: the table of contents carries the same
++		// timestamp for modern packages.
+ 		timestamp, err := legacyMacPackageBuildTime(version, pkg.Version)
+ 		if err != nil {
+-			return versionMetadata{}, err
++			continue
+ 		}
+ 
+ 		if !built.IsZero() && !built.Equal(timestamp) {
+@@ -129,13 +134,62 @@ func macPreflightVersionMetadata(archive *xar.Reader, bundleID string) (versionM
+ 	}
+ 
+ 	if built.IsZero() {
+-		return versionMetadata{}, errors.New("macOS preflight package does not contain a build timestamp for the requested bundle")
++		built = macArchiveBuildTime(archive)
+ 	}
+ 
+ 	// As with the payload timestamp fallback, this is the build time, not an
+ 	// exact store release date. The API date is app-level, and the preflight
+ 	// archive's creation time can reflect a much later repackaging date.
+-	return versionMetadata{DisplayVersion: version, ReleaseDate: built, MinimumOSVersion: info.minimumOSVersion()}, nil
++	metadata := versionMetadata{DisplayVersion: version, ReleaseDate: built, MinimumOSVersion: info.minimumOSVersion()}
++	if built.IsZero() {
++		// The version is still worth returning: it saves the whole installer.
++		// Say what the archive did keep, so a missing date is explained rather
++		// than guessed at.
++		metadata.PackageReadError = fmt.Sprintf("preflight package has no build timestamp; entries: %s", macArchiveInventory(archive))
++	}
++
++	return metadata, nil
++}
++
++// macArchiveBuildTime reads the build timestamp out of the archive table of
++// contents, which is available without touching the payload. Modern installers
++// store it as the mtime of the Payload entry; repacked archives may keep only
++// PackageInfo or Bom.
++func macArchiveBuildTime(archive *xar.Reader) time.Time {
++	for _, name := range []string{"Payload", "PackageInfo", "Bom"} {
++		for _, file := range archive.Files {
++			if path.Base(file.Name) != name || file.Info.Mtime <= 0 {
++				continue
++			}
++
++			return time.Unix(file.Info.Mtime, 0).UTC()
++		}
++	}
++
++	return time.Time{}
++}
++
++// macArchiveInventory lists the archive entries with their timestamps, so a
++// response can say why no build date was found.
++func macArchiveInventory(archive *xar.Reader) string {
++	entries := make([]string, 0, len(archive.Files))
++
++	for _, file := range archive.Files {
++		stamp := "no mtime"
++		if file.Info.Mtime > 0 {
++			stamp = time.Unix(file.Info.Mtime, 0).UTC().Format(time.RFC3339)
++		}
++
++		entries = append(entries, fmt.Sprintf("%s(%s)", file.Name, stamp))
++	}
++
++	sort.Strings(entries)
++
++	if len(entries) == 0 {
++		return "none"
++	}
++
++	return strings.Join(entries, ", ")
+ }
+ 
+ func legacyMacPackageBuildTime(displayVersion, packageVersion string) (time.Time, error) {
+diff --git a/pkg/appstore/appstore_macos_preflight_metadata_test.go b/pkg/appstore/appstore_macos_preflight_metadata_test.go
+index 84343e6..b8b82bd 100644
+--- a/pkg/appstore/appstore_macos_preflight_metadata_test.go
++++ b/pkg/appstore/appstore_macos_preflight_metadata_test.go
+@@ -39,31 +39,39 @@ func macPreflightDistribution(version, packageVersion string) string {
+ }
+ 
+ var _ = Describe("Mac preflight version metadata", func() {
+-	DescribeTable("validates the selected product and its build timestamp", func(distribution, bundle, expectedError string) {
++	DescribeTable("validates the selected product and its build timestamp", func(distribution, bundle, expectedError string, expectedDate time.Time) {
+ 		data := macPreflightXAR(distribution)
+ 		archive, err := xar.NewReader(bytes.NewReader(data), int64(len(data)))
+ 		Expect(err).ToNot(HaveOccurred())
+ 		metadata, err := macPreflightVersionMetadata(archive, bundle)
+ 		if expectedError != "" {
+ 			Expect(err).To(MatchError(ContainSubstring(expectedError)))
+-		} else {
+-			Expect(err).ToNot(HaveOccurred())
+-			Expect(metadata.DisplayVersion).To(Equal("4.2"))
+-			Expect(metadata.ReleaseDate).To(Equal(time.Unix(1341568473, 0).UTC()))
++
++			return
++		}
++
++		Expect(err).ToNot(HaveOccurred())
++		Expect(metadata.DisplayVersion).To(Equal("4.2"))
++		Expect(metadata.ReleaseDate).To(Equal(expectedDate))
++
++		// A version without a build timestamp still saves the installer, so it
++		// is returned and the reason is recorded instead.
++		if expectedDate.IsZero() {
++			Expect(metadata.PackageReadError).To(ContainSubstring("no build timestamp"))
+ 		}
+ 	},
+-		Entry("unique product without a bundle filter", macPreflightDistribution("4.2", "4.2.0.0.1.1341568473"), "", ""),
+-		Entry("wrong bundle", macPreflightDistribution("4.2", "4.2.0.0.1.1341568473"), "com.other.mac", "requested bundle"),
+-		Entry("missing version", macPreflightDistribution("", "4.2.0.0.1.1341568473"), "", "display version"),
+-		Entry("missing timestamp", macPreflightDistribution("4.2", ""), "", "build timestamp"),
+-		Entry("ordinary dotted version", macPreflightDistribution("4.2", "4.2.0"), "", "supported build timestamp"),
+-		Entry("different package version", macPreflightDistribution("4.2", "4.3.0.0.1.1341568473"), "", "supported build timestamp"),
+-		Entry("invalid timestamp", macPreflightDistribution("4.2", "4.2.0.0.1.abcdefghij"), "", "invalid installer version"),
+-		Entry("zero timestamp", macPreflightDistribution("4.2", "4.2.0.0.1.0000000000"), "", "invalid build timestamp"),
+-		Entry("unrelated package", strings.ReplaceAll(macPreflightDistribution("4.2", "4.2.0.0.1.1341568473"), `<bundle id="com.example.mac"`, `<bundle id="com.other.mac"`), "", "requested bundle"),
+-		Entry("conflicting timestamps", strings.Replace(macPreflightDistribution("4.2", "4.2.0.0.1.1341568473"), "1341568473", "1341568474", 1), "", "conflicting build timestamps"),
+-		Entry("ambiguous products", strings.Replace(macPreflightDistribution("4.2", "4.2.0.0.1.1341568473"), "</installer-gui-script>", `<product id="com.other.mac" version="4.2"/></installer-gui-script>`, 1), "", "unique product"),
+-		Entry("malformed XML", "<", "", "failed to parse"),
++		Entry("unique product without a bundle filter", macPreflightDistribution("4.2", "4.2.0.0.1.1341568473"), "", "", time.Unix(1341568473, 0).UTC()),
++		Entry("wrong bundle", macPreflightDistribution("4.2", "4.2.0.0.1.1341568473"), "com.other.mac", "requested bundle", time.Time{}),
++		Entry("missing version", macPreflightDistribution("", "4.2.0.0.1.1341568473"), "", "display version", time.Time{}),
++		Entry("missing timestamp", macPreflightDistribution("4.2", ""), "", "", time.Time{}),
++		Entry("ordinary dotted version", macPreflightDistribution("4.2", "4.2.0"), "", "", time.Time{}),
++		Entry("different package version", macPreflightDistribution("4.2", "4.3.0.0.1.1341568473"), "", "", time.Time{}),
++		Entry("invalid timestamp", macPreflightDistribution("4.2", "4.2.0.0.1.abcdefghij"), "", "", time.Time{}),
++		Entry("zero timestamp", macPreflightDistribution("4.2", "4.2.0.0.1.0000000000"), "", "", time.Time{}),
++		Entry("unrelated package", strings.ReplaceAll(macPreflightDistribution("4.2", "4.2.0.0.1.1341568473"), `<bundle id="com.example.mac"`, `<bundle id="com.other.mac"`), "", "requested bundle", time.Time{}),
++		Entry("conflicting timestamps", strings.Replace(macPreflightDistribution("4.2", "4.2.0.0.1.1341568473"), "1341568473", "1341568474", 1), "", "conflicting build timestamps", time.Time{}),
++		Entry("ambiguous products", strings.Replace(macPreflightDistribution("4.2", "4.2.0.0.1.1341568473"), "</installer-gui-script>", `<product id="com.other.mac" version="4.2"/></installer-gui-script>`, 1), "", "unique product", time.Time{}),
++		Entry("malformed XML", "<", "", "failed to parse", time.Time{}),
+ 	)
+ 
+ 	It("rejects corrupted installer metadata", func() {
 diff --git a/pkg/appstore/appstore_macos_version_metadata.go b/pkg/appstore/appstore_macos_version_metadata.go
-index be202a0..e679b47 100644
+index be202a0..9b679cb 100644
 --- a/pkg/appstore/appstore_macos_version_metadata.go
 +++ b/pkg/appstore/appstore_macos_version_metadata.go
-@@ -13,9 +13,100 @@ import (
+@@ -13,9 +13,102 @@ import (
  	"time"
  
  	"github.com/blacktop/go-macho/pkg/xar"
@@ -171,7 +437,9 @@ index be202a0..e679b47 100644
 +		metadata, err := t.readMacPreflightPackage(ctx, item.PreflightPackageURL, bundleID)
 +		if err == nil {
 +			metadata.PackageReadSource = packageReadSourcePreflight
-+			metadata.PackageReadError = joinMacPackageReadErrors(rangeErr, preflightErr)
++			if metadata.PackageReadError == "" {
++				metadata.PackageReadError = joinMacPackageReadErrors(rangeErr, preflightErr)
++			}
 +
 +			return metadata, nil
 +		}
@@ -238,7 +506,7 @@ index be202a0..e679b47 100644
  	directory, err := os.MkdirTemp("", "ipatool-version-metadata-*")
  	if err != nil {
  		return versionMetadata{}, fmt.Errorf("failed to create metadata staging: %w", err)
-@@ -23,20 +114,35 @@ func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item d
+@@ -23,20 +116,35 @@ func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item d
  
  	defer os.RemoveAll(directory)
  
@@ -286,7 +554,7 @@ index be202a0..e679b47 100644
  	}
  
  	archive, err := xar.Open(destination)
-@@ -46,11 +152,93 @@ func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item d
+@@ -46,11 +154,93 @@ func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item d
  
  	defer archive.Close()
  
@@ -383,7 +651,7 @@ index be202a0..e679b47 100644
  
  func macPackageVersionMetadata(archive *xar.Reader, bundleID string) (versionMetadata, error) {
 diff --git a/pkg/appstore/appstore_macos_version_metadata_test.go b/pkg/appstore/appstore_macos_version_metadata_test.go
-index b57f884..181b3d2 100644
+index b57f884..a3970b4 100644
 --- a/pkg/appstore/appstore_macos_version_metadata_test.go
 +++ b/pkg/appstore/appstore_macos_version_metadata_test.go
 @@ -2,13 +2,18 @@ package appstore
@@ -405,7 +673,7 @@ index b57f884..181b3d2 100644
  	"time"
  
  	"github.com/blacktop/go-macho/pkg/xar"
-@@ -115,3 +120,308 @@ var _ = Describe("Mac version metadata", func() {
+@@ -115,3 +120,386 @@ var _ = Describe("Mac version metadata", func() {
  		Expect(entries).To(BeEmpty())
  	})
  })
@@ -477,6 +745,12 @@ index b57f884..181b3d2 100644
 +const macRangeReadDistribution = `<installer-gui-script><product id="com.example.mac" version="4.2"/>
 +<pkg-ref id="com.example.pkg"><relocate><bundle id="com.example.mac"/></relocate></pkg-ref>
 +<pkg-ref id="com.example.pkg" version="4.2.0.0.1.1341568473"/></installer-gui-script>`
++
++// macRangeReadModernDistribution mirrors a current Mac installer: the build
++// timestamp is not part of the package version anymore.
++const macRangeReadModernDistribution = `<installer-gui-script><product id="com.example.mac" version="11.15"/>
++<pkg-ref id="com.example.pkg" version="11.15.0"><relocate><bundle id="com.example.mac"/></relocate></pkg-ref>
++<volume-check><allowed-os-versions><os-version min="10.13"/></allowed-os-versions></volume-check></installer-gui-script>`
 +
 +// TestMacPackageRangeReadReadsMetadataWithoutTheStoreAgent pins the fast path:
 +// the XAR table of contents and PackageInfo come out of ranged requests, so no
@@ -712,6 +986,78 @@ index b57f884..181b3d2 100644
 +
 +	if !strings.Contains(err.Error(), "served bytes: 00 00 00 1c 66 74 79 70") {
 +		t.Errorf("error = %v, want the served container header", err)
++	}
++}
++
++// TestMacPackageMetadataReadsTheBuildDateFromTheArchive covers the data the
++// Store actually ships: the build date is not in the package version, but the
++// archive table of contents carries it as the Payload mtime.
++func TestMacPackageMetadataReadsTheBuildDateFromTheArchive(t *testing.T) {
++	const built = "2026-10-20T19:29:36Z"
++
++	data := macRangeReadArchive(
++		macRangeReadEntry{name: "Distribution", data: []byte(macRangeReadModernDistribution)},
++		macRangeReadEntry{name: "Payload", data: []byte("payload"), mtime: built},
++	)
++
++	server := httptest.NewServer(gohttp.HandlerFunc(func(w gohttp.ResponseWriter, r *gohttp.Request) {
++		gohttp.ServeContent(w, r, "preflight.pkg", time.Time{}, bytes.NewReader(data))
++	}))
++	defer server.Close()
++
++	store := &appstore{httpClient: newDownloadTestClient()}
++
++	metadata, err := store.readMacPackageMetadataFromRanges(server.URL, true, "com.example.mac")
++	if err != nil {
++		t.Fatalf("ranged preflight read: %v", err)
++	}
++
++	if metadata.DisplayVersion != "11.15" {
++		t.Errorf("display version = %q, want 11.15", metadata.DisplayVersion)
++	}
++
++	want := time.Date(2026, 10, 20, 19, 29, 36, 0, time.UTC)
++	if !metadata.ReleaseDate.Equal(want) {
++		t.Errorf("release date = %s, want %s", metadata.ReleaseDate, want)
++	}
++
++	if metadata.MinimumOSVersion != "10.13" {
++		t.Errorf("minimum OS version = %q, want 10.13", metadata.MinimumOSVersion)
++	}
++
++	if metadata.PackageReadError != "" {
++		t.Errorf("package read error = %q, want none", metadata.PackageReadError)
++	}
++}
++
++// TestMacPackageMetadataKeepsTheVersionWithoutABuildDate keeps the fast path
++// useful even when the archive carries no timestamp at all: the version is the
++// expensive part, and the missing date is explained instead of hidden.
++func TestMacPackageMetadataKeepsTheVersionWithoutABuildDate(t *testing.T) {
++	data := macRangeReadArchive(macRangeReadEntry{name: "Distribution", data: []byte(macRangeReadModernDistribution)})
++
++	server := httptest.NewServer(gohttp.HandlerFunc(func(w gohttp.ResponseWriter, r *gohttp.Request) {
++		gohttp.ServeContent(w, r, "preflight.pkg", time.Time{}, bytes.NewReader(data))
++	}))
++	defer server.Close()
++
++	store := &appstore{httpClient: newDownloadTestClient()}
++
++	metadata, err := store.readMacPackageMetadataFromRanges(server.URL, true, "com.example.mac")
++	if err != nil {
++		t.Fatalf("ranged preflight read: %v", err)
++	}
++
++	if metadata.DisplayVersion != "11.15" {
++		t.Errorf("display version = %q, want 11.15", metadata.DisplayVersion)
++	}
++
++	if !metadata.ReleaseDate.IsZero() {
++		t.Errorf("release date = %s, want none", metadata.ReleaseDate)
++	}
++
++	if !strings.Contains(metadata.PackageReadError, "no build timestamp") {
++		t.Errorf("package read error = %q, want the missing timestamp", metadata.PackageReadError)
 +	}
 +}
 diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
