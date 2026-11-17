@@ -428,7 +428,7 @@ index 0000000..52515ce
 +	}
 +}
 diff --git a/pkg/appstore/appstore_get_version_metadata.go b/pkg/appstore/appstore_get_version_metadata.go
-index 2517c76..54d4e5a 100644
+index 2517c76..af0448e 100644
 --- a/pkg/appstore/appstore_get_version_metadata.go
 +++ b/pkg/appstore/appstore_get_version_metadata.go
 @@ -6,6 +6,8 @@ import (
@@ -497,7 +497,7 @@ index 2517c76..54d4e5a 100644
  	if err != nil {
  		return GetVersionMetadataOutput{}, err
  	}
-@@ -89,22 +125,211 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -89,22 +125,217 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  				return GetVersionMetadataOutput{}, err
  			}
  
@@ -632,6 +632,12 @@ index 2517c76..54d4e5a 100644
 +
 +	for _, entry := range trace {
 +		if entry.Operation == "" || entry.Endpoint == "" {
++			continue
++		}
++
++		// A proof names the endpoint it signs but is not a request to it, so it
++		// stays out of the counts and shows up only in the trace.
++		if entry.Operation == storeProofOperation {
 +			continue
 +		}
 +
@@ -1766,7 +1772,7 @@ index 0000000..8387932
 +}
 diff --git a/pkg/appstore/appstore_package_read_trace_test.go b/pkg/appstore/appstore_package_read_trace_test.go
 new file mode 100644
-index 0000000..79a617c
+index 0000000..1eba6ee
 --- /dev/null
 +++ b/pkg/appstore/appstore_package_read_trace_test.go
 @@ -0,0 +1,160 @@
@@ -1893,7 +1899,7 @@ index 0000000..79a617c
 +	// Stages take time but are not requests: they are summed with the rest and
 +	// stay out of the counts.
 +	stages := []store.StoreRequest{
-+		{Seq: 7, Operation: storeProofOperation, Pinned: "892759993", Ms: 4200},
++		{Seq: 7, Operation: storeProofOperation, Endpoint: "downloaddispatch.test/ent/download", Pinned: "892759993", Ms: 4200},
 +		{Seq: 8, Operation: storeBagOperation, Method: gohttp.MethodGet, Endpoint: "init.test/bag.xml", Pinned: "892759993", Ms: 150},
 +	}
 +
