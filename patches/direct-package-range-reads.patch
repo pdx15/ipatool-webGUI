@@ -16,7 +16,7 @@ index e268ee6..bb29689 100644
  					Send()
  
 diff --git a/internal/store/backend.go b/internal/store/backend.go
-index 0fc9277..3a28df3 100644
+index 0fc9277..6401cd3 100644
 --- a/internal/store/backend.go
 +++ b/internal/store/backend.go
 @@ -11,8 +11,10 @@ import (
@@ -30,7 +30,7 @@ index 0fc9277..3a28df3 100644
  	"time"
  
  	"github.com/majd/ipatool/v2/internal/sap/assets"
-@@ -29,6 +31,167 @@ type Backend struct {
+@@ -29,6 +31,209 @@ type Backend struct {
  	bag           map[string]any
  	transport     *http.Transport
  	authTransport *http.Transport
@@ -99,7 +99,15 @@ index 0fc9277..3a28df3 100644
 +	Pinned    string `json:"pinned,omitempty"`
 +	Status    int    `json:"status,omitempty"`
 +	Ms        int64  `json:"ms,omitempty"`
-+	Error     string `json:"error,omitempty"`
++	// Range and Bytes describe a package read: the byte window that was asked
++	// for and how much arrived. A Store request leaves both empty.
++	Range string `json:"range,omitempty"`
++	Bytes int64  `json:"bytes,omitempty"`
++	// Opens and OpenMs are the framework launches this one request needed. The
++	// backend totals cannot be split between concurrent lookups, these can.
++	Opens  int64  `json:"opens,omitempty"`
++	OpenMs int64  `json:"openMs,omitempty"`
++	Error  string `json:"error,omitempty"`
 +}
 +
 +// storeTraceLimit bounds the trace: it exists to explain one lookup, not to
@@ -115,6 +123,12 @@ index 0fc9277..3a28df3 100644
 +	copy(trace, b.trace)
 +
 +	return trace
++}
++
++// RecordTrace appends a request made outside the emulator to the same trace, so
++// one lookup shows its package reads next to its Store requests.
++func (b *Backend) RecordTrace(entry StoreRequest) {
++	b.appendTrace(entry)
 +}
 +
 +// Mark writes a label into the trace, so a reader can see where one lookup
@@ -137,12 +151,20 @@ index 0fc9277..3a28df3 100644
 +
 +// recordStoreTrace keeps the order, timing and outcome of one request.
 +func (b *Backend) recordStoreTrace(input emulator.Request, response *http.Response, err error, elapsed time.Duration) {
++	b.appendTrace(storeTraceEntry(input, response, err, elapsed, openRecord{}))
++}
++
++// storeTraceEntry describes one request. The framework launches the request
++// needed are passed in so they stay with the request that caused them.
++func storeTraceEntry(input emulator.Request, response *http.Response, err error, elapsed time.Duration, record openRecord) StoreRequest {
 +	entry := StoreRequest{
 +		Operation: input.Operation,
 +		Method:    input.Method,
 +		Endpoint:  requestEndpoint(input.URL),
 +		Pinned:    requestPinnedVersion(input.Parameters),
 +		Ms:        elapsed.Milliseconds(),
++		Opens:     record.opens,
++		OpenMs:    record.openMs,
 +	}
 +
 +	if response != nil {
@@ -153,7 +175,7 @@ index 0fc9277..3a28df3 100644
 +		entry.Error = truncateTraceValue(err.Error(), 120)
 +	}
 +
-+	b.appendTrace(entry)
++	return entry
 +}
 +
 +// requestPinnedVersion reports the build a request asked for, which separates a
@@ -191,14 +213,34 @@ index 0fc9277..3a28df3 100644
 +	return parsed.Host + parsed.Path
 +}
 +
-+// recordEmulatorOpen accounts for one framework launch, successful or not.
-+func (b *Backend) recordEmulatorOpen(elapsed time.Duration) {
++// openRecord is the launch tally of one request in flight.
++type openRecord struct {
++	opens  int64
++	openMs int64
++}
++
++type openRecordKey struct{}
++
++// withOpenRecord attaches a launch tally to the request that is about to run.
++func withOpenRecord(ctx context.Context, record *openRecord) context.Context {
++	return context.WithValue(ctx, openRecordKey{}, record)
++}
++
++// recordEmulatorOpen accounts for one framework launch, successful or not. The
++// launch also lands in the tally of the request that caused it, which is the
++// only way to tell four concurrent lookups apart.
++func (b *Backend) recordEmulatorOpen(ctx context.Context, elapsed time.Duration) {
 +	b.emulatorOpens.Add(1)
 +	b.emulatorOpenMs.Add(elapsed.Milliseconds())
++
++	if record, ok := ctx.Value(openRecordKey{}).(*openRecord); ok && record != nil {
++		record.opens++
++		record.openMs += elapsed.Milliseconds()
++	}
  }
  
  type executor struct {
-@@ -102,6 +265,12 @@ func (e *executor) Do(request *http.Request) (*http.Response, error) {
+@@ -102,6 +307,12 @@ func (e *executor) Do(request *http.Request) (*http.Response, error) {
  		return e.backend.requestTransport(emulator.Request{Operation: "authenticate"})(request)
  	}
  
@@ -211,16 +253,17 @@ index 0fc9277..3a28df3 100644
  	var body []byte
  
  	var err error
-@@ -174,6 +343,17 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+@@ -174,6 +385,18 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
  		return nil, fmt.Errorf("store request: %w", err)
  	}
  
 +	b.recordStoreRequest(input.Operation, input.Method, input.URL)
 +
++	record := &openRecord{}
 +	started := time.Now()
-+	response, err := b.executeRequest(ctx, input)
++	response, err := b.executeRequest(withOpenRecord(ctx, record), input)
 +
-+	b.recordStoreTrace(input, response, err, time.Since(started))
++	b.appendTrace(storeTraceEntry(input, response, err, time.Since(started), *record))
 +
 +	return response, err
 +}
@@ -229,19 +272,19 @@ index 0fc9277..3a28df3 100644
  	hardware, err := b.hardware(input.Parameters)
  	if err != nil {
  		return nil, fmt.Errorf("store request: %w", err)
-@@ -216,7 +396,11 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+@@ -216,7 +439,11 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
  		return nil, fmt.Errorf("prepare Store framework: %w", err)
  	}
  
 +	opening := time.Now()
  	guest, err := emulator.Open(ctx, image, prepared)
 +
-+	b.recordEmulatorOpen(time.Since(opening))
++	b.recordEmulatorOpen(ctx, time.Since(opening))
 +
  	if err != nil {
  		return nil, fmt.Errorf("open Store framework: %w", err)
  	}
-@@ -281,6 +465,28 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+@@ -281,6 +508,28 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
  	return response, nil
  }
  
@@ -270,176 +313,82 @@ index 0fc9277..3a28df3 100644
  // CloseIdleConnections releases pooled sockets without interrupting active streams.
  func (b *Backend) CloseIdleConnections() {
  	b.transport.CloseIdleConnections()
-diff --git a/internal/store/backend_direct_test.go b/internal/store/backend_direct_test.go
+diff --git a/internal/store/backend_trace_test.go b/internal/store/backend_trace_test.go
 new file mode 100644
-index 0000000..5033acf
+index 0000000..d20308e
 --- /dev/null
-+++ b/internal/store/backend_direct_test.go
-@@ -0,0 +1,166 @@
++++ b/internal/store/backend_trace_test.go
+@@ -0,0 +1,72 @@
 +package store
 +
 +import (
 +	"context"
-+	"errors"
-+	"fmt"
 +	"net/http"
-+	"net/http/httptest"
-+	"strings"
 +	"testing"
 +	"time"
 +
 +	"github.com/majd/ipatool/v2/internal/store/emulator"
 +)
 +
-+// TestTransferDirectSkipsTheStoreEmulator pins the fast path for signed package
-+// ranges. The backend has no machine identity here, so any request routed
-+// through the emulator fails in hardware(); a 206 answer proves the direct
-+// transport served it without a guest VM.
-+func TestTransferDirectSkipsTheStoreEmulator(t *testing.T) {
-+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-+		if got := r.Header.Get("Range"); got != "bytes=0-0" {
-+			t.Errorf("range header = %q, want bytes=0-0", got)
-+		}
-+
-+		if got := r.Header.Get("User-Agent"); got == "" {
-+			t.Error("user agent is empty")
-+		}
-+
-+		w.Header().Set("Content-Range", "bytes 0-0/1024")
-+		w.WriteHeader(http.StatusPartialContent)
-+		_, _ = w.Write([]byte("x"))
-+	}))
-+	defer server.Close()
-+
-+	executor := New(nil, nil).Client("transfer-direct")
-+
-+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
-+	if err != nil {
-+		t.Fatalf("create request: %v", err)
-+	}
-+
-+	request.Header.Set("Range", "bytes=0-0")
-+	request.Header.Set("Accept-Encoding", "identity")
-+
-+	response, err := executor.Do(request)
-+	if err != nil {
-+		t.Fatalf("direct transfer: %v", err)
-+	}
-+
-+	defer func() { _ = response.Body.Close() }()
-+
-+	if response.StatusCode != http.StatusPartialContent {
-+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusPartialContent)
-+	}
-+
-+	if got := response.Header.Get("Content-Range"); got != "bytes 0-0/1024" {
-+		t.Errorf("content range = %q, want bytes 0-0/1024", got)
-+	}
-+}
-+
-+// TestStoreRequestsCountPerEndpoint keeps the histogram that explains where a
-+// slow lookup spends its requests: one counter per operation and endpoint, with
-+// the query string stripped so signed URLs do not split the count.
-+func TestStoreRequestsCountPerEndpoint(t *testing.T) {
++// TestRecordTraceKeepsExternalReads pins the entry a package read adds to the
++// same trace as the emulated requests. A lookup is only explainable when the
++// reads that never touched the emulator are in it.
++func TestRecordTraceKeepsExternalReads(t *testing.T) {
 +	backend := New(nil, nil)
 +
-+	backend.recordStoreRequest("request", "POST", "https://buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct?guid=abc")
-+	backend.recordStoreRequest("request", "POST", "https://buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct?guid=def")
-+	backend.recordStoreRequest("transfer", "GET", "https://iosapps-ssl.itunes.apple.com/subscription/1.ipa?sig=xyz")
-+
-+	counted := backend.StoreRequests()
-+
-+	if got := counted["request POST buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct"]; got != 2 {
-+		t.Errorf("buyProduct count = %d, want 2", got)
-+	}
-+
-+	if got := counted["transfer GET iosapps-ssl.itunes.apple.com/subscription/1.ipa"]; got != 1 {
-+		t.Errorf("transfer count = %d, want 1", got)
-+	}
-+
-+	if len(counted) != 2 {
-+		t.Errorf("endpoints = %v, want two", counted)
-+	}
-+}
-+
-+// TestStoreTraceKeepsRequestsInOrder pins the trace that explains a slow
-+// lookup: the order, the pinned build, the status and the time of each request,
-+// plus the label that marks where a lookup starts.
-+func TestStoreTraceKeepsRequestsInOrder(t *testing.T) {
-+	backend := New(nil, nil)
-+
-+	backend.Mark("lookup 892759993")
-+	backend.recordStoreTrace(
-+		emulator.Request{
-+			Operation:  "request",
-+			Method:     http.MethodPost,
-+			URL:        "https://p19-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct?guid=ABCDEF",
-+			Parameters: map[string]any{"appExtVrsId": "892759993"},
-+		},
-+		&http.Response{StatusCode: 200}, nil, 1400*time.Millisecond)
-+	backend.recordStoreTrace(
-+		emulator.Request{Operation: "request", Method: http.MethodPost, URL: "https://downloaddispatch.itunes.apple.com/r/redownload"},
-+		nil, errors.New("download rejected"), 1500*time.Millisecond)
++	backend.RecordTrace(StoreRequest{
++		Operation: "range-read",
++		Method:    http.MethodGet,
++		Endpoint:  "cdn.example.test/app.ipa",
++		Pinned:    "892759993",
++		Status:    http.StatusPartialContent,
++		Ms:        42,
++		Range:     "bytes=0-3",
++		Bytes:     4,
++	})
 +
 +	trace := backend.StoreTrace()
-+	if len(trace) != 3 {
-+		t.Fatalf("trace entries = %d, want 3", len(trace))
++	if len(trace) != 1 {
++		t.Fatalf("trace entries = %d, want 1", len(trace))
 +	}
 +
-+	if trace[0].Label != "lookup 892759993" {
-+		t.Errorf("label = %q, want the lookup mark", trace[0].Label)
++	entry := trace[0]
++	if entry.Operation != "range-read" || entry.Range != "bytes=0-3" || entry.Bytes != 4 {
++		t.Fatalf("trace entry = %+v", entry)
 +	}
 +
-+	if got := trace[1].Endpoint; got != "p19-buy.itunes.apple.com/WebObjects/MZFinance.woa/wa/volumeStoreDownloadProduct" {
-+		t.Errorf("endpoint = %q, want the query string stripped", got)
-+	}
-+
-+	if trace[1].Pinned != "892759993" {
-+		t.Errorf("pinned build = %q, want 892759993", trace[1].Pinned)
-+	}
-+
-+	if trace[1].Status != 200 || trace[1].Ms != 1400 {
-+		t.Errorf("status = %d, ms = %d, want 200 and 1400", trace[1].Status, trace[1].Ms)
-+	}
-+
-+	if trace[2].Status != 0 || !strings.Contains(trace[2].Error, "download rejected") {
-+		t.Errorf("failed request = %+v, want the error recorded", trace[2])
-+	}
-+
-+	if !(trace[0].Seq < trace[1].Seq && trace[1].Seq < trace[2].Seq) {
-+		t.Errorf("sequence numbers are not increasing: %d, %d, %d", trace[0].Seq, trace[1].Seq, trace[2].Seq)
++	if entry.Seq == 0 {
++		t.Fatal("a recorded entry needs a sequence number")
 +	}
 +}
 +
-+// TestStoreTraceIsBounded keeps the trace from growing with the session.
-+func TestStoreTraceIsBounded(t *testing.T) {
++// TestEmulatorOpenLandsOnTheRequestThatCausedIt pins the per-request launch
++// tally. The global counters cannot be split between concurrent lookups, so the
++// launch has to be recorded where the request that needed it can claim it.
++func TestEmulatorOpenLandsOnTheRequestThatCausedIt(t *testing.T) {
 +	backend := New(nil, nil)
 +
-+	for index := 0; index < storeTraceLimit+5; index++ {
-+		backend.Mark(fmt.Sprintf("lookup %d", index))
++	record := &openRecord{}
++	backend.recordEmulatorOpen(withOpenRecord(context.Background(), record), 90*time.Millisecond)
++	backend.recordEmulatorOpen(context.Background(), 10*time.Millisecond)
++
++	if record.opens != 1 || record.openMs != 90 {
++		t.Fatalf("request tally = %d opens, %d ms", record.opens, record.openMs)
 +	}
 +
-+	trace := backend.StoreTrace()
-+	if len(trace) != storeTraceLimit {
-+		t.Fatalf("trace entries = %d, want %d", len(trace), storeTraceLimit)
++	stats := backend.EmulatorStats()
++	if stats.Opens != 2 || stats.OpenMs != 100 {
++		t.Fatalf("backend stats = %+v", stats)
 +	}
 +
-+	if want := fmt.Sprintf("lookup %d", storeTraceLimit+4); trace[len(trace)-1].Label != want {
-+		t.Errorf("last label = %q, want %q", trace[len(trace)-1].Label, want)
-+	}
-+}
-+
-+func TestRequestPinnedVersion(t *testing.T) {
-+	if got := requestPinnedVersion(map[string]any{"appExtVrsId": "123"}); got != "123" {
-+		t.Errorf("pinned build = %q, want 123", got)
-+	}
-+
-+	if got := requestPinnedVersion(map[string]any{"externalVersionId": "456"}); got != "456" {
-+		t.Errorf("pinned build = %q, want 456", got)
-+	}
-+
-+	if got := requestPinnedVersion(map[string]any{"salableAdamId": int64(42)}); got != "" {
-+		t.Errorf("pinned build = %q, want none", got)
++	entry := storeTraceEntry(emulator.Request{
++		Operation:  "request",
++		Method:     http.MethodPost,
++		URL:        "https://downloaddispatch.itunes.apple.com/WebObjects/DownloadDispatch.woa/wa/ent/download",
++		Parameters: map[string]any{"externalVersionId": "892759993"},
++	}, &http.Response{StatusCode: http.StatusOK}, nil, time.Second, *record)
++	if entry.Opens != 1 || entry.OpenMs != 90 {
++		t.Fatalf("trace entry = %+v", entry)
 +	}
 +}
 diff --git a/pkg/appstore/appstore_emulator_trace_test.go b/pkg/appstore/appstore_emulator_trace_test.go
@@ -479,7 +428,7 @@ index 0000000..52515ce
 +	}
 +}
 diff --git a/pkg/appstore/appstore_get_version_metadata.go b/pkg/appstore/appstore_get_version_metadata.go
-index 2517c76..29ba099 100644
+index 2517c76..1fd9a53 100644
 --- a/pkg/appstore/appstore_get_version_metadata.go
 +++ b/pkg/appstore/appstore_get_version_metadata.go
 @@ -6,6 +6,8 @@ import (
@@ -544,7 +493,13 @@ index 2517c76..29ba099 100644
  	if err != nil {
  		return GetVersionMetadataOutput{}, err
  	}
-@@ -94,7 +126,10 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -89,22 +121,199 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+ 				return GetVersionMetadataOutput{}, err
+ 			}
+ 
+-			metadata, err := t.readVersionMetadataFromMacPackage(input.Context, item, hardwareID, input.App.BundleID)
++			metadata, err := t.readVersionMetadataFromMacPackage(input.Context, item, hardwareID, input.App.BundleID, input.VersionID)
+ 			if err != nil {
  				return GetVersionMetadataOutput{}, fmt.Errorf("failed to read macOS version metadata: %w", err)
  			}
  
@@ -552,16 +507,21 @@ index 2517c76..29ba099 100644
 +			output := versionMetadataOutput(metadata)
 +			output.ReleaseDateFromAPI = downloadMetadataReleaseDate(item.Metadata)
 +
-+			return t.withEmulatorStats(output, before), nil
++			return t.withEmulatorStats(output, before, input.VersionID), nil
  		}
  	}
  
-@@ -106,5 +141,123 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+ 	// Do not fall back to item.Metadata here. The App Store download API can
+ 	// return stale version and release date values, so the IPA Info.plist is the
+ 	// source of truth and failures should be visible to callers.
+-	metadata, err := t.readVersionMetadataFromIPA(item.URL)
++	metadata, err := t.readVersionMetadataFromIPA(item.URL, input.VersionID)
+ 	if err != nil {
  		return GetVersionMetadataOutput{}, fmt.Errorf("failed to read version metadata: %w", err)
  	}
  
 -	return GetVersionMetadataOutput(metadata), nil
-+	return t.withEmulatorStats(versionMetadataOutput(metadata), before), nil
++	return t.withEmulatorStats(versionMetadataOutput(metadata), before, input.VersionID), nil
 +}
 +
 +// versionMetadataOutput copies a package read result into the public output.
@@ -597,16 +557,72 @@ index 2517c76..29ba099 100644
 +	trace    []store.StoreRequest
 +}
 +
-+// withEmulatorStats narrows the backend counters to this lookup.
-+func (t *appstore) withEmulatorStats(output GetVersionMetadataOutput, before emulatorSnapshot) GetVersionMetadataOutput {
++// withEmulatorStats narrows the backend counters to this lookup. A pinned
++// lookup is attributed by the build it asked for: every request it sends carries
++// that pin, while the global counters and a time window both capture the four
++// lookups that run beside it.
++func (t *appstore) withEmulatorStats(output GetVersionMetadataOutput, before emulatorSnapshot, pinned string) GetVersionMetadataOutput {
 +	after := t.emulatorSnapshot()
++
++	output.EmulatorTrace = attributeTrace(storeTraceSince(after.trace, traceSequence(before.trace)), pinned)
++
++	if pinned != "" {
++		output.EmulatorOpens, output.EmulatorOpenMs = traceEmulatorTotals(output.EmulatorTrace)
++		output.EmulatorRequests = traceRequestTotals(output.EmulatorTrace)
++
++		return output
++	}
 +
 +	output.EmulatorOpens = after.stats.Opens - before.stats.Opens
 +	output.EmulatorOpenMs = after.stats.OpenMs - before.stats.OpenMs
 +	output.EmulatorRequests = requestCountDelta(before.requests, after.requests)
-+	output.EmulatorTrace = storeTraceSince(after.trace, traceSequence(before.trace))
 +
 +	return output
++}
++
++// attributeTrace keeps the entries a pinned lookup made. Requests made without a
++// pin cannot be told apart from another lookup's, so they are left out.
++func attributeTrace(trace []store.StoreRequest, pinned string) []store.StoreRequest {
++	if pinned == "" {
++		return trace
++	}
++
++	kept := make([]store.StoreRequest, 0, len(trace))
++	for _, entry := range trace {
++		if entry.Pinned == pinned {
++			kept = append(kept, entry)
++		}
++	}
++
++	return kept
++}
++
++// traceEmulatorTotals sums the framework launches the traced requests needed.
++func traceEmulatorTotals(trace []store.StoreRequest) (int64, int64) {
++	var opens, openMs int64
++
++	for _, entry := range trace {
++		opens += entry.Opens
++		openMs += entry.OpenMs
++	}
++
++	return opens, openMs
++}
++
++// traceRequestTotals counts traced requests by operation, method and endpoint,
++// the same key the backend histogram uses.
++func traceRequestTotals(trace []store.StoreRequest) map[string]int64 {
++	counted := make(map[string]int64, len(trace))
++
++	for _, entry := range trace {
++		if entry.Operation == "" || entry.Endpoint == "" {
++			continue
++		}
++
++		counted[entry.Operation+" "+entry.Method+" "+entry.Endpoint]++
++	}
++
++	return counted
 +}
 +
 +// traceSequence reports the last sequence number in a snapshot.
@@ -860,7 +876,7 @@ index 84343e6..b8b82bd 100644
  
  	It("rejects corrupted installer metadata", func() {
 diff --git a/pkg/appstore/appstore_macos_version_metadata.go b/pkg/appstore/appstore_macos_version_metadata.go
-index be202a0..9b679cb 100644
+index be202a0..0c034be 100644
 --- a/pkg/appstore/appstore_macos_version_metadata.go
 +++ b/pkg/appstore/appstore_macos_version_metadata.go
 @@ -13,9 +13,102 @@ import (
@@ -870,7 +886,8 @@ index be202a0..9b679cb 100644
 +	apphttp "github.com/majd/ipatool/v2/pkg/http"
  )
  
- func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item downloadItemResult, hardwareID []byte, bundleID string) (versionMetadata, error) {
+-func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item downloadItemResult, hardwareID []byte, bundleID string) (versionMetadata, error) {
++func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item downloadItemResult, hardwareID []byte, bundleID, pinned string) (versionMetadata, error) {
 +	if bundleID == "" {
 +		bundleID = downloadMetadataString(item.Metadata, "softwareVersionBundleId")
 +	}
@@ -883,7 +900,7 @@ index be202a0..9b679cb 100644
 +	var rangeErr error
 +
 +	for _, candidate := range macPackageMetadataCandidates(item) {
-+		metadata, err := t.readMacPackageMetadataFromRanges(candidate.url, candidate.preflight, bundleID)
++		metadata, err := t.readMacPackageMetadataFromRanges(candidate.url, candidate.preflight, bundleID, pinned)
 +		if err == nil {
 +			return metadata, nil
 +		}
@@ -1014,7 +1031,7 @@ index be202a0..9b679cb 100644
  	}
  
  	archive, err := xar.Open(destination)
-@@ -46,11 +154,93 @@ func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item d
+@@ -46,11 +154,95 @@ func (t *appstore) readVersionMetadataFromMacPackage(ctx context.Context, item d
  
  	defer archive.Close()
  
@@ -1032,7 +1049,7 @@ index be202a0..9b679cb 100644
 +// package without downloading it. The XAR header, its table of contents and the
 +// PackageInfo/Distribution entries stay readable on an encrypted installer, so
 +// a few kilobytes replace the full download and Store-agent decryption.
-+func (t *appstore) readMacPackageMetadataFromRanges(url string, preflight bool, bundleID string) (versionMetadata, error) {
++func (t *appstore) readMacPackageMetadataFromRanges(url string, preflight bool, bundleID, pinned string) (versionMetadata, error) {
 +	if url == "" {
 +		return versionMetadata{}, errors.New("package URL is empty")
 +	}
@@ -1042,10 +1059,12 @@ index be202a0..9b679cb 100644
 +		return versionMetadata{}, errors.New("package read client is not configured")
 +	}
 +
++	record := t.packageReadRecorder(pinned)
++
 +	var failures []string
 +
 +	for _, attempt := range attempts {
-+		metadata, err := readMacPackageMetadataOverRanges(attempt.client, url, preflight, bundleID)
++		metadata, err := readMacPackageMetadataOverRanges(attempt.client, url, preflight, bundleID, record)
 +		if err == nil {
 +			metadata.PackageReadSource = attempt.source
 +
@@ -1082,8 +1101,8 @@ index be202a0..9b679cb 100644
 +	return attempts
 +}
 +
-+func readMacPackageMetadataOverRanges(client apphttp.Client[interface{}], url string, preflight bool, bundleID string) (versionMetadata, error) {
-+	reader, size, err := newHTTPRangeReaderAt(client, url)
++func readMacPackageMetadataOverRanges(client apphttp.Client[interface{}], url string, preflight bool, bundleID string, record packageReadRecorder) (versionMetadata, error) {
++	reader, size, err := newHTTPRangeReaderAt(withPackageReadRecorder(client, record), url)
 +	if err != nil {
 +		return versionMetadata{}, err
 +	}
@@ -1111,7 +1130,7 @@ index be202a0..9b679cb 100644
  
  func macPackageVersionMetadata(archive *xar.Reader, bundleID string) (versionMetadata, error) {
 diff --git a/pkg/appstore/appstore_macos_version_metadata_test.go b/pkg/appstore/appstore_macos_version_metadata_test.go
-index b57f884..d4d5e8d 100644
+index b57f884..4cbe2c5 100644
 --- a/pkg/appstore/appstore_macos_version_metadata_test.go
 +++ b/pkg/appstore/appstore_macos_version_metadata_test.go
 @@ -2,13 +2,18 @@ package appstore
@@ -1244,7 +1263,7 @@ index b57f884..d4d5e8d 100644
 +
 +	store := &appstore{httpClient: newDownloadTestClient()}
 +
-+	metadata, err := store.readMacPackageMetadataFromRanges(server.URL, false, "com.example.mac")
++	metadata, err := store.readMacPackageMetadataFromRanges(server.URL, false, "com.example.mac", "")
 +	if err != nil {
 +		t.Fatalf("ranged read: %v", err)
 +	}
@@ -1284,7 +1303,7 @@ index b57f884..d4d5e8d 100644
 +
 +	store := &appstore{httpClient: newDownloadTestClient()}
 +
-+	_, err := store.readMacPackageMetadataFromRanges(server.URL, false, "com.example.mac")
++	_, err := store.readMacPackageMetadataFromRanges(server.URL, false, "com.example.mac", "")
 +	if err == nil {
 +		t.Fatal("expected the ranged read to fail")
 +	}
@@ -1324,7 +1343,7 @@ index b57f884..d4d5e8d 100644
 +		Metadata: map[string]interface{}{"softwareVersionBundleId": "com.example.mac"},
 +	}
 +
-+	metadata, err := store.readVersionMetadataFromMacPackage(context.Background(), item, []byte{0, 17, 34, 51, 68, 85}, "com.example.mac")
++	metadata, err := store.readVersionMetadataFromMacPackage(context.Background(), item, []byte{0, 17, 34, 51, 68, 85}, "com.example.mac", "")
 +	if err != nil {
 +		t.Fatalf("macOS version metadata: %v", err)
 +	}
@@ -1366,7 +1385,7 @@ index b57f884..d4d5e8d 100644
 +		Metadata:            map[string]interface{}{"softwareVersionBundleId": "com.example.mac"},
 +	}
 +
-+	metadata, err := store.readVersionMetadataFromMacPackage(context.Background(), item, []byte{0, 17, 34, 51, 68, 85}, "com.example.mac")
++	metadata, err := store.readVersionMetadataFromMacPackage(context.Background(), item, []byte{0, 17, 34, 51, 68, 85}, "com.example.mac", "")
 +	if err != nil {
 +		t.Fatalf("macOS version metadata: %v", err)
 +	}
@@ -1418,7 +1437,7 @@ index b57f884..d4d5e8d 100644
 +		Metadata:            map[string]interface{}{"softwareVersionBundleId": "com.example.mac"},
 +	}
 +
-+	metadata, err := store.readVersionMetadataFromMacPackage(context.Background(), item, []byte{0, 17, 34, 51, 68, 85}, "com.example.mac")
++	metadata, err := store.readVersionMetadataFromMacPackage(context.Background(), item, []byte{0, 17, 34, 51, 68, 85}, "com.example.mac", "")
 +	if err != nil {
 +		t.Fatalf("macOS version metadata: %v", err)
 +	}
@@ -1450,7 +1469,7 @@ index b57f884..d4d5e8d 100644
 +
 +	store := &appstore{httpClient: newDownloadTestClient()}
 +
-+	_, err := store.readMacPackageMetadataFromRanges(server.URL, false, "com.example.mac")
++	_, err := store.readMacPackageMetadataFromRanges(server.URL, false, "com.example.mac", "")
 +	if err == nil {
 +		t.Fatal("expected the ranged read to fail")
 +	}
@@ -1478,7 +1497,7 @@ index b57f884..d4d5e8d 100644
 +
 +	store := &appstore{httpClient: newDownloadTestClient()}
 +
-+	metadata, err := store.readMacPackageMetadataFromRanges(server.URL, true, "com.example.mac")
++	metadata, err := store.readMacPackageMetadataFromRanges(server.URL, true, "com.example.mac", "")
 +	if err != nil {
 +		t.Fatalf("ranged preflight read: %v", err)
 +	}
@@ -1514,7 +1533,7 @@ index b57f884..d4d5e8d 100644
 +
 +	store := &appstore{httpClient: newDownloadTestClient()}
 +
-+	metadata, err := store.readMacPackageMetadataFromRanges(server.URL, true, "com.example.mac")
++	metadata, err := store.readMacPackageMetadataFromRanges(server.URL, true, "com.example.mac", "")
 +	if err != nil {
 +		t.Fatalf("ranged preflight read: %v", err)
 +	}
@@ -1566,8 +1585,334 @@ index b57f884..d4d5e8d 100644
 +		t.Errorf("minimum OS version = %q, want 10.13", metadata.MinimumOSVersion)
 +	}
 +}
+diff --git a/pkg/appstore/appstore_package_read_trace.go b/pkg/appstore/appstore_package_read_trace.go
+new file mode 100644
+index 0000000..a00486e
+--- /dev/null
++++ b/pkg/appstore/appstore_package_read_trace.go
+@@ -0,0 +1,169 @@
++package appstore
++
++import (
++	"io"
++	"net/http"
++	"net/url"
++	"sync"
++	"time"
++
++	"github.com/majd/ipatool/v2/internal/store"
++	apphttp "github.com/majd/ipatool/v2/pkg/http"
++)
++
++// packageReadOperation marks a ranged package read in the trace, next to the
++// emulated Store requests that the same lookup sent.
++const packageReadOperation = "range-read"
++
++// packageReadRecorder records one ranged package read. A nil recorder disables
++// tracing, which is what the CLI and the tests use.
++type packageReadRecorder func(entry store.StoreRequest)
++
++// packageReadRecorder returns a recorder for one lookup, or nil when there is no
++// backend to record into. Every read of a pinned lookup carries the build it
++// asked for, so the recorder stamps the pin and the trace can be attributed to
++// that lookup alone.
++func (t *appstore) packageReadRecorder(pinned string) packageReadRecorder {
++	backend := t.authBackend
++	if backend == nil {
++		return nil
++	}
++
++	return func(entry store.StoreRequest) {
++		entry.Operation = packageReadOperation
++		entry.Pinned = pinned
++		backend.RecordTrace(entry)
++	}
++}
++
++// withPackageReadRecorder wraps a client so every ranged read it serves lands in
++// the trace with its window, its status, the bytes that arrived and the time it
++// took. The package read is otherwise invisible: it never touches the emulator,
++// so neither the counters nor the request trace see it.
++func withPackageReadRecorder(client apphttp.Client[interface{}], record packageReadRecorder) apphttp.Client[interface{}] {
++	if client == nil || record == nil {
++		return client
++	}
++
++	return tracedPackageClient{inner: client, record: record}
++}
++
++type tracedPackageClient struct {
++	inner  apphttp.Client[interface{}]
++	record packageReadRecorder
++}
++
++func (c tracedPackageClient) Send(request apphttp.Request) (apphttp.Result[interface{}], error) {
++	return c.inner.Send(request)
++}
++
++func (c tracedPackageClient) NewRequest(method, rawURL string, body io.Reader) (*http.Request, error) {
++	return c.inner.NewRequest(method, rawURL, body)
++}
++
++func (c tracedPackageClient) Do(request *http.Request) (*http.Response, error) {
++	started := time.Now()
++	window := request.Header.Get("Range")
++
++	response, err := c.inner.Do(request)
++	if response == nil || response.Body == nil {
++		c.recordRead(request, window, statusCode(response), 0, time.Since(started), err)
++
++		return response, err
++	}
++
++	// The window is only useful with the bytes that arrived, so the entry is
++	// written when the body is closed: until then the read is still running.
++	response.Body = &tracedPackageBody{
++		inner: response.Body,
++		record: func(read int64) {
++			c.recordRead(request, window, response.StatusCode, read, time.Since(started), nil)
++		},
++	}
++
++	return response, err
++}
++
++func (c tracedPackageClient) recordRead(request *http.Request, window string, status int, read int64, elapsed time.Duration, err error) {
++	entry := store.StoreRequest{
++		Method:   request.Method,
++		Endpoint: packageReadEndpoint(request.URL),
++		Status:   status,
++		Ms:       elapsed.Milliseconds(),
++		Range:    window,
++		Bytes:    read,
++	}
++
++	if err != nil {
++		entry.Error = truncateTraceError(err)
++	}
++
++	c.record(entry)
++}
++
++// tracedPackageBody counts the bytes of a read and reports them once, when the
++// caller closes the body.
++type tracedPackageBody struct {
++	inner  io.ReadCloser
++	record func(read int64)
++
++	mu     sync.Mutex
++	read   int64
++	closed bool
++}
++
++func (b *tracedPackageBody) Read(p []byte) (int, error) {
++	n, err := b.inner.Read(p)
++
++	b.mu.Lock()
++	b.read += int64(n)
++	b.mu.Unlock()
++
++	return n, err
++}
++
++func (b *tracedPackageBody) Close() error {
++	err := b.inner.Close()
++
++	b.mu.Lock()
++	read := b.read
++	first := !b.closed
++	b.closed = true
++	b.mu.Unlock()
++
++	if first {
++		b.record(read)
++	}
++
++	return err
++}
++
++func statusCode(response *http.Response) int {
++	if response == nil {
++		return 0
++	}
++
++	return response.StatusCode
++}
++
++// packageReadEndpoint keeps the host and path of a package read, so a CDN that
++// signs every URL does not split one endpoint into hundreds of entries.
++func packageReadEndpoint(rawURL *url.URL) string {
++	if rawURL == nil || rawURL.Host == "" {
++		return ""
++	}
++
++	return rawURL.Host + rawURL.Path
++}
++
++// truncateTraceError keeps one broken read from filling the trace.
++func truncateTraceError(err error) string {
++	const limit = 120
++
++	message := err.Error()
++	if len(message) <= limit {
++		return message
++	}
++
++	return message[:limit] + "..."
++}
+diff --git a/pkg/appstore/appstore_package_read_trace_test.go b/pkg/appstore/appstore_package_read_trace_test.go
+new file mode 100644
+index 0000000..cac1cbf
+--- /dev/null
++++ b/pkg/appstore/appstore_package_read_trace_test.go
+@@ -0,0 +1,145 @@
++package appstore
++
++import (
++	"fmt"
++	gohttp "net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/majd/ipatool/v2/internal/store"
++)
++
++// The ranged package read is the blind spot of a lookup: it never touches the
++// emulator, so neither the counters nor the request trace see it. These tests
++// pin the two things that make it visible: every read is recorded with its
++// window, status, bytes and time, and every entry carries the build the lookup
++// asked for, so the trace can be attributed to one lookup.
++func TestPackageReadRecorderRecordsRanges(t *testing.T) {
++	server := newPackageReadTraceServer([]byte("0123456789abcdef"))
++	defer server.Close()
++
++	var recorded []store.StoreRequest
++
++	client := withPackageReadRecorder(newDownloadTestClient(), func(entry store.StoreRequest) {
++		recorded = append(recorded, entry)
++	})
++
++	reader, size, err := newHTTPRangeReaderAt(client, server.URL)
++	if err != nil {
++		t.Fatalf("newHTTPRangeReaderAt() error = %v", err)
++	}
++
++	if size != 16 {
++		t.Fatalf("remote size = %d, want 16", size)
++	}
++
++	if _, err := reader.ReadAt(make([]byte, 4), 0); err != nil {
++		t.Fatalf("ReadAt() error = %v", err)
++	}
++
++	if len(recorded) < 2 {
++		t.Fatalf("recorded %d reads, want the size probe and the ranged read", len(recorded))
++	}
++
++	probe := recorded[0]
++	if probe.Method != gohttp.MethodGet || probe.Status != gohttp.StatusPartialContent {
++		t.Fatalf("size probe = %+v", probe)
++	}
++
++	// The size probe asks for one byte and never reads the body, so it reports
++	// the window it asked for and no bytes.
++	if probe.Range != "bytes=0-0" || probe.Bytes != 0 {
++		t.Fatalf("size probe range = %q, bytes = %d", probe.Range, probe.Bytes)
++	}
++
++	if !strings.HasPrefix(probe.Endpoint, strings.TrimPrefix(server.URL, "http://")) {
++		t.Fatalf("size probe endpoint = %q", probe.Endpoint)
++	}
++
++	// The read-ahead window is clamped to the sixteen bytes the server holds, and
++	// the entry reports the bytes that actually arrived.
++	window := recorded[1]
++	if window.Range != "bytes=0-15" || window.Bytes != 16 {
++		t.Fatalf("ranged read range = %q, bytes = %d", window.Range, window.Bytes)
++	}
++}
++
++func TestPackageReadRecorderStampsTheLookupPin(t *testing.T) {
++	backend := store.New(nil, nil)
++	subject := &appstore{authBackend: backend}
++
++	subject.packageReadRecorder("892759993")(store.StoreRequest{
++		Method:   gohttp.MethodGet,
++		Endpoint: "cdn.example.test/app.ipa",
++		Status:   gohttp.StatusPartialContent,
++		Ms:       1200,
++		Range:    "bytes=0-3",
++		Bytes:    4,
++	})
++
++	trace := backend.StoreTrace()
++	if len(trace) != 1 {
++		t.Fatalf("trace entries = %d, want 1", len(trace))
++	}
++
++	if trace[0].Operation != packageReadOperation || trace[0].Pinned != "892759993" {
++		t.Fatalf("trace entry = %+v", trace[0])
++	}
++}
++
++func TestVersionMetadataTraceAttribution(t *testing.T) {
++	trace := []store.StoreRequest{
++		{Seq: 1, Label: "lookup 892759993"},
++		{Seq: 2, Operation: "request", Method: gohttp.MethodPost, Endpoint: "downloaddispatch.test/ent/download", Pinned: "892759993", Status: 200, Ms: 800, Opens: 1, OpenMs: 100},
++		{Seq: 3, Label: "lookup 892829847"},
++		{Seq: 4, Operation: "request", Method: gohttp.MethodPost, Endpoint: "downloaddispatch.test/ent/download", Pinned: "892829847", Status: 200, Ms: 810, Opens: 1, OpenMs: 105},
++		{Seq: 5, Operation: packageReadOperation, Method: gohttp.MethodGet, Endpoint: "cdn.test/app.ipa", Pinned: "892759993", Status: 206, Ms: 1200, Range: "bytes=0-3", Bytes: 4},
++		{Seq: 6, Operation: "request", Method: gohttp.MethodPost, Endpoint: "downloaddispatch.test/ent/download", Pinned: "892829847", Status: 200, Ms: 795, Opens: 1, OpenMs: 99},
++	}
++
++	// The window holds six entries; the pin keeps the two that belong to it.
++	attributed := attributeTrace(trace, "892759993")
++	if len(attributed) != 2 {
++		t.Fatalf("attributed entries = %d, want 2", len(attributed))
++	}
++
++	opens, openMs := traceEmulatorTotals(attributed)
++	if opens != 1 || openMs != 100 {
++		t.Fatalf("attributed opens = %d, openMs = %d, want 1 and 100", opens, openMs)
++	}
++
++	counted := traceRequestTotals(attributed)
++	if counted["request POST downloaddispatch.test/ent/download"] != 1 {
++		t.Fatalf("request counts = %v", counted)
++	}
++
++	if counted["range-read GET cdn.test/app.ipa"] != 1 {
++		t.Fatalf("range read counts = %v", counted)
++	}
++
++	// Without a pin there is nothing to attribute by, so the window is all there
++	// is; that is what the unpinned callers still use.
++	if len(attributeTrace(trace, "")) != len(trace) {
++		t.Fatal("an unpinned lookup must keep the whole window")
++	}
++}
++
++func newPackageReadTraceServer(payload []byte) *httptest.Server {
++	return httptest.NewServer(gohttp.HandlerFunc(func(w gohttp.ResponseWriter, r *gohttp.Request) {
++		header := r.Header.Get("Range")
++
++		var start, stop int
++		if _, err := fmt.Sscanf(header, "bytes=%d-%d", &start, &stop); err != nil ||
++			start < 0 || stop >= len(payload) || start > stop {
++			w.WriteHeader(gohttp.StatusOK)
++			_, _ = w.Write(payload)
++
++			return
++		}
++
++		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, stop, len(payload)))
++		w.WriteHeader(gohttp.StatusPartialContent)
++		_, _ = w.Write(payload[start : stop+1])
++	}))
++}
 diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
-index 77ed888..5b9c402 100644
+index 77ed888..a514df9 100644
 --- a/pkg/appstore/appstore_partial_zip.go
 +++ b/pkg/appstore/appstore_partial_zip.go
 @@ -37,6 +37,12 @@ type versionMetadata struct {
@@ -1630,10 +1975,12 @@ index 77ed888..5b9c402 100644
  	}
  
  	if res.StatusCode != http.StatusPartialContent {
-@@ -233,8 +249,55 @@ func (r *httpRangeReaderAt) fetch(start, stop int64) ([]byte, error) {
+@@ -233,8 +249,57 @@ func (r *httpRangeReaderAt) fetch(start, stop int64) ([]byte, error) {
  	return data, nil
  }
  
+-func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, error) {
+-	reader, size, err := newHTTPRangeReaderAt(t.httpClient, url)
 +// directPackageReadClientFactory builds the emulator-free range client. The
 +// Store signs the package URL, so the CDN needs neither emulated headers nor a
 +// guest VM, and opening one for every range request cost seconds per request.
@@ -1647,14 +1994,15 @@ index 77ed888..5b9c402 100644
 +	return apphttp.NewClient[interface{}](apphttp.Args{Executor: t.authBackend.Client("transfer-direct")})
 +}
 +
- func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, error) {
--	reader, size, err := newHTTPRangeReaderAt(t.httpClient, url)
++func (t *appstore) readVersionMetadataFromIPA(url, pinned string) (versionMetadata, error) {
 +	direct := directPackageReadClientFactory(t)
 +	if direct == nil {
 +		return versionMetadata{}, errors.New("package read client is not configured")
 +	}
 +
-+	metadata, err := readVersionMetadataFromPackageURL(direct, url)
++	record := t.packageReadRecorder(pinned)
++
++	metadata, err := readVersionMetadataFromPackageURL(direct, url, record)
 +	if err == nil {
 +		metadata.PackageReadSource = packageReadSourceDirect
 +
@@ -1671,7 +2019,7 @@ index 77ed888..5b9c402 100644
 +	// Keep the emulated transfer client as a fallback: it is slow, but it is the
 +	// path every earlier release used, so a CDN that rejects direct reads must
 +	// not break version history.
-+	fallback, fallbackErr := readVersionMetadataFromPackageURL(t.httpClient, url)
++	fallback, fallbackErr := readVersionMetadataFromPackageURL(t.httpClient, url, record)
 +	fallback.PackageReadSource = packageReadSourceEmulated
 +	fallback.PackageReadError = fmt.Sprintf("direct read failed: %v", err)
 +
@@ -1682,12 +2030,12 @@ index 77ed888..5b9c402 100644
 +	return fallback, fallbackErr
 +}
 +
-+func readVersionMetadataFromPackageURL(client apphttp.Client[interface{}], url string) (versionMetadata, error) {
-+	reader, size, err := newHTTPRangeReaderAt(client, url)
++func readVersionMetadataFromPackageURL(client apphttp.Client[interface{}], url string, record packageReadRecorder) (versionMetadata, error) {
++	reader, size, err := newHTTPRangeReaderAt(withPackageReadRecorder(client, record), url)
  	if err != nil {
  		return versionMetadata{}, err
  	}
-@@ -260,6 +323,22 @@ func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, erro
+@@ -260,6 +325,22 @@ func (t *appstore) readVersionMetadataFromIPA(url string) (versionMetadata, erro
  	return versionMetadata{}, errors.New("could not find Info.plist")
  }
  
@@ -1712,7 +2060,7 @@ index 77ed888..5b9c402 100644
  
 diff --git a/pkg/appstore/appstore_partial_zip_direct_test.go b/pkg/appstore/appstore_partial_zip_direct_test.go
 new file mode 100644
-index 0000000..86ae4fb
+index 0000000..49100ee
 --- /dev/null
 +++ b/pkg/appstore/appstore_partial_zip_direct_test.go
 @@ -0,0 +1,242 @@
@@ -1826,7 +2174,7 @@ index 0000000..86ae4fb
 +
 +	subject := &appstore{httpClient: newDownloadTestClient()}
 +
-+	metadata, err := subject.readVersionMetadataFromIPA(server.URL)
++	metadata, err := subject.readVersionMetadataFromIPA(server.URL, "")
 +	if err != nil {
 +		t.Fatalf("read version metadata: %v", err)
 +	}
@@ -1871,7 +2219,7 @@ index 0000000..86ae4fb
 +	}))
 +	defer server.Close()
 +
-+	if _, err := readVersionMetadataFromPackageURL(newDownloadTestClient(), server.URL); err != nil {
++	if _, err := readVersionMetadataFromPackageURL(newDownloadTestClient(), server.URL, nil); err != nil {
 +		t.Fatalf("read version metadata: %v", err)
 +	}
 +
@@ -1918,7 +2266,7 @@ index 0000000..86ae4fb
 +
 +	subject := &appstore{httpClient: newDownloadTestClient()}
 +
-+	metadata, err := subject.readVersionMetadataFromIPA(server.URL)
++	metadata, err := subject.readVersionMetadataFromIPA(server.URL, "")
 +	if err != nil {
 +		t.Fatalf("read version metadata: %v", err)
 +	}
