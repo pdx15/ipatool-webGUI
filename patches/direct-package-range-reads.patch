@@ -818,7 +818,7 @@ index be202a0..9b679cb 100644
  
  func macPackageVersionMetadata(archive *xar.Reader, bundleID string) (versionMetadata, error) {
 diff --git a/pkg/appstore/appstore_macos_version_metadata_test.go b/pkg/appstore/appstore_macos_version_metadata_test.go
-index b57f884..7dc7ad8 100644
+index b57f884..6034698 100644
 --- a/pkg/appstore/appstore_macos_version_metadata_test.go
 +++ b/pkg/appstore/appstore_macos_version_metadata_test.go
 @@ -2,13 +2,18 @@ package appstore
@@ -840,7 +840,7 @@ index b57f884..7dc7ad8 100644
  	"time"
  
  	"github.com/blacktop/go-macho/pkg/xar"
-@@ -115,3 +120,428 @@ var _ = Describe("Mac version metadata", func() {
+@@ -115,3 +120,432 @@ var _ = Describe("Mac version metadata", func() {
  		Expect(entries).To(BeEmpty())
  	})
  })
@@ -956,8 +956,12 @@ index b57f884..7dc7ad8 100644
 +		t.Fatalf("ranged read: %v", err)
 +	}
 +
-+	if metadata.DisplayVersion != "1.2.1" {
-+		t.Errorf("display version = %q, want 1.2.1", metadata.DisplayVersion)
++	if metadata.DisplayVersion != "11.15" {
++		t.Errorf("display version = %q, want 11.15", metadata.DisplayVersion)
++	}
++
++	if metadata.MinimumOSVersion != "10.13" {
++		t.Errorf("minimum OS version = %q, want 10.13", metadata.MinimumOSVersion)
 +	}
 +
 +	want := time.Date(2025, 7, 24, 8, 38, 42, 0, time.UTC)
@@ -1244,7 +1248,7 @@ index b57f884..7dc7ad8 100644
 +// table of contents is the only timestamp left.
 +func TestMacPackageMetadataReadsTheDateFromTheTableOfContents(t *testing.T) {
 +	archive := macRangeReadArchiveAt("2026-10-20T19:29:36",
-+		macRangeReadEntry{name: "Distribution", data: []byte(macRangeReadInfo)})
++		macRangeReadEntry{name: "Distribution", data: []byte(macRangeReadModernDistribution)})
 +
 +	reader, err := xar.NewReader(bytes.NewReader(archive), int64(len(archive)))
 +	if err != nil {
