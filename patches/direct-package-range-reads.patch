@@ -1,8 +1,8 @@
 diff --git a/cmd/get_version_metadata.go b/cmd/get_version_metadata.go
-index e268ee6..0d8b084 100644
+index e268ee6..298a5e8 100644
 --- a/cmd/get_version_metadata.go
 +++ b/cmd/get_version_metadata.go
-@@ -80,6 +80,10 @@ func getVersionMetadataCmd() *cobra.Command {
+@@ -80,6 +80,11 @@ func getVersionMetadataCmd() *cobra.Command {
  					Str("displayVersion", out.DisplayVersion).
  					Time("releaseDate", out.ReleaseDate).
  					Str("minimumOSVersion", out.MinimumOSVersion).
@@ -10,28 +10,35 @@ index e268ee6..0d8b084 100644
 +					Str("packageReadError", out.PackageReadError).
 +					Int64("emulatorOpens", out.EmulatorOpens).
 +					Int64("emulatorOpenMs", out.EmulatorOpenMs).
++					Interface("emulatorRequests", out.EmulatorRequests).
  					Bool("success", true).
  					Send()
  
 diff --git a/internal/store/backend.go b/internal/store/backend.go
-index 0fc9277..ec79a35 100644
+index 0fc9277..4f8f3bc 100644
 --- a/internal/store/backend.go
 +++ b/internal/store/backend.go
-@@ -13,6 +13,7 @@ import (
+@@ -11,8 +11,10 @@ import (
+ 	"io"
+ 	"net"
  	"net/http"
++	"net/url"
  	"strings"
  	"sync"
 +	"sync/atomic"
  	"time"
  
  	"github.com/majd/ipatool/v2/internal/sap/assets"
-@@ -29,6 +30,30 @@ type Backend struct {
+@@ -29,6 +31,71 @@ type Backend struct {
  	bag           map[string]any
  	transport     *http.Transport
  	authTransport *http.Transport
 +
 +	emulatorOpens  atomic.Int64
 +	emulatorOpenMs atomic.Int64
++
++	requestsMu sync.Mutex
++	requests   map[string]int64
 +}
 +
 +// EmulatorStats counts the Store framework launches and the time they took.
@@ -49,6 +56,44 @@ index 0fc9277..ec79a35 100644
 +	}
 +}
 +
++// StoreRequests counts the emulated Store requests per operation and endpoint,
++// so a slow lookup can be traced to the requests it actually sends.
++func (b *Backend) StoreRequests() map[string]int64 {
++	b.requestsMu.Lock()
++	defer b.requestsMu.Unlock()
++
++	counted := make(map[string]int64, len(b.requests))
++	for key, value := range b.requests {
++		counted[key] = value
++	}
++
++	return counted
++}
++
++func (b *Backend) recordStoreRequest(operation, method, rawURL string) {
++	key := operation + " " + method + " " + requestEndpoint(rawURL)
++
++	b.requestsMu.Lock()
++	defer b.requestsMu.Unlock()
++
++	if b.requests == nil {
++		b.requests = make(map[string]int64)
++	}
++
++	b.requests[key]++
++}
++
++// requestEndpoint keeps the host and path so query strings and signatures do not
++// split one endpoint into dozens of counters.
++func requestEndpoint(rawURL string) string {
++	parsed, err := url.Parse(rawURL)
++	if err != nil || parsed.Host == "" {
++		return rawURL
++	}
++
++	return parsed.Host + parsed.Path
++}
++
 +// recordEmulatorOpen accounts for one framework launch, successful or not.
 +func (b *Backend) recordEmulatorOpen(elapsed time.Duration) {
 +	b.emulatorOpens.Add(1)
@@ -56,7 +101,7 @@ index 0fc9277..ec79a35 100644
  }
  
  type executor struct {
-@@ -102,6 +127,12 @@ func (e *executor) Do(request *http.Request) (*http.Response, error) {
+@@ -102,6 +169,12 @@ func (e *executor) Do(request *http.Request) (*http.Response, error) {
  		return e.backend.requestTransport(emulator.Request{Operation: "authenticate"})(request)
  	}
  
@@ -69,7 +114,16 @@ index 0fc9277..ec79a35 100644
  	var body []byte
  
  	var err error
-@@ -216,7 +247,11 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+@@ -174,6 +247,8 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+ 		return nil, fmt.Errorf("store request: %w", err)
+ 	}
+ 
++	b.recordStoreRequest(input.Operation, input.Method, input.URL)
++
+ 	hardware, err := b.hardware(input.Parameters)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("store request: %w", err)
+@@ -216,7 +291,11 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
  		return nil, fmt.Errorf("prepare Store framework: %w", err)
  	}
  
@@ -81,7 +135,7 @@ index 0fc9277..ec79a35 100644
  	if err != nil {
  		return nil, fmt.Errorf("open Store framework: %w", err)
  	}
-@@ -281,6 +316,28 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
+@@ -281,6 +360,28 @@ func (b *Backend) execute(ctx context.Context, input emulator.Request) (*http.Re
  	return response, nil
  }
  
@@ -112,10 +166,10 @@ index 0fc9277..ec79a35 100644
  	b.transport.CloseIdleConnections()
 diff --git a/internal/store/backend_direct_test.go b/internal/store/backend_direct_test.go
 new file mode 100644
-index 0000000..624618b
+index 0000000..5123f1c
 --- /dev/null
 +++ b/internal/store/backend_direct_test.go
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,79 @@
 +package store
 +
 +import (
@@ -170,8 +224,33 @@ index 0000000..624618b
 +		t.Errorf("content range = %q, want bytes 0-0/1024", got)
 +	}
 +}
++
++// TestStoreRequestsCountPerEndpoint keeps the histogram that explains where a
++// slow lookup spends its requests: one counter per operation and endpoint, with
++// the query string stripped so signed URLs do not split the count.
++func TestStoreRequestsCountPerEndpoint(t *testing.T) {
++	backend := New(nil, nil)
++
++	backend.recordStoreRequest("request", "POST", "https://buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct?guid=abc")
++	backend.recordStoreRequest("request", "POST", "https://buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct?guid=def")
++	backend.recordStoreRequest("transfer", "GET", "https://iosapps-ssl.itunes.apple.com/subscription/1.ipa?sig=xyz")
++
++	counted := backend.StoreRequests()
++
++	if got := counted["request POST buy.itunes.apple.com/WebObjects/MZBuy.woa/wa/buyProduct"]; got != 2 {
++		t.Errorf("buyProduct count = %d, want 2", got)
++	}
++
++	if got := counted["transfer GET iosapps-ssl.itunes.apple.com/subscription/1.ipa"]; got != 1 {
++		t.Errorf("transfer count = %d, want 1", got)
++	}
++
++	if len(counted) != 2 {
++		t.Errorf("endpoints = %v, want two", counted)
++	}
++}
 diff --git a/pkg/appstore/appstore_get_version_metadata.go b/pkg/appstore/appstore_get_version_metadata.go
-index 2517c76..04f47ef 100644
+index 2517c76..46bd54a 100644
 --- a/pkg/appstore/appstore_get_version_metadata.go
 +++ b/pkg/appstore/appstore_get_version_metadata.go
 @@ -6,6 +6,8 @@ import (
@@ -183,7 +262,7 @@ index 2517c76..04f47ef 100644
  )
  
  type GetVersionMetadataInput struct {
-@@ -20,6 +22,16 @@ type GetVersionMetadataOutput struct {
+@@ -20,6 +22,22 @@ type GetVersionMetadataOutput struct {
  	DisplayVersion   string
  	ReleaseDate      time.Time
  	MinimumOSVersion string
@@ -197,28 +276,37 @@ index 2517c76..04f47ef 100644
 +	EmulatorOpens int64
 +	// EmulatorOpenMs is the time those launches took.
 +	EmulatorOpenMs int64
++	// EmulatorRequests counts those launches per operation and endpoint.
++	EmulatorRequests map[string]int64
++	// ReleaseDateFromAPI is the date the download API reported for this build.
++	// It is reported next to ReleaseDate, not used instead of it: the API can
++	// return stale values, so the package stays the source of truth.
++	ReleaseDateFromAPI time.Time
  }
  
  func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersionMetadataOutput, error) {
-@@ -34,6 +46,8 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -34,6 +52,8 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  		return GetVersionMetadataOutput{}, fmt.Errorf("invalid platform %q", platform)
  	}
  
-+	before := t.emulatorStats()
++	before := t.emulatorSnapshot()
 +
  	macAddr, err := t.machine.MacAddress()
  	if err != nil {
  		return GetVersionMetadataOutput{}, fmt.Errorf("failed to get mac address: %w", err)
-@@ -94,7 +108,7 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -94,7 +114,10 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  				return GetVersionMetadataOutput{}, fmt.Errorf("failed to read macOS version metadata: %w", err)
  			}
  
 -			return GetVersionMetadataOutput(metadata), nil
-+			return t.withEmulatorStats(versionMetadataOutput(metadata), before), nil
++			output := versionMetadataOutput(metadata)
++			output.ReleaseDateFromAPI = downloadMetadataReleaseDate(item.Metadata)
++
++			return t.withEmulatorStats(output, before), nil
  		}
  	}
  
-@@ -106,5 +120,39 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -106,5 +129,80 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  		return GetVersionMetadataOutput{}, fmt.Errorf("failed to read version metadata: %w", err)
  	}
  
@@ -239,25 +327,66 @@ index 2517c76..04f47ef 100644
 +	}
 +}
 +
-+// emulatorStats reports the Store framework launches the backend has made so
-+// far. Without a backend every request uses the regular client, so the counters
-+// stay at zero.
-+func (t *appstore) emulatorStats() store.EmulatorStats {
++// emulatorSnapshot captures the backend counters before a lookup runs. Without
++// a backend every request uses the regular client, so the counters stay empty.
++func (t *appstore) emulatorSnapshot() emulatorSnapshot {
 +	if t.authBackend == nil {
-+		return store.EmulatorStats{}
++		return emulatorSnapshot{}
 +	}
 +
-+	return t.authBackend.EmulatorStats()
++	return emulatorSnapshot{
++		stats:    t.authBackend.EmulatorStats(),
++		requests: t.authBackend.StoreRequests(),
++	}
++}
++
++type emulatorSnapshot struct {
++	stats    store.EmulatorStats
++	requests map[string]int64
 +}
 +
 +// withEmulatorStats narrows the backend counters to this lookup.
-+func (t *appstore) withEmulatorStats(output GetVersionMetadataOutput, before store.EmulatorStats) GetVersionMetadataOutput {
-+	after := t.emulatorStats()
++func (t *appstore) withEmulatorStats(output GetVersionMetadataOutput, before emulatorSnapshot) GetVersionMetadataOutput {
++	after := t.emulatorSnapshot()
 +
-+	output.EmulatorOpens = after.Opens - before.Opens
-+	output.EmulatorOpenMs = after.OpenMs - before.OpenMs
++	output.EmulatorOpens = after.stats.Opens - before.stats.Opens
++	output.EmulatorOpenMs = after.stats.OpenMs - before.stats.OpenMs
++	output.EmulatorRequests = requestCountDelta(before.requests, after.requests)
 +
 +	return output
++}
++
++// requestCountDelta reports what this lookup added to the backend counters.
++func requestCountDelta(before, after map[string]int64) map[string]int64 {
++	delta := make(map[string]int64, len(after))
++
++	for endpoint, count := range after {
++		if extra := count - before[endpoint]; extra > 0 {
++			delta[endpoint] = extra
++		}
++	}
++
++	if len(delta) == 0 {
++		return nil
++	}
++
++	return delta
++}
++
++// downloadMetadataReleaseDate reads the date the download API reported for the
++// selected build. It is informational: stale values are why the package is read.
++func downloadMetadataReleaseDate(metadata map[string]interface{}) time.Time {
++	value, ok := metadata["releaseDate"]
++	if !ok {
++		return time.Time{}
++	}
++
++	parsed, err := parseReleaseDateValue(value)
++	if err != nil {
++		return time.Time{}
++	}
++
++	return parsed
  }
 diff --git a/pkg/appstore/appstore_macos_preflight_metadata.go b/pkg/appstore/appstore_macos_preflight_metadata.go
 index 75bcefe..69ff7f0 100644
