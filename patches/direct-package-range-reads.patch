@@ -818,7 +818,7 @@ index be202a0..9b679cb 100644
  
  func macPackageVersionMetadata(archive *xar.Reader, bundleID string) (versionMetadata, error) {
 diff --git a/pkg/appstore/appstore_macos_version_metadata_test.go b/pkg/appstore/appstore_macos_version_metadata_test.go
-index b57f884..6034698 100644
+index b57f884..d4d5e8d 100644
 --- a/pkg/appstore/appstore_macos_version_metadata_test.go
 +++ b/pkg/appstore/appstore_macos_version_metadata_test.go
 @@ -2,13 +2,18 @@ package appstore
@@ -956,12 +956,8 @@ index b57f884..6034698 100644
 +		t.Fatalf("ranged read: %v", err)
 +	}
 +
-+	if metadata.DisplayVersion != "11.15" {
-+		t.Errorf("display version = %q, want 11.15", metadata.DisplayVersion)
-+	}
-+
-+	if metadata.MinimumOSVersion != "10.13" {
-+		t.Errorf("minimum OS version = %q, want 10.13", metadata.MinimumOSVersion)
++	if metadata.DisplayVersion != "1.2.1" {
++		t.Errorf("display version = %q, want 1.2.1", metadata.DisplayVersion)
 +	}
 +
 +	want := time.Date(2025, 7, 24, 8, 38, 42, 0, time.UTC)
@@ -1269,8 +1265,12 @@ index b57f884..6034698 100644
 +		t.Errorf("package read error = %q, want none", metadata.PackageReadError)
 +	}
 +
-+	if metadata.DisplayVersion != "1.2.1" {
-+		t.Errorf("display version = %q, want 1.2.1", metadata.DisplayVersion)
++	if metadata.DisplayVersion != "11.15" {
++		t.Errorf("display version = %q, want 11.15", metadata.DisplayVersion)
++	}
++
++	if metadata.MinimumOSVersion != "10.13" {
++		t.Errorf("minimum OS version = %q, want 10.13", metadata.MinimumOSVersion)
 +	}
 +}
 diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
