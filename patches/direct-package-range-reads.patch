@@ -479,7 +479,7 @@ index 0000000..52515ce
 +	}
 +}
 diff --git a/pkg/appstore/appstore_get_version_metadata.go b/pkg/appstore/appstore_get_version_metadata.go
-index 2517c76..1af94fc 100644
+index 2517c76..b1e61b5 100644
 --- a/pkg/appstore/appstore_get_version_metadata.go
 +++ b/pkg/appstore/appstore_get_version_metadata.go
 @@ -6,6 +6,8 @@ import (
@@ -527,18 +527,23 @@ index 2517c76..1af94fc 100644
  	macAddr, err := t.machine.MacAddress()
  	if err != nil {
  		return GetVersionMetadataOutput{}, fmt.Errorf("failed to get mac address: %w", err)
-@@ -41,6 +65,10 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -41,7 +65,14 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  
  	guid := strings.ReplaceAll(strings.ToUpper(macAddr), ":", "")
  
+-	res, _, err := t.sendDownloadProduct(input.Context, input.Account, input.App, guid, input.VersionID, platform)
 +	// The trace is shared by the whole backend, so one label marks where this
 +	// lookup starts and the next response says what belongs to it.
 +	t.markStoreTrace("lookup " + input.VersionID)
 +
- 	res, _, err := t.sendDownloadProduct(input.Context, input.Account, input.App, guid, input.VersionID, platform)
++	// Version history reads one pinned build per lookup, and the redownload
++	// fallback rejects exactly those with HTTP 403, so the chain starts at
++	// volumeStore and continues with ent/download.
++	res, _, err := t.sendDownloadProductForVersionHistory(input.Context, input.Account, input.App, guid, input.VersionID, platform)
  	if err != nil {
  		return GetVersionMetadataOutput{}, err
-@@ -94,7 +122,10 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+ 	}
+@@ -94,7 +125,10 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  				return GetVersionMetadataOutput{}, fmt.Errorf("failed to read macOS version metadata: %w", err)
  			}
  
@@ -550,7 +555,7 @@ index 2517c76..1af94fc 100644
  		}
  	}
  
-@@ -106,5 +137,123 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -106,5 +140,123 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  		return GetVersionMetadataOutput{}, fmt.Errorf("failed to read version metadata: %w", err)
  	}
  
