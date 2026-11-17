@@ -2179,6 +2179,15 @@ func lookupVersionMetadataWithAccount(ctx context.Context, profile *guiAccountPr
 	result["emulatorOpens"] = out.EmulatorOpens
 	result["emulatorOpenMs"] = out.EmulatorOpenMs
 
+	// The trace covers the bag, the proofs and the requests, but not the time
+	// between them, so the difference against the total is reported instead of
+	// being left to guesswork.
+	result["tracedMs"] = out.TracedMs
+
+	if elapsedMs > out.TracedMs {
+		result["unattributedMs"] = elapsedMs - out.TracedMs
+	}
+
 	if len(out.EmulatorRequests) > 0 {
 		result["emulatorRequests"] = out.EmulatorRequests
 	}
