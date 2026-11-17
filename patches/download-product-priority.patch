@@ -120,10 +120,18 @@ index 8649602..6ff1fad 100644
  
  func (p setupProtocol) send(request *http.Request) ([]byte, error) {
 diff --git a/pkg/appstore/appstore_download_product.go b/pkg/appstore/appstore_download_product.go
-index 4f737c4..09bb5cf 100644
+index 4f737c4..1c4bb59 100644
 --- a/pkg/appstore/appstore_download_product.go
 +++ b/pkg/appstore/appstore_download_product.go
-@@ -25,7 +25,30 @@ type downloadProductEndpoint struct {
+@@ -8,6 +8,7 @@ import (
+ 	gohttp "net/http"
+ 	"net/url"
+ 	"strings"
++	"time"
+ 
+ 	"github.com/majd/ipatool/v2/pkg/http"
+ )
+@@ -25,7 +26,30 @@ type downloadProductEndpoint struct {
  	versionKey string
  }
  
@@ -154,7 +162,7 @@ index 4f737c4..09bb5cf 100644
  	if ctx == nil {
  		ctx = context.Background()
  	}
-@@ -34,6 +57,8 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -34,6 +58,8 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  		return http.Result[downloadResult]{}, platform, fmt.Errorf("download request canceled: %w", err)
  	}
  
@@ -163,7 +171,7 @@ index 4f737c4..09bb5cf 100644
  	// An unpinned request can return the iOS build of a universal app.
  	// Select the Mac offer before accepting any download response.
  	if externalVersionID == "" && platform == PlatformMacOS {
-@@ -43,30 +68,50 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -43,30 +69,56 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  		if err != nil {
  			return http.Result[downloadResult]{}, platform, fmt.Errorf("failed to resolve latest macOS version for download: %w", err)
  		}
@@ -199,10 +207,16 @@ index 4f737c4..09bb5cf 100644
 +		entErr       error
 +	)
 +
++	// The bag is fetched before the first request of a lookup and is the only
++	// call in it that no request entry covers, so it is timed as a stage too.
 +	loadBag := func() (urlBag, error) {
 +		if !bagLoaded {
 +			bagLoaded = true
++			bagEndpoint := traceEndpoint(t.bagRequest(guid).URL)
++
++			bagStarted := time.Now()
 +			bag, bagErr = t.fetchURLBag(guid)
++			t.recordStoreStage(storeBagOperation, gohttp.MethodGet, bagEndpoint, externalVersionID, time.Since(bagStarted), bagErr)
  		}
 +
 +		return bag, bagErr
@@ -232,7 +246,7 @@ index 4f737c4..09bb5cf 100644
  	volumeStore := t.volumeStoreEndpoint(acc)
  
  	res, err := t.sendCommerceDownloadRequest(ctx, t.downloadProductRequest(volumeStore, acc, app, guid, externalVersionID), guid)
-@@ -74,23 +119,73 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -74,23 +126,73 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  		return res, platform, fmt.Errorf("failed to send http request: %w", err)
  	}
  
@@ -272,9 +286,8 @@ index 4f737c4..09bb5cf 100644
 +	if _, loadErr := loadBag(); loadErr != nil {
 +		if entAttempted {
 +			return entRes, entResolved, entErr
- 		}
- 
--		bag = &fetched
++		}
++
 +		return res, platform, fmt.Errorf("failed to get bag for redownload fallback: %w", loadErr)
 +	}
 +
@@ -294,8 +307,9 @@ index 4f737c4..09bb5cf 100644
 +		resolvedRes, resolvedPlatform, resolvedErr := t.sendPreferredDownloadWithPin(ctx, bag.EntDownloadEndpoint, acc, app, guid, requestedVersionID, externalVersionID, platform)
 +		if resolvedErr == nil && len(resolvedRes.Data.Items) > 0 {
 +			return resolvedRes, resolvedPlatform, nil
-+		}
-+
+ 		}
+ 
+-		bag = &fetched
 +		if resolvedRes.Data.FailureType == FailureTypePasswordTokenExpired {
 +			return resolvedRes, resolvedPlatform, nil
 +		}
@@ -313,7 +327,7 @@ index 4f737c4..09bb5cf 100644
  	}
  
  	redownload, err := newDownloadEndpoint(bag.RedownloadEndpoint, redownloadProductPath)
-@@ -105,35 +200,75 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -105,35 +207,75 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  			platform = PlatformIPhone
  		}
  
@@ -368,9 +382,8 @@ index 4f737c4..09bb5cf 100644
 +
 +		if updateRes.Data.FailureType == FailureTypePasswordTokenExpired {
 +			return updateRes, platform, nil
- 		}
- 
--		return updateRes, platform, updateErr
++		}
++
 +		if updateRes.Data.FailureType == FailureTypeLicenseNotFound {
 +			rdUnavailable = true
 +		}
@@ -381,8 +394,9 @@ index 4f737c4..09bb5cf 100644
 +			}
 +
 +			return tryEntDownload(updateRes, updateErr)
-+		}
-+
+ 		}
+ 
+-		return updateRes, platform, updateErr
 +		return tryEntDownload(updateRes, nil)
  	}
  
@@ -403,7 +417,7 @@ index 4f737c4..09bb5cf 100644
  	}
  
  	return redownloadRes, platform, nil
-@@ -246,6 +381,12 @@ func isEmptyRedownloadError(err error) bool {
+@@ -246,6 +388,12 @@ func isEmptyRedownloadError(err error) bool {
  }
  
  func (t *appstore) sendUpdateProductContext(ctx context.Context, endpoint string, acc Account, app App, guid, externalVersionID string) (http.Result[downloadResult], error) {
@@ -416,7 +430,7 @@ index 4f737c4..09bb5cf 100644
  	update, err := newDownloadEndpoint(endpoint, updateProductPath)
  	if err != nil {
  		return http.Result[downloadResult]{}, err
-@@ -259,7 +400,7 @@ func (t *appstore) sendUpdateProductContext(ctx context.Context, endpoint string
+@@ -259,7 +407,7 @@ func (t *appstore) sendUpdateProductContext(ctx context.Context, endpoint string
  		return res, fmt.Errorf("failed to send update request: %w", err)
  	}
  
@@ -425,7 +439,18 @@ index 4f737c4..09bb5cf 100644
  }
  
  func (t *appstore) sendCommerceDownloadRequest(ctx context.Context, request http.Request, guid string) (http.Result[downloadResult], error) {
-@@ -313,7 +454,7 @@ func validateDownloadResponse(res http.Result[downloadResult], app App, external
+@@ -269,7 +417,10 @@ func (t *appstore) sendCommerceDownloadRequest(ctx context.Context, request http
+ 			return http.Result[downloadResult]{}, errors.New("store download requires a six-byte device GUID")
+ 		}
+ 
++		proofStarted := time.Now()
+ 		proof, err := t.storeAMDProof(ctx, request.URL, hardwareID)
++		t.recordStoreStage(storeProofOperation, "", traceEndpoint(request.URL), requestPayloadPin(request), time.Since(proofStarted), err)
++
+ 		if err != nil {
+ 			return http.Result[downloadResult]{}, err
+ 		}
+@@ -313,7 +464,7 @@ func validateDownloadResponse(res http.Result[downloadResult], app App, external
  	}
  
  	bundleID, ok := metadata["softwareVersionBundleId"].(string)
@@ -434,7 +459,7 @@ index 4f737c4..09bb5cf 100644
  		return fmt.Errorf("%s response does not match the requested bundle identifier", source)
  	}
  
-@@ -351,6 +492,25 @@ func isEmptyDownloadProductResponse(res http.Result[downloadResult]) bool {
+@@ -351,6 +502,25 @@ func isEmptyDownloadProductResponse(res http.Result[downloadResult]) bool {
  		len(res.Data.Items) == 0
  }
  
@@ -542,7 +567,7 @@ index a249bf5..35b001e 100644
  		Expect(err).ToNot(HaveOccurred())
  		Expect(output.DisplayVersion).To(Equal("1.0"))
 diff --git a/pkg/appstore/appstore_kbsync.go b/pkg/appstore/appstore_kbsync.go
-index 673824c..83b02aa 100644
+index 673824c..555e7f3 100644
 --- a/pkg/appstore/appstore_kbsync.go
 +++ b/pkg/appstore/appstore_kbsync.go
 @@ -6,7 +6,9 @@ import (
@@ -703,7 +728,18 @@ index 673824c..83b02aa 100644
  	serial := append([]byte{0x54, 0xc8, 0xb0, 0xa9, 0x88}, hardwareID[2:]...)
  	request := t.downloadProductRequest(endpoint, acc, app, guid, "")
  
-@@ -153,17 +214,31 @@ func (t *appstore) sendEntDownloadRequest(ctx context.Context, endpoint download
+@@ -123,7 +184,10 @@ func (t *appstore) sendEntDownloadRequest(ctx context.Context, endpoint download
+ 	request.Headers["X-Token"] = acc.PasswordToken
+ 
+ 	if t.authBackend != nil {
++		proofStarted := time.Now()
+ 		proof, err := t.storeAMDProof(ctx, request.URL, hardwareID)
++		t.recordStoreStage(storeProofOperation, "", traceEndpoint(request.URL), tracePin(expectedVersionID, versionID), time.Since(proofStarted), err)
++
+ 		if err != nil {
+ 			return http.Result[downloadResult]{}, err
+ 		}
+@@ -153,17 +217,31 @@ func (t *appstore) sendEntDownloadRequest(ctx context.Context, endpoint download
  
  	res.Data = normalizeDownloadFailure(res.Data)
  
@@ -843,6 +879,202 @@ index cc786b5..5fbcdaa 100644
  }
  
  func (t *appstore) lookupRequest(bundleID, countryCode string, platform Platform) (http.Request, error) {
+diff --git a/pkg/appstore/appstore_lookup_stage_trace.go b/pkg/appstore/appstore_lookup_stage_trace.go
+new file mode 100644
+index 0000000..94eebd8
+--- /dev/null
++++ b/pkg/appstore/appstore_lookup_stage_trace.go
+@@ -0,0 +1,102 @@
++package appstore
++
++import (
++	"fmt"
++	"net/url"
++	"time"
++
++	"github.com/majd/ipatool/v2/internal/store"
++	apphttp "github.com/majd/ipatool/v2/pkg/http"
++)
++
++// A lookup spends most of its time on work that is not a Store request: the bag
++// that names the endpoints, and the emulated proof that signs every request.
++// Neither one appeared in the trace, which is why most of a slow lookup used to
++// look unexplained. They are timed as stages of the lookup and land in the same
++// trace as the requests, attributed by the same pin.
++const (
++	storeProofOperation = "proof"
++	storeBagOperation   = "bag"
++)
++
++// recordStoreStage appends a stage of one lookup that is not a Store request.
++// A proof keeps the endpoint it signed; a bag names its own endpoint and is the
++// only stage counted as a request.
++func (t *appstore) recordStoreStage(operation, method, endpoint, pinned string, elapsed time.Duration, err error) {
++	backend := t.authBackend
++	if backend == nil {
++		return
++	}
++
++	entry := store.StoreRequest{
++		Operation: operation,
++		Method:    method,
++		Endpoint:  endpoint,
++		Pinned:    pinned,
++		Ms:        elapsed.Milliseconds(),
++	}
++
++	if err != nil {
++		entry.Error = truncateTraceError(err)
++	}
++
++	backend.RecordTrace(entry)
++}
++
++// tracePin prefers the pin the lookup asked for and falls back to the build it
++// resolved, so a stage is attributed even when the two differ.
++func tracePin(pins ...string) string {
++	for _, pin := range pins {
++		if pin != "" {
++			return pin
++		}
++	}
++
++	return ""
++}
++
++// requestPayloadPin reads the build a download request pins, so a proof that
++// signs it can be attributed to the lookup that asked for it.
++func requestPayloadPin(request apphttp.Request) string {
++	payload, ok := request.Payload.(*apphttp.XMLPayload)
++	if !ok || payload == nil {
++		return ""
++	}
++
++	for _, key := range [2]string{downloadVersionKeyVolumeStore, downloadVersionKeyRedownload} {
++		value, ok := payload.Content[key]
++		if !ok {
++			continue
++		}
++
++		if text, ok := value.(string); ok {
++			return text
++		}
++
++		return fmt.Sprint(value)
++	}
++
++	return ""
++}
++
++// traceEndpoint keeps the host and path of a URL a stage is about to request.
++func traceEndpoint(rawURL string) string {
++	parsed, err := url.Parse(rawURL)
++	if err != nil || parsed.Host == "" {
++		return ""
++	}
++
++	return parsed.Host + parsed.Path
++}
++
++// truncateTraceError keeps one broken read from filling the trace.
++func truncateTraceError(err error) string {
++	const limit = 120
++
++	message := err.Error()
++	if len(message) <= limit {
++		return message
++	}
++
++	return message[:limit] + "..."
++}
+diff --git a/pkg/appstore/appstore_lookup_stage_trace_test.go b/pkg/appstore/appstore_lookup_stage_trace_test.go
+new file mode 100644
+index 0000000..8148013
+--- /dev/null
++++ b/pkg/appstore/appstore_lookup_stage_trace_test.go
+@@ -0,0 +1,82 @@
++package appstore
++
++import (
++	"errors"
++	gohttp "net/http"
++	"testing"
++	"time"
++
++	"github.com/majd/ipatool/v2/internal/store"
++	apphttp "github.com/majd/ipatool/v2/pkg/http"
++)
++
++func TestLookupStageTraceRecordsTheProof(t *testing.T) {
++	backend := store.New(nil, nil)
++	client := &appstore{authBackend: backend}
++
++	client.recordStoreStage(storeProofOperation, "", "downloaddispatch.test/ent/download", "892759993", 4200*time.Millisecond, nil)
++	client.recordStoreStage(storeBagOperation, gohttp.MethodGet, "init.test/bag.xml", "892759993", 120*time.Millisecond, errors.New("bag failed"))
++
++	trace := backend.StoreTrace()
++	if len(trace) != 2 {
++		t.Fatalf("trace entries = %d, want 2", len(trace))
++	}
++
++	proof := trace[0]
++	if proof.Operation != storeProofOperation || proof.Pinned != "892759993" || proof.Ms != 4200 {
++		t.Fatalf("proof entry = %+v", proof)
++	}
++
++	if proof.Endpoint == "" {
++		t.Fatal("a proof entry must name the endpoint it signed")
++	}
++
++	bag := trace[1]
++	if bag.Operation != storeBagOperation || bag.Method != gohttp.MethodGet || bag.Error == "" {
++		t.Fatalf("bag entry = %+v", bag)
++	}
++
++	// A proof is not a request, so it must not reach the request counters.
++	if counted := backend.StoreRequests(); len(counted) != 0 {
++		t.Fatalf("stage entries counted as requests: %v", counted)
++	}
++
++	var total int64
++	for _, entry := range trace {
++		total += entry.Ms
++	}
++
++	if total != 4320 {
++		t.Fatalf("stage total = %d, want 4320", total)
++	}
++}
++
++func TestLookupStageHelpers(t *testing.T) {
++	if endpoint := traceEndpoint("https://downloaddispatch.test/ent/download?x=1"); endpoint != "downloaddispatch.test/ent/download" {
++		t.Fatalf("endpoint = %q", endpoint)
++	}
++
++	if pin := tracePin("", "892759993"); pin != "892759993" {
++		t.Fatalf("fallback pin = %q", pin)
++	}
++
++	if pin := tracePin("892759993", "892829847"); pin != "892759993" {
++		t.Fatalf("preferred pin = %q", pin)
++	}
++
++	// The proof of a commerce request has no pin of its own, so it is read from
++	// the payload that carries the build.
++	for key, value := range map[string]interface{}{
++		downloadVersionKeyVolumeStore: "886737985",
++		downloadVersionKeyRedownload:  "886737985",
++	} {
++		request := apphttp.Request{Payload: &apphttp.XMLPayload{Content: map[string]interface{}{key: value}}}
++		if pin := requestPayloadPin(request); pin != "886737985" {
++			t.Fatalf("payload pin for %q = %q", key, pin)
++		}
++	}
++
++	if pin := requestPayloadPin(apphttp.Request{}); pin != "" {
++		t.Fatalf("pin without a payload = %q", pin)
++	}
++}
 diff --git a/pkg/appstore/appstore_macos_version_lookup.go b/pkg/appstore/appstore_macos_version_lookup.go
 index 1a678d3..a5f73b8 100644
 --- a/pkg/appstore/appstore_macos_version_lookup.go
