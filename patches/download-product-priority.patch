@@ -788,7 +788,7 @@ index 124249b..65d425c 100644
  	}
 diff --git a/pkg/appstore/appstore_version_history_download_test.go b/pkg/appstore/appstore_version_history_download_test.go
 new file mode 100644
-index 0000000..fbb1006
+index 0000000..177e52c
 --- /dev/null
 +++ b/pkg/appstore/appstore_version_history_download_test.go
 @@ -0,0 +1,107 @@
@@ -856,7 +856,7 @@ index 0000000..fbb1006
 +		}, nil)
 +
 +		first = downloads.EXPECT().Send(gomock.Any()).After(first).Do(func(req http.Request) {
-+			Expect(req.URL).To(Equal(store.volumeStoreEndpoint(account) + "?guid=" + guid))
++			Expect(req.URL).To(Equal(store.volumeStoreEndpoint(account).baseURL + "?guid=" + guid))
 +		}).Return(http.Result[downloadResult]{StatusCode: gohttp.StatusOK}, nil)
 +
 +		downloads.EXPECT().Send(gomock.Any()).After(first).Do(func(req http.Request) {
@@ -880,7 +880,7 @@ index 0000000..fbb1006
 +		}, nil)
 +
 +		first = downloads.EXPECT().Send(gomock.Any()).After(first).Do(func(req http.Request) {
-+			Expect(req.URL).To(Equal(store.volumeStoreEndpoint(account) + "?guid=" + guid))
++			Expect(req.URL).To(Equal(store.volumeStoreEndpoint(account).baseURL + "?guid=" + guid))
 +		}).Return(http.Result[downloadResult]{StatusCode: gohttp.StatusOK}, nil)
 +
 +		downloads.EXPECT().Send(gomock.Any()).After(first).Do(func(req http.Request) {
