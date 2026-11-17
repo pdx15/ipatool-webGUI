@@ -2183,6 +2183,10 @@ func lookupVersionMetadataWithAccount(ctx context.Context, profile *guiAccountPr
 		result["emulatorRequests"] = out.EmulatorRequests
 	}
 
+	if len(out.EmulatorTrace) > 0 {
+		result["emulatorTrace"] = out.EmulatorTrace
+	}
+
 	// The download API reports its own date per build. It is shown next to the
 	// package date, never instead of it: the API values can be stale.
 	if apiDate := formatVersionMetadataDate(out.ReleaseDateFromAPI); apiDate != "" {
