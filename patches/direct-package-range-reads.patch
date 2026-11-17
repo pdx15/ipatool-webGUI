@@ -171,7 +171,7 @@ index 0000000..624618b
 +	}
 +}
 diff --git a/pkg/appstore/appstore_get_version_metadata.go b/pkg/appstore/appstore_get_version_metadata.go
-index 2517c76..e11508c 100644
+index 2517c76..04f47ef 100644
 --- a/pkg/appstore/appstore_get_version_metadata.go
 +++ b/pkg/appstore/appstore_get_version_metadata.go
 @@ -6,6 +6,8 @@ import (
@@ -214,16 +214,29 @@ index 2517c76..e11508c 100644
  			}
  
 -			return GetVersionMetadataOutput(metadata), nil
-+			return t.withEmulatorStats(GetVersionMetadataOutput(metadata), before), nil
++			return t.withEmulatorStats(versionMetadataOutput(metadata), before), nil
  		}
  	}
  
-@@ -106,5 +120,26 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
+@@ -106,5 +120,39 @@ func (t *appstore) GetVersionMetadata(input GetVersionMetadataInput) (GetVersion
  		return GetVersionMetadataOutput{}, fmt.Errorf("failed to read version metadata: %w", err)
  	}
  
 -	return GetVersionMetadataOutput(metadata), nil
-+	return t.withEmulatorStats(GetVersionMetadataOutput(metadata), before), nil
++	return t.withEmulatorStats(versionMetadataOutput(metadata), before), nil
++}
++
++// versionMetadataOutput copies a package read result into the public output.
++// The output also carries the emulator counters, which the read itself cannot
++// know, so the two structs are no longer the same type.
++func versionMetadataOutput(metadata versionMetadata) GetVersionMetadataOutput {
++	return GetVersionMetadataOutput{
++		DisplayVersion:    metadata.DisplayVersion,
++		ReleaseDate:       metadata.ReleaseDate,
++		MinimumOSVersion:  metadata.MinimumOSVersion,
++		PackageReadSource: metadata.PackageReadSource,
++		PackageReadError:  metadata.PackageReadError,
++	}
 +}
 +
 +// emulatorStats reports the Store framework launches the backend has made so
