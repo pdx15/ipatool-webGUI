@@ -389,7 +389,7 @@ index 2517c76..46bd54a 100644
 +	return parsed
  }
 diff --git a/pkg/appstore/appstore_macos_preflight_metadata.go b/pkg/appstore/appstore_macos_preflight_metadata.go
-index 75bcefe..69ff7f0 100644
+index 75bcefe..2e83653 100644
 --- a/pkg/appstore/appstore_macos_preflight_metadata.go
 +++ b/pkg/appstore/appstore_macos_preflight_metadata.go
 @@ -5,6 +5,8 @@ import (
@@ -415,7 +415,7 @@ index 75bcefe..69ff7f0 100644
  		}
  
  		if !built.IsZero() && !built.Equal(timestamp) {
-@@ -129,13 +134,62 @@ func macPreflightVersionMetadata(archive *xar.Reader, bundleID string) (versionM
+@@ -129,13 +134,85 @@ func macPreflightVersionMetadata(archive *xar.Reader, bundleID string) (versionM
  	}
  
  	if built.IsZero() {
@@ -424,9 +424,11 @@ index 75bcefe..69ff7f0 100644
  	}
  
  	// As with the payload timestamp fallback, this is the build time, not an
- 	// exact store release date. The API date is app-level, and the preflight
- 	// archive's creation time can reflect a much later repackaging date.
+-	// exact store release date. The API date is app-level, and the preflight
+-	// archive's creation time can reflect a much later repackaging date.
 -	return versionMetadata{DisplayVersion: version, ReleaseDate: built, MinimumOSVersion: info.minimumOSVersion()}, nil
++	// exact store release date. The API date is reported next to it, so the two
++	// can be compared instead of one silently replacing the other.
 +	metadata := versionMetadata{DisplayVersion: version, ReleaseDate: built, MinimumOSVersion: info.minimumOSVersion()}
 +	if built.IsZero() {
 +		// The version is still worth returning: it saves the whole installer.
@@ -441,7 +443,8 @@ index 75bcefe..69ff7f0 100644
 +// macArchiveBuildTime reads the build timestamp out of the archive table of
 +// contents, which is available without touching the payload. Modern installers
 +// store it as the mtime of the Payload entry; repacked archives may keep only
-+// PackageInfo or Bom.
++// PackageInfo or Bom, and the preflight archive keeps neither timestamp on its
++// entries, which is why its own creation-time is the last resort.
 +func macArchiveBuildTime(archive *xar.Reader) time.Time {
 +	for _, name := range []string{"Payload", "PackageInfo", "Bom"} {
 +		for _, file := range archive.Files {
@@ -450,6 +453,23 @@ index 75bcefe..69ff7f0 100644
 +			}
 +
 +			return time.Unix(file.Info.Mtime, 0).UTC()
++		}
++	}
++
++	return macArchiveCreationTime(archive.TOC().CreationTime)
++}
++
++// macArchiveCreationTime parses the creation-time of the table of contents.
++// Apple writes it when the archive is built, and on modern installers it lands
++// on the same second as the Payload mtime, so it can stand in for it.
++func macArchiveCreationTime(value string) time.Time {
++	if value == "" {
++		return time.Time{}
++	}
++
++	for _, layout := range []string{time.RFC3339Nano, "2006-01-02T15:04:05"} {
++		if parsed, err := time.Parse(layout, value); err == nil {
++			return parsed.UTC()
 +		}
 +	}
 +
@@ -472,11 +492,16 @@ index 75bcefe..69ff7f0 100644
 +
 +	sort.Strings(entries)
 +
-+	if len(entries) == 0 {
-+		return "none"
++	creationTime := "none"
++	if archived := macArchiveCreationTime(archive.TOC().CreationTime); !archived.IsZero() {
++		creationTime = archived.Format(time.RFC3339)
 +	}
 +
-+	return strings.Join(entries, ", ")
++	if len(entries) == 0 {
++		entries = append(entries, "no entries")
++	}
++
++	return fmt.Sprintf("%s; table of contents creation time: %s", strings.Join(entries, ", "), creationTime)
  }
  
  func legacyMacPackageBuildTime(displayVersion, packageVersion string) (time.Time, error) {
@@ -793,7 +818,7 @@ index be202a0..9b679cb 100644
  
  func macPackageVersionMetadata(archive *xar.Reader, bundleID string) (versionMetadata, error) {
 diff --git a/pkg/appstore/appstore_macos_version_metadata_test.go b/pkg/appstore/appstore_macos_version_metadata_test.go
-index b57f884..a3970b4 100644
+index b57f884..7dc7ad8 100644
 --- a/pkg/appstore/appstore_macos_version_metadata_test.go
 +++ b/pkg/appstore/appstore_macos_version_metadata_test.go
 @@ -2,13 +2,18 @@ package appstore
@@ -815,7 +840,7 @@ index b57f884..a3970b4 100644
  	"time"
  
  	"github.com/blacktop/go-macho/pkg/xar"
-@@ -115,3 +120,386 @@ var _ = Describe("Mac version metadata", func() {
+@@ -115,3 +120,428 @@ var _ = Describe("Mac version metadata", func() {
  		Expect(entries).To(BeEmpty())
  	})
  })
@@ -834,6 +859,12 @@ index b57f884..a3970b4 100644
 +// macRangeReadArchive builds a minimal XAR archive. The gomega fixtures
 +// register a fail handler, so a plain test needs its own builder.
 +func macRangeReadArchive(entries ...macRangeReadEntry) []byte {
++	return macRangeReadArchiveAt("", entries...)
++}
++
++// macRangeReadArchiveAt builds an archive whose table of contents declares a
++// creation-time, the way Apple-built installers do.
++func macRangeReadArchiveAt(creationTime string, entries ...macRangeReadEntry) []byte {
 +	var files string
 +
 +	offset := sha1.Size
@@ -847,8 +878,13 @@ index b57f884..a3970b4 100644
 +		heap = append(heap, entry.data...)
 +	}
 +
++	created := ""
++	if creationTime != "" {
++		created = "<creation-time>" + creationTime + "</creation-time>"
++	}
++
 +	toc := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-+<xar><toc><checksum style="sha1"><offset>0</offset><size>%d</size></checksum>%s</toc></xar>`, sha1.Size, files)
++<xar><toc>%s<checksum style="sha1"><offset>0</offset><size>%d</size></checksum>%s</toc></xar>`, created, sha1.Size, files)
 +
 +	var compressed bytes.Buffer
 +
@@ -1200,6 +1236,37 @@ index b57f884..a3970b4 100644
 +
 +	if !strings.Contains(metadata.PackageReadError, "no build timestamp") {
 +		t.Errorf("package read error = %q, want the missing timestamp", metadata.PackageReadError)
++	}
++}
++
++// TestMacPackageMetadataReadsTheDateFromTheTableOfContents covers the preflight
++// archive: its Distribution entry carries no mtime, so the creation-time of the
++// table of contents is the only timestamp left.
++func TestMacPackageMetadataReadsTheDateFromTheTableOfContents(t *testing.T) {
++	archive := macRangeReadArchiveAt("2026-10-20T19:29:36",
++		macRangeReadEntry{name: "Distribution", data: []byte(macRangeReadInfo)})
++
++	reader, err := xar.NewReader(bytes.NewReader(archive), int64(len(archive)))
++	if err != nil {
++		t.Fatalf("failed to open fixture archive: %v", err)
++	}
++
++	metadata, err := macPreflightVersionMetadata(reader, "com.example.mac")
++	if err != nil {
++		t.Fatalf("preflight metadata failed: %v", err)
++	}
++
++	want := time.Date(2026, 10, 20, 19, 29, 36, 0, time.UTC)
++	if !metadata.ReleaseDate.Equal(want) {
++		t.Errorf("release date = %v, want %v", metadata.ReleaseDate, want)
++	}
++
++	if metadata.PackageReadError != "" {
++		t.Errorf("package read error = %q, want none", metadata.PackageReadError)
++	}
++
++	if metadata.DisplayVersion != "1.2.1" {
++		t.Errorf("display version = %q, want 1.2.1", metadata.DisplayVersion)
 +	}
 +}
 diff --git a/pkg/appstore/appstore_partial_zip.go b/pkg/appstore/appstore_partial_zip.go
