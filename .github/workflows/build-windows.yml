@@ -151,7 +151,7 @@ jobs:
           # The run log is not always reachable, so surface compiler and test
           # failures as annotations instead.
           status=0
-          go test ./pkg/appstore/ -run 'TestDirectPackageRangeRead|TestPackageRangeReadFallsBack|TestMacPackage|TestVersionHistory' -count=1 > appstore-test.log 2>&1 || status=$?
+          go test ./pkg/appstore/ -run 'TestDirectPackageRangeRead|TestPackageRangeReadFallsBack|TestMacPackage|TestVersionHistory|TestRegularDownload' -count=1 > appstore-test.log 2>&1 || status=$?
           go test ./internal/store/ -run 'TestTransferDirectSkipsTheStoreEmulator' -count=1 >> appstore-test.log 2>&1 || status=$?
           cat appstore-test.log
           if [ "$status" -ne 0 ]; then
