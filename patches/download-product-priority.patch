@@ -461,10 +461,18 @@ index 4f737c4..09bb5cf 100644
  	podPrefix := ""
  	if acc.Pod != "" {
 diff --git a/pkg/appstore/appstore_get_version_metadata_test.go b/pkg/appstore/appstore_get_version_metadata_test.go
-index a249bf5..06e0376 100644
+index a249bf5..35b001e 100644
 --- a/pkg/appstore/appstore_get_version_metadata_test.go
 +++ b/pkg/appstore/appstore_get_version_metadata_test.go
-@@ -494,35 +494,55 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
+@@ -3,6 +3,7 @@ package appstore
+ import (
+ 	"archive/zip"
+ 	"bytes"
++	"context"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+@@ -494,35 +495,55 @@ var _ = Describe("AppStore (GetVersionMetadata)", func() {
  		})
  	})
  
