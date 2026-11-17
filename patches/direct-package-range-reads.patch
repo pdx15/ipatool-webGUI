@@ -1603,14 +1603,13 @@ index b57f884..4cbe2c5 100644
 +}
 diff --git a/pkg/appstore/appstore_package_read_trace.go b/pkg/appstore/appstore_package_read_trace.go
 new file mode 100644
-index 0000000..9f16a51
+index 0000000..8387932
 --- /dev/null
 +++ b/pkg/appstore/appstore_package_read_trace.go
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,157 @@
 +package appstore
 +
 +import (
-+	"fmt"
 +	"io"
 +	"net/http"
 +	"net/url"
