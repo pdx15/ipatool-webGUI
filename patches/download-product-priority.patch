@@ -120,10 +120,38 @@ index 8649602..6ff1fad 100644
  
  func (p setupProtocol) send(request *http.Request) ([]byte, error) {
 diff --git a/pkg/appstore/appstore_download_product.go b/pkg/appstore/appstore_download_product.go
-index 4f737c4..806992a 100644
+index 4f737c4..3aba443 100644
 --- a/pkg/appstore/appstore_download_product.go
 +++ b/pkg/appstore/appstore_download_product.go
-@@ -34,6 +34,8 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -25,7 +25,27 @@ type downloadProductEndpoint struct {
+ 	versionKey string
+ }
+ 
++// downloadProductOptions tunes the fallback chain for one caller.
++type downloadProductOptions struct {
++	// skipRedownload keeps the version-history lookup off a fallback that
++	// answers HTTP 403 for every build it was asked for, which makes the
++	// request and its guest launch pure loss. Download and ListVersions keep
++	// the full chain, where redownload can still be the working path.
++	skipRedownload bool
++}
++
+ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App, guid, externalVersionID string, platform Platform) (http.Result[downloadResult], Platform, error) {
++	return t.sendDownloadProductWith(ctx, acc, app, guid, externalVersionID, platform, downloadProductOptions{})
++}
++
++// sendDownloadProductForVersionHistory is the version-history entry point. The
++// builds it asks for never come back from redownload, so the chain goes from
++// volumeStore straight to ent/download.
++func (t *appstore) sendDownloadProductForVersionHistory(ctx context.Context, acc Account, app App, guid, externalVersionID string, platform Platform) (http.Result[downloadResult], Platform, error) {
++	return t.sendDownloadProductWith(ctx, acc, app, guid, externalVersionID, platform, downloadProductOptions{skipRedownload: true})
++}
++
++func (t *appstore) sendDownloadProductWith(ctx context.Context, acc Account, app App, guid, externalVersionID string, platform Platform, options downloadProductOptions) (http.Result[downloadResult], Platform, error) {
+ 	if ctx == nil {
+ 		ctx = context.Background()
+ 	}
+@@ -34,6 +54,8 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  		return http.Result[downloadResult]{}, platform, fmt.Errorf("download request canceled: %w", err)
  	}
  
@@ -132,12 +160,12 @@ index 4f737c4..806992a 100644
  	// An unpinned request can return the iOS build of a universal app.
  	// Select the Mac offer before accepting any download response.
  	if externalVersionID == "" && platform == PlatformMacOS {
-@@ -43,30 +45,12 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -43,30 +65,12 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  		if err != nil {
  			return http.Result[downloadResult]{}, platform, fmt.Errorf("failed to resolve latest macOS version for download: %w", err)
  		}
 -	}
- 
+-
 -	// Prefer ent/download when its generator and bag endpoint are available.
 -	// Keep the fetched bag for the legacy chain if this attempt cannot serve
 -	// the requested app; asset, network, and response failures can fall back.
@@ -155,7 +183,7 @@ index 4f737c4..806992a 100644
 -			}
 -		}
 -	}
--
+ 
 -	if err := ctx.Err(); err != nil {
 -		return http.Result[downloadResult]{}, platform, fmt.Errorf("download request canceled: %w", err)
 +		requestedVersionID = externalVersionID
@@ -166,7 +194,7 @@ index 4f737c4..806992a 100644
  	volumeStore := t.volumeStoreEndpoint(acc)
  
  	res, err := t.sendCommerceDownloadRequest(ctx, t.downloadProductRequest(volumeStore, acc, app, guid, externalVersionID), guid)
-@@ -74,23 +58,72 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -74,23 +78,76 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  		return res, platform, fmt.Errorf("failed to send http request: %w", err)
  	}
  
@@ -230,14 +258,18 @@ index 4f737c4..806992a 100644
 +			fallbackRes.Data.FailureType = FailureTypeLicenseNotFound
 +
 +			return fallbackRes, resolvedPlatform, nil
-+		}
-+
-+		if entRes.Data.CustomerMessage != "" && fallbackRes.Data.CustomerMessage == "" {
-+			return entRes, resolvedPlatform, nil
  		}
  
 -		bag = &fetched
++		if entRes.Data.CustomerMessage != "" && fallbackRes.Data.CustomerMessage == "" {
++			return entRes, resolvedPlatform, nil
++		}
++
 +		return fallbackRes, resolvedPlatform, fallbackErr
++	}
++
++	if options.skipRedownload {
++		return tryEntDownload(res, nil)
  	}
  
  	if bag.RedownloadEndpoint == "" {
@@ -246,7 +278,7 @@ index 4f737c4..806992a 100644
  	}
  
  	redownload, err := newDownloadEndpoint(bag.RedownloadEndpoint, redownloadProductPath)
-@@ -105,35 +138,75 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
+@@ -105,35 +162,75 @@ func (t *appstore) sendDownloadProduct(ctx context.Context, acc Account, app App
  			platform = PlatformIPhone
  		}
  
@@ -301,9 +333,8 @@ index 4f737c4..806992a 100644
 +
 +		if updateRes.Data.FailureType == FailureTypePasswordTokenExpired {
 +			return updateRes, platform, nil
- 		}
- 
--		return updateRes, platform, updateErr
++		}
++
 +		if updateRes.Data.FailureType == FailureTypeLicenseNotFound {
 +			rdUnavailable = true
 +		}
@@ -314,8 +345,9 @@ index 4f737c4..806992a 100644
 +			}
 +
 +			return tryEntDownload(updateRes, updateErr)
-+		}
-+
+ 		}
+ 
+-		return updateRes, platform, updateErr
 +		return tryEntDownload(updateRes, nil)
  	}
  
@@ -336,7 +368,7 @@ index 4f737c4..806992a 100644
  	}
  
  	return redownloadRes, platform, nil
-@@ -246,6 +319,12 @@ func isEmptyRedownloadError(err error) bool {
+@@ -246,6 +343,12 @@ func isEmptyRedownloadError(err error) bool {
  }
  
  func (t *appstore) sendUpdateProductContext(ctx context.Context, endpoint string, acc Account, app App, guid, externalVersionID string) (http.Result[downloadResult], error) {
@@ -349,7 +381,7 @@ index 4f737c4..806992a 100644
  	update, err := newDownloadEndpoint(endpoint, updateProductPath)
  	if err != nil {
  		return http.Result[downloadResult]{}, err
-@@ -259,7 +338,7 @@ func (t *appstore) sendUpdateProductContext(ctx context.Context, endpoint string
+@@ -259,7 +362,7 @@ func (t *appstore) sendUpdateProductContext(ctx context.Context, endpoint string
  		return res, fmt.Errorf("failed to send update request: %w", err)
  	}
  
@@ -358,7 +390,7 @@ index 4f737c4..806992a 100644
  }
  
  func (t *appstore) sendCommerceDownloadRequest(ctx context.Context, request http.Request, guid string) (http.Result[downloadResult], error) {
-@@ -313,7 +392,7 @@ func validateDownloadResponse(res http.Result[downloadResult], app App, external
+@@ -313,7 +416,7 @@ func validateDownloadResponse(res http.Result[downloadResult], app App, external
  	}
  
  	bundleID, ok := metadata["softwareVersionBundleId"].(string)
@@ -754,6 +786,119 @@ index 124249b..65d425c 100644
  	if platform == PlatformVisionOS {
  		return t.lookupLatestVisionOSExternalVersionID(app.ID, countryCode)
  	}
+diff --git a/pkg/appstore/appstore_version_history_download_test.go b/pkg/appstore/appstore_version_history_download_test.go
+new file mode 100644
+index 0000000..177e52c
+--- /dev/null
++++ b/pkg/appstore/appstore_version_history_download_test.go
+@@ -0,0 +1,107 @@
++package appstore
++
++import (
++	"context"
++	gohttp "net/http"
++	"time"
++
++	"github.com/majd/ipatool/v2/pkg/http"
++	. "github.com/onsi/ginkgo/v2"
++	. "github.com/onsi/gomega"
++	"go.uber.org/mock/gomock"
++)
++
++// The version-history lookup asks for one pinned build, and Apple answers the
++// redownload fallback for those builds with 403 every time. The trace that
++// proved it is in the PR that added this test; here the chain must skip that
++// step entirely and still return the build ent/download serves.
++var _ = Describe("Version history download chain", func() {
++	const guid = "001122334455"
++
++	var (
++		store     *appstore
++		downloads *http.MockClient[downloadResult]
++		bags      *http.MockClient[bagResult]
++		account   Account
++		app       App
++		success   http.Result[downloadResult]
++	)
++
++	BeforeEach(func() {
++		downloads = http.NewMockClient[downloadResult](gomock.NewController(GinkgoT()))
++		bags = http.NewMockClient[bagResult](gomock.NewController(GinkgoT()))
++		store = &appstore{
++			downloadClient: downloads,
++			bagClient:      bags,
++			kbsyncGenerator: func(ctx context.Context, hardwareID []byte, dsid uint64) ([]byte, error) {
++				Expect(hardwareID).To(Equal([]byte{0, 0x11, 0x22, 0x33, 0x44, 0x55}))
++				Expect(dsid).To(Equal(uint64(1234)))
++				Expect(time.Until(mustDeadline(ctx))).To(BeNumerically(">", 0))
++
++				return []byte("kbsync blob"), nil
++			},
++		}
++		account = Account{DirectoryServicesID: "1234", PasswordToken: "token", StoreFront: "143469-2,29"}
++		app = App{ID: 42, BundleID: "com.example.app"}
++		success = http.Result[downloadResult]{StatusCode: gohttp.StatusOK, Data: downloadResult{
++			Items: []downloadItemResult{{URL: "https://example.test/app.ipa", Metadata: map[string]interface{}{
++				"itemId": app.ID, "softwareVersionBundleId": app.BundleID,
++				"softwareVersionExternalIdentifier": uint64(1001),
++			}}},
++		}}
++	})
++
++	It("goes from volumeStore to ent/download without trying redownload", func() {
++		first := bags.EXPECT().Send(gomock.Any()).Return(http.Result[bagResult]{
++			StatusCode: gohttp.StatusOK, Data: bagResult{URLBag: urlBag{
++				// The endpoint is offered, so a fallback attempt would show up as
++				// an unexpected call rather than as a missing bag entry.
++				EntDownloadEndpoint: testEntDownloadEndpoint,
++				RedownloadEndpoint:  testRedownloadEndpoint,
++			}},
++		}, nil)
++
++		first = downloads.EXPECT().Send(gomock.Any()).After(first).Do(func(req http.Request) {
++			Expect(req.URL).To(Equal(store.volumeStoreEndpoint(account).baseURL + "?guid=" + guid))
++		}).Return(http.Result[downloadResult]{StatusCode: gohttp.StatusOK}, nil)
++
++		downloads.EXPECT().Send(gomock.Any()).After(first).Do(func(req http.Request) {
++			Expect(req.URL).To(Equal(testEntDownloadEndpoint + "?guid=" + guid))
++			Expect(req.Payload.(*http.XMLPayload).Content).To(HaveKey("kbsync"))
++		}).Return(success, nil)
++
++		actual, platform, err := store.sendDownloadProductForVersionHistory(
++			context.Background(), account, app, guid, "886737985", PlatformIPhone)
++		Expect(err).NotTo(HaveOccurred())
++		Expect(actual).To(Equal(success))
++		Expect(platform).To(Equal(PlatformIPhone))
++	})
++
++	It("keeps the redownload fallback for the regular download chain", func() {
++		first := bags.EXPECT().Send(gomock.Any()).Return(http.Result[bagResult]{
++			StatusCode: gohttp.StatusOK, Data: bagResult{URLBag: urlBag{
++				EntDownloadEndpoint: testEntDownloadEndpoint,
++				RedownloadEndpoint:  testRedownloadEndpoint,
++			}},
++		}, nil)
++
++		first = downloads.EXPECT().Send(gomock.Any()).After(first).Do(func(req http.Request) {
++			Expect(req.URL).To(Equal(store.volumeStoreEndpoint(account).baseURL + "?guid=" + guid))
++		}).Return(http.Result[downloadResult]{StatusCode: gohttp.StatusOK}, nil)
++
++		downloads.EXPECT().Send(gomock.Any()).After(first).Do(func(req http.Request) {
++			Expect(req.URL).To(Equal(testRedownloadEndpoint + "?guid=" + guid))
++		}).Return(success, nil)
++
++		actual, _, err := store.sendDownloadProduct(context.Background(), account, app, guid, "886737985", PlatformIPhone)
++		Expect(err).NotTo(HaveOccurred())
++		Expect(actual).To(Equal(success))
++	})
++})
++
++func mustDeadline(ctx context.Context) time.Time {
++	deadline, ok := ctx.Deadline()
++	Expect(ok).To(BeTrue())
++
++	return deadline
++}
 diff --git a/pkg/appstore/storefront.go b/pkg/appstore/storefront.go
 index 8509321..93bded7 100644
 --- a/pkg/appstore/storefront.go
