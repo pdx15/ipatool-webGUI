@@ -1852,7 +1852,7 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 				results[versionID] = map[string]interface{}{
 					"success":          true,
 					"displayVersion":   entry.DisplayVersion,
-					"releaseDate":      entry.ReleaseDate,
+					"releaseDate":      cleanVersionMetadataDate(entry.ReleaseDate),
 					"minimumOSVersion": entry.MinimumOSVersion,
 					"cached":           true,
 				}
@@ -1928,23 +1928,50 @@ func handleAPIVersionMetadataBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	mu.Unlock()
 
-	emulatorOpens, emulatorOpenMs := versionMetadataEmulatorTotals(snapshot)
+	emulatorOpens, emulatorOpenMs, emulatorRequests := versionMetadataEmulatorTotals(snapshot)
 
-	jsonResponse(w, http.StatusOK, map[string]interface{}{
+	response := map[string]interface{}{
 		"success":        true,
 		"results":        snapshot,
 		"totalMs":        time.Since(started).Milliseconds(),
 		"partial":        partial,
 		"emulatorOpens":  emulatorOpens,
 		"emulatorOpenMs": emulatorOpenMs,
-	})
+	}
+
+	if len(emulatorRequests) > 0 {
+		response["emulatorRequests"] = emulatorRequests
+	}
+
+	jsonResponse(w, http.StatusOK, response)
+}
+
+// formatVersionMetadataDate renders a build date, leaving it empty when the
+// package carried none instead of printing the zero timestamp.
+func formatVersionMetadataDate(date time.Time) string {
+	if date.IsZero() {
+		return ""
+	}
+
+	return date.Format("2006-01-02")
+}
+
+// cleanVersionMetadataDate blanks a zero date that an older build cached.
+func cleanVersionMetadataDate(value string) string {
+	if value == "0001-01-01" {
+		return ""
+	}
+
+	return value
 }
 
 // versionMetadataEmulatorTotals adds up the emulator launches reported by the
 // version lookups in a batch. Cached entries carry no counters, so the totals
 // describe only the lookups that actually ran.
-func versionMetadataEmulatorTotals(results map[string]interface{}) (int64, int64) {
+func versionMetadataEmulatorTotals(results map[string]interface{}) (int64, int64, map[string]int64) {
 	var opens, openMs int64
+
+	requests := make(map[string]int64)
 
 	for _, result := range results {
 		entry, ok := result.(map[string]interface{})
@@ -1959,9 +1986,19 @@ func versionMetadataEmulatorTotals(results map[string]interface{}) (int64, int64
 		if value, ok := entry["emulatorOpenMs"].(int64); ok {
 			openMs += value
 		}
+
+		if counted, ok := entry["emulatorRequests"].(map[string]int64); ok {
+			for endpoint, count := range counted {
+				requests[endpoint] += count
+			}
+		}
 	}
 
-	return opens, openMs
+	if len(requests) == 0 {
+		requests = nil
+	}
+
+	return opens, openMs, requests
 }
 
 var errNotAuthenticated = errors.New("not authenticated")
@@ -2034,7 +2071,7 @@ func lookupVersionMetadataWithAccount(ctx context.Context, profile *guiAccountPr
 			return map[string]interface{}{
 				"success":          true,
 				"displayVersion":   entry.DisplayVersion,
-				"releaseDate":      entry.ReleaseDate,
+				"releaseDate":      cleanVersionMetadataDate(entry.ReleaseDate),
 				"minimumOSVersion": entry.MinimumOSVersion,
 				"cached":           true,
 			}, nil
@@ -2111,7 +2148,7 @@ func lookupVersionMetadataWithAccount(ctx context.Context, profile *guiAccountPr
 		return nil, err
 	}
 
-	releaseDate := out.ReleaseDate.Format("2006-01-02")
+	releaseDate := formatVersionMetadataDate(out.ReleaseDate)
 
 	rememberVersionMetadata(appID, platform, versionID, versionMetaEntry{
 		DisplayVersion:   out.DisplayVersion,
@@ -2141,6 +2178,16 @@ func lookupVersionMetadataWithAccount(ctx context.Context, profile *guiAccountPr
 	// a version history slow, so report the count next to the timing.
 	result["emulatorOpens"] = out.EmulatorOpens
 	result["emulatorOpenMs"] = out.EmulatorOpenMs
+
+	if len(out.EmulatorRequests) > 0 {
+		result["emulatorRequests"] = out.EmulatorRequests
+	}
+
+	// The download API reports its own date per build. It is shown next to the
+	// package date, never instead of it: the API values can be stale.
+	if apiDate := formatVersionMetadataDate(out.ReleaseDateFromAPI); apiDate != "" {
+		result["releaseDateApi"] = apiDate
+	}
 
 	return result, nil
 }
